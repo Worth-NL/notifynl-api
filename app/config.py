@@ -5,6 +5,8 @@ from datetime import timedelta
 from celery.schedules import crontab
 from kombu import Exchange, Queue
 
+NL_PREFIX = "notifynl"
+
 
 class QueueNames:
     PERIODIC = "periodic-tasks"
@@ -495,9 +497,14 @@ class Config:
 ######################
 # Config overrides ###
 ######################
+class ConfigNL(Config):
+    NOTIFY_EMAIL_DOMAIN = os.environ.get("NOTIFY_EMAIL_DOMAIN", "notifynl.nl")
+    FROM_NUMBER = os.environ.get("FROM_NUMBER", "NOTIFYNL")
+
+    SPRYNG_API_KEY = os.getenv("SPRYNG_API_KEY")
 
 
-class Development(Config):
+class Development(ConfigNL):
     DEBUG = True
     SQLALCHEMY_ECHO = False
 
@@ -505,14 +512,16 @@ class Development(Config):
 
     REDIS_ENABLED = os.getenv("REDIS_ENABLED") == "1"
 
-    S3_BUCKET_CSV_UPLOAD = "development-notifications-csv-upload"
-    S3_BUCKET_CONTACT_LIST = "development-contact-list"
-    S3_BUCKET_TEST_LETTERS = "development-test-letters"
-    S3_BUCKET_LETTERS_PDF = "development-letters-pdf"
-    S3_BUCKET_LETTERS_SCAN = "development-letters-scan"
-    S3_BUCKET_INVALID_PDF = "development-letters-invalid-pdf"
-    S3_BUCKET_TRANSIENT_UPLOADED_LETTERS = "development-transient-uploaded-letters"
-    S3_BUCKET_LETTER_SANITISE = "development-letters-sanitise"
+    NOTIFY_ENVIRONMENT = "development"
+
+    S3_BUCKET_CSV_UPLOAD = f"{NL_PREFIX}-{NOTIFY_ENVIRONMENT}-notifications-csv-upload"
+    S3_BUCKET_CONTACT_LIST = f"{NL_PREFIX}-{NOTIFY_ENVIRONMENT}-contact-list"
+    S3_BUCKET_TEST_LETTERS = f"{NL_PREFIX}-{NOTIFY_ENVIRONMENT}-test-letters"
+    S3_BUCKET_LETTERS_PDF = f"{NL_PREFIX}-{NOTIFY_ENVIRONMENT}-letters-pdf"
+    S3_BUCKET_LETTERS_SCAN = f"{NL_PREFIX}-{NOTIFY_ENVIRONMENT}-letters-scan"
+    S3_BUCKET_INVALID_PDF = f"{NL_PREFIX}-{NOTIFY_ENVIRONMENT}-letters-invalid-pdf"
+    S3_BUCKET_TRANSIENT_UPLOADED_LETTERS = f"{NL_PREFIX}-{NOTIFY_ENVIRONMENT}-transient-uploaded-letters"
+    S3_BUCKET_LETTER_SANITISE = f"{NL_PREFIX}-{NOTIFY_ENVIRONMENT}-letters-sanitise"
 
     INTERNAL_CLIENT_API_KEYS = {
         Config.ADMIN_CLIENT_ID: ["dev-notify-secret-key"],
@@ -525,7 +534,6 @@ class Development(Config):
     MMG_INBOUND_SMS_AUTH = ["testkey"]
     MMG_INBOUND_SMS_USERNAME = ["username"]
 
-    NOTIFY_ENVIRONMENT = "development"
     NOTIFY_EMAIL_DOMAIN = "notify.tools"
 
     SQLALCHEMY_DATABASE_URI = os.getenv("SQLALCHEMY_DATABASE_URI", "postgresql://localhost/notification_api")
@@ -546,19 +554,19 @@ class Development(Config):
 
 
 class Test(Development):
-    NOTIFY_EMAIL_DOMAIN = "test.notify.com"
+    NOTIFY_EMAIL_DOMAIN = "test.notifynl.nl"
     FROM_NUMBER = "testing"
     NOTIFY_ENVIRONMENT = "test"
     TESTING = True
 
-    S3_BUCKET_CSV_UPLOAD = "test-notifications-csv-upload"
-    S3_BUCKET_CONTACT_LIST = "test-contact-list"
-    S3_BUCKET_TEST_LETTERS = "test-test-letters"
-    S3_BUCKET_LETTERS_PDF = "test-letters-pdf"
-    S3_BUCKET_LETTERS_SCAN = "test-letters-scan"
-    S3_BUCKET_INVALID_PDF = "test-letters-invalid-pdf"
-    S3_BUCKET_TRANSIENT_UPLOADED_LETTERS = "test-transient-uploaded-letters"
-    S3_BUCKET_LETTER_SANITISE = "test-letters-sanitise"
+    S3_BUCKET_CSV_UPLOAD = f"{NL_PREFIX}-{NOTIFY_ENVIRONMENT}-notifications-csv-upload"
+    S3_BUCKET_CONTACT_LIST = f"{NL_PREFIX}-{NOTIFY_ENVIRONMENT}-contact-list"
+    S3_BUCKET_TEST_LETTERS = f"{NL_PREFIX}-{NOTIFY_ENVIRONMENT}-test-letters"
+    S3_BUCKET_LETTERS_PDF = f"{NL_PREFIX}-{NOTIFY_ENVIRONMENT}-letters-pdf"
+    S3_BUCKET_LETTERS_SCAN = f"{NL_PREFIX}-{NOTIFY_ENVIRONMENT}-letters-scan"
+    S3_BUCKET_INVALID_PDF = f"{NL_PREFIX}-{NOTIFY_ENVIRONMENT}-letters-invalid-pdf"
+    S3_BUCKET_TRANSIENT_UPLOADED_LETTERS = f"{NL_PREFIX}-{NOTIFY_ENVIRONMENT}-transient-uploaded-letters"
+    S3_BUCKET_LETTER_SANITISE = f"{NL_PREFIX}-{NOTIFY_ENVIRONMENT}-letters-sanitise"
 
     # when testing, the SQLALCHEMY_DATABASE_URI is used for the postgres server's location
     # but the database name is set in the _notify_db fixture
