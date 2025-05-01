@@ -113,6 +113,9 @@ def receive_firetext_sms():
     return jsonify({"status": "ok"}), 200
 
 
+#TODO: Add Spryng inbound implementation here
+
+
 def format_mmg_message(message):
     return unescape_string(unquote(message.replace("+", " ")))
 

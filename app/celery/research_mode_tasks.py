@@ -44,6 +44,7 @@ def send_sms_response(provider, reference, to):
             make_request(SMS_TYPE, provider, body, headers)
             # 1 is a declined status for firetext, will result in a temp-failure
             body = {"mobile": to, "status": "1", "time": "2016-03-10 14:17:00", "reference": reference}
+    #TODO: Add Spryng support here
 
     make_request(SMS_TYPE, provider, body, headers)
 

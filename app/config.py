@@ -500,10 +500,41 @@ class Config:
 # Config overrides ###
 ######################
 class ConfigNL(Config):
+    """
+    Overrides for NotifyNL usage
+    """
     NOTIFY_EMAIL_DOMAIN = os.environ.get("NOTIFY_EMAIL_DOMAIN", "notifynl.nl")
     FROM_NUMBER = os.environ.get("FROM_NUMBER", "NOTIFYNL")
+    NOTIFY_SUPPORT_EMAIL_ADDRESS = "info@worth.nl"
 
+    # Spryng setup
+    SPRYNG_URL = os.environ.get("SPRYNG_URL", "https://rest.spryngsms.com/v1/messages")
     SPRYNG_API_KEY = os.getenv("SPRYNG_API_KEY")
+    # Spryng Callback URL for delivery receipts
+    # At the moment, Spryng only supports callbacks to a URL configured on their
+    # dashboard
+    # SPRYNG_RECEIPT_URL = os.getenv("SPRYNG_RECEIPT_URL")
+
+    # these should always add up to 100%
+    SMS_PROVIDER_RESTING_POINTS = {"mmg": 0, "firetext": 0, "spryng": 100}
+
+    ########################
+    # Template overrides ###
+    ########################
+    # See:
+    # - migrations_nl/versions/0001_add_notifynl_templates.py
+    # - migrations_nl/versions/0002_additional_notifynl_templates.py
+    ALREADY_REGISTERED_EMAIL_TEMPLATE_ID = "bb3c17a8-6009-4f67-a943-353982c15c98"
+    BROADCAST_INVITATION_EMAIL_TEMPLATE_ID = "86761e21-b39c-43e1-a06b-a3340bc2bc7a"
+    CHANGE_EMAIL_CONFIRMATION_TEMPLATE_ID = "9eefb5bf-f1fb-46ce-9079-691260b0af9b"
+    EMAIL_2FA_TEMPLATE_ID = "320a5f19-600f-451e-9646-11206c69828d"
+    INVITATION_EMAIL_TEMPLATE_ID = "b24bf0fa-dd64-4105-867c-4ed529e12df3"
+    NEW_USER_EMAIL_VERIFICATION_TEMPLATE_ID = "afd325cd-c83e-4b0b-8426-7acb9c0aa62b"
+    ORGANISATION_INVITATION_EMAIL_TEMPLATE_ID = "dfd254da-39d1-468f-bd0d-2c9e017c13a6"
+    PASSWORD_RESET_TEMPLATE_ID = "4cc48b09-62d0-473f-8514-3023b306a0fb"
+    REPLY_TO_EMAIL_ADDRESS_VERIFICATION_TEMPLATE_ID = "2e542078-1b7e-4640-ab44-57e5db6b3bf3"
+    SERVICE_NOW_LIVE_TEMPLATE_ID = "ec92ba79-222b-46f1-944a-79b3c072234d"
+    SMS_CODE_TEMPLATE_ID = "f8209d70-9aa2-4a8c-89f9-00514492fa27"
 
 
 class Development(ConfigNL):

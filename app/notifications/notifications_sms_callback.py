@@ -50,6 +50,24 @@ def process_firetext_response():
     return jsonify(result="success"), 200
 
 
+@sms_callback_blueprint.route("/spryng", methods=["GET"])
+def process_spryng_response():
+    client_name = "Spryng"
+    errors = validate_callback_data(data=request.args, fields=["STATUS", "REASONCODE"], client_name=client_name)
+    if errors:
+        raise InvalidRequest(errors, status_code=400)
+
+    status = request.args.get("STATUS")
+    detailed_status_code = request.args.get("REASONCODE")
+    provider_reference = request.args.get("REFERENCE")
+
+    process_sms_client_response.apply_async(
+        [status, provider_reference, client_name, detailed_status_code], queue=QueueNames.SMS_CALLBACKS
+    )
+
+    return jsonify(result="success"), 200
+
+
 def validate_callback_data(data, fields, client_name):
     errors = []
     for f in fields:

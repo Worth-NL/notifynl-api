@@ -2243,7 +2243,7 @@ def test_update_service_calls_send_notification_as_service_becomes_live(notify_d
     assert resp.status_code == 200
     send_notification_mock.assert_called_once_with(
         service_id=restricted_service.id,
-        template_id="618185c6-3636-49cd-b7d2-6f6f5eb3bdde",
+        template_id="ec92ba79-222b-46f1-944a-79b3c072234d",
         personalisation={
             "service_name": restricted_service.name,
         },

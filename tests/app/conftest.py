@@ -18,6 +18,7 @@ from sqlalchemy.orm.session import make_transient
 from app import db
 from app.clients.sms.firetext import FiretextClient
 from app.clients.sms.mmg import MMGClient
+from app.clients.sms.spryng import SpryngClient
 from app.config import QueueNames
 from app.constants import (
     EMAIL_TYPE,
@@ -586,6 +587,32 @@ def mock_mmg_client_with_receipts(mocker):
         }
     )
     return MMGClient(current_app, statsd_client)
+
+
+@pytest.fixture(scope="function")
+def spryng_provider():
+    return ProviderDetails.query.filter_by(identifier="spryng").one()
+
+
+def create_mock_spryng_config(mocker, additional_config=None):
+    config = {
+        "SPRYNG_URL": "https://example.com/spryng",
+        "SPRYNG_API_KEY": "foo",
+    }
+    if additional_config:
+        config.update(additional_config)
+    return mocker.Mock(config=config)
+
+
+def create_mock_spryng_client(mocker, mock_config):
+    statsd_client = mocker.Mock()
+    return SpryngClient(mock_config, statsd_client)
+
+
+@pytest.fixture(scope="function")
+def mock_spryng_client(mocker):
+    mock_config = create_mock_spryng_config(mocker)
+    return create_mock_spryng_client(mocker, mock_config)
 
 
 @pytest.fixture(scope="function")
