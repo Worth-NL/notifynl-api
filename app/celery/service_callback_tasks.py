@@ -1,6 +1,8 @@
 import json
 import logging
+import os
 from contextvars import ContextVar
+from urllib.parse import urlparse
 
 import requests
 from flask import current_app
@@ -124,13 +126,28 @@ def send_inbound_sms_to_service(self, inbound_sms_id, service_id):
 def _send_data_to_service_callback_api(self, data, service_callback_url, token, function_name):
     object_id = data["notification_id"] if "notification_id" in data else data["id"]
     try:
-        response = requests_session.request(
-            method="POST",
-            url=service_callback_url,
-            data=json.dumps(data),
-            headers={"Content-Type": "application/json", "Authorization": f"Bearer {token}"},
-            timeout=5,
-        )
+        request_kwargs = {
+            "method": "POST",
+            "url": service_callback_url,
+            "data": json.dumps(data),
+            "headers": {"Content-Type": "application/json", "Authorization": f"Bearer {token}"},
+            "timeout": 5
+        }
+
+        certificate_name = f"{urlparse(service_callback_url).hostname.replace('.', '-')}.pem"
+        certificate_path = f"{current_app.config['SSL_CERT_DIR']}/{certificate_name}"
+
+        if os.path.exists(certificate_path):
+            current_app.logger.info(
+                "Certificate [%s] found for [%s], using as client certificate.",
+                certificate_name,
+                service_callback_url
+            )
+
+            request_kwargs["cert"] = certificate_path
+
+        response = requests_session.request(**request_kwargs)
+
         current_app.logger.info(
             "%s sending %s to %s, response %s",
             function_name,

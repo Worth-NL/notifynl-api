@@ -515,6 +515,11 @@ class ConfigNL(Config):
     # dashboard
     # SPRYNG_RECEIPT_URL = os.getenv("SPRYNG_RECEIPT_URL")
 
+    # Client-side SSL setup
+    # NOTE: For mTLS setup, trusted certificates should be added to the system certificates.
+    # For a custom bundle to be used, override the CURL_CA_BUNDLE environment variable.
+    SSL_CERT_DIR = os.getenv("SSL_CERT_DIR", "/ssl")
+
     # these should always add up to 100%
     SMS_PROVIDER_RESTING_POINTS = {"mmg": 0, "firetext": 0, "spryng": 100}
 
