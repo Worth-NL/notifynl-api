@@ -17,6 +17,29 @@ jobs:
       matrix:
         python-version: ["3.11"]
 
+    services:
+      db:
+        image: postgres:15-bullseye
+        ports:
+          - 5432:5432
+        env:
+          POSTGRES_DB: notification_api
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+      redis:
+        image: redis:6.2
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
     steps:
       - uses: szenius/set-timezone@v2.0
         with:
