@@ -7,6 +7,7 @@ from notifications_utils.clients import redis
 from notifications_utils.recipient_validation.email_address import (
     format_email_address,
 )
+from notifications_utils.recipient_validation.phone_number import UK_PREFIX
 from notifications_utils.template import (
     LetterPrintTemplate,
     PlainTextEmailTemplate,
@@ -164,7 +165,7 @@ def persist_notification(
             service.id,
             notification_type,
             key_type,
-            international_sms=notification.international,
+            international_sms=notification_type == SMS_TYPE and str(notification.phone_prefix) != UK_PREFIX,
         )
 
     return notification
@@ -185,7 +186,7 @@ def increment_daily_limit_cache(service_id, notification_type, key_type, interna
         else:
             redis_store.incr(cache_key)
 
-    if international_sms:
+    if notification_type == SMS_TYPE and international_sms:
         _increment_international_sms_daily_limit_cache(service_id)
 
 
