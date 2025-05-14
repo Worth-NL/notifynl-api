@@ -39,7 +39,7 @@ jobs:
             requirements_nl_test.txt
 
       - name: Install application requirements (pip)
-        run: uv sync
+        run: uv pip install -r requirements_nl_test.txt
 
       - uses: astral-sh/ruff-action@v3
 
