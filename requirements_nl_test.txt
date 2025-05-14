@@ -4,4 +4,4 @@ pytest-cov
 pytest-dotenv
 python-dotenv
 
--e ../notifynl-utils
+# -e ../notifynl-utils
