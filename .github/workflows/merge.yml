@@ -45,10 +45,7 @@ jobs:
             requirements_nl_test.txt
 
       - name: Install application requirements (pip)
-        run: uv sync
-
-      - name: Build
-        run: uv build
+        run: uv pip install -r requirements_nl_test.txt
 
       - name: Set tag
         run: echo "TAG=$(date +%Y%m%d).${{ github.run_number }}" >> $GITHUB_ENV

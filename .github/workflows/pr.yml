@@ -43,8 +43,5 @@ jobs:
 
       - uses: astral-sh/ruff-action@v3
 
-      - name: Build
-        run: uv build
-
       - uses: pavelzw/pytest-action@v2
         continue-on-error: true
