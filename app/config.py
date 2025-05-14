@@ -541,6 +541,10 @@ class ConfigNL(Config):
     SERVICE_NOW_LIVE_TEMPLATE_ID = "ec92ba79-222b-46f1-944a-79b3c072234d"
     SMS_CODE_TEMPLATE_ID = "f8209d70-9aa2-4a8c-89f9-00514492fa27"
 
+    # Dutch phones
+    # SIMULATED_SMS_NUMBERS = ("+31612345678", "+31623456789", "+31634567890")
+    SIMULATED_SMS_NUMBERS = ("+447700900000", "+447700900111", "+447700900222")
+
 
 class Development(ConfigNL):
     DEBUG = True
@@ -572,7 +576,7 @@ class Development(ConfigNL):
     MMG_INBOUND_SMS_AUTH = ["testkey"]
     MMG_INBOUND_SMS_USERNAME = ["username"]
 
-    NOTIFY_EMAIL_DOMAIN = "notify.tools"
+    NOTIFY_EMAIL_DOMAIN = "notifynl.dev"
 
     SQLALCHEMY_DATABASE_URI = os.getenv("SQLALCHEMY_DATABASE_URI", "postgresql://localhost/notification_api")
     REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")

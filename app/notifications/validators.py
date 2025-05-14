@@ -7,7 +7,7 @@ from notifications_utils.clients.redis import (
 )
 from notifications_utils.recipient_validation.email_address import validate_and_format_email_address
 from notifications_utils.recipient_validation.errors import InvalidPhoneError
-from notifications_utils.recipient_validation.phone_number import (
+from notifications_utils.recipient_validation.notifynl.phone_number import (
     PhoneNumber,
 )
 from notifications_utils.recipient_validation.postal_address import PostalAddress

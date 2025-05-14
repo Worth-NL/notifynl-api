@@ -1,0 +1,7 @@
+-r requirements_nl.txt
+
+pytest-cov
+pytest-dotenv
+python-dotenv
+
+-e ../notifynl-utils

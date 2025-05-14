@@ -5,7 +5,7 @@ from urllib.parse import urljoin
 import pytz
 from flask import current_app, url_for
 from notifications_utils.recipient_validation.errors import InvalidPhoneError
-from notifications_utils.recipient_validation.phone_number import PhoneNumber
+from notifications_utils.recipient_validation.notifynl.phone_number import PhoneNumber
 from notifications_utils.template import (
     HTMLEmailTemplate,
     LetterPrintTemplate,

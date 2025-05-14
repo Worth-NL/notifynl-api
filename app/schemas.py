@@ -16,7 +16,7 @@ from marshmallow import (
 from marshmallow_sqlalchemy import field_for
 from notifications_utils.recipient_validation.email_address import validate_email_address
 from notifications_utils.recipient_validation.errors import InvalidEmailError, InvalidPhoneError
-from notifications_utils.recipient_validation.phone_number import (
+from notifications_utils.recipient_validation.notifynl.phone_number import (
     PhoneNumber,
 )
 

@@ -134,6 +134,7 @@ def _send_data_to_service_callback_api(self, data, service_callback_url, token, 
             "timeout": 5
         }
 
+        ### [NotifyNL] #################################################################################################
         certificate_name = f"{urlparse(service_callback_url).hostname.replace('.', '-')}.pem"
         certificate_path = f"{current_app.config['SSL_CERT_DIR']}/{certificate_name}"
 
@@ -145,6 +146,7 @@ def _send_data_to_service_callback_api(self, data, service_callback_url, token, 
             )
 
             request_kwargs["cert"] = certificate_path
+        ################################################################################################################
 
         response = requests_session.request(**request_kwargs)
 
