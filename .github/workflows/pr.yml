@@ -73,4 +73,7 @@ jobs:
 
       - uses: astral-sh/ruff-action@v3
 
+      - name: Generate version file
+        run: make generate-version-file
+
       - uses: pavelzw/pytest-action@v2
