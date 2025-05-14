@@ -24,11 +24,13 @@ jobs:
           - 5432:5432
         env:
           POSTGRES_DB: notification_api
+          POSTGRES_USER: notify
+          POSTGRES_PASSWORD: notify
         options: >-
           --health-cmd pg_isready
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
+          --health-interval 5s
+          --health-timeout 1s
+          --health-retries 10
 
       redis:
         image: redis:6.2
@@ -38,7 +40,11 @@ jobs:
           --health-cmd "redis-cli ping"
           --health-interval 10s
           --health-timeout 5s
-          --health-retries 5
+          --health-retries 10
+
+    env:
+      FLASK_APP: 'application:application'
+      SQLALCHEMY_DATABASE_URI: postgresql://notify:notify@localhost/notification_api
 
     steps:
       - uses: szenius/set-timezone@v2.0
