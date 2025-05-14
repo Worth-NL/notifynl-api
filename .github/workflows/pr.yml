@@ -45,4 +45,3 @@ jobs:
       - uses: astral-sh/ruff-action@v3
 
       - uses: pavelzw/pytest-action@v2
-        continue-on-error: true
