@@ -2,9 +2,11 @@
 
 extend-exclude = [
     "migrations/versions/",
+    "migrations_nl/versions/",
     "__pycache__",
     "cache",
     "migrations",
+    "migrations_nl",
     "build",
     "sample_cap_xml_documents.py",
 ]
