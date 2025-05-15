@@ -162,7 +162,7 @@ def test_should_send_personalised_template_to_correct_email_provider_and_persist
     send_to_providers.send_email_to_provider(db_notification)
 
     app.aws_ses_client.send_email.assert_called_once_with(
-        from_address='"Sample service" <sample.service@test.notify.com>',
+        from_address='"Sample service" <sample.service@test.notifynl.nl>',
         to_address="jo.smith@example.com",
         subject="Jo <em>some HTML</em>",
         body="Hello Jo\nThis is an email from GOV.\u200bUK with <em>some HTML</em>\n",
@@ -731,7 +731,7 @@ def test_send_email_to_provider_uses_custom_email_sender_name_if_set(sample_emai
     send_to_providers.send_email_to_provider(sample_email_notification)
 
     app.aws_ses_client.send_email.assert_called_once_with(
-        from_address='"Custom Sender Name" <custom.sender.name@test.notify.com>',
+        from_address='"Custom Sender Name" <custom.sender.name@test.notifynl.nl>',
         to_address=ANY,
         subject=ANY,
         body=ANY,

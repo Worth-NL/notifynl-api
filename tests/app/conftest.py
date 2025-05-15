@@ -18,6 +18,7 @@ from sqlalchemy.orm.session import make_transient
 from app import db
 from app.clients.sms.firetext import FiretextClient
 from app.clients.sms.mmg import MMGClient
+from app.clients.sms.spryng import SpryngClient
 from app.config import QueueNames
 from app.constants import (
     EMAIL_TYPE,
@@ -589,6 +590,32 @@ def mock_mmg_client_with_receipts(mocker):
 
 
 @pytest.fixture(scope="function")
+def spryng_provider():
+    return ProviderDetails.query.filter_by(identifier="spryng").one()
+
+
+def create_mock_spryng_config(mocker, additional_config=None):
+    config = {
+        "SPRYNG_URL": "https://example.com/spryng",
+        "SPRYNG_API_KEY": "foo",
+    }
+    if additional_config:
+        config.update(additional_config)
+    return mocker.Mock(config=config)
+
+
+def create_mock_spryng_client(mocker, mock_config):
+    statsd_client = mocker.Mock()
+    return SpryngClient(mock_config, statsd_client)
+
+
+@pytest.fixture(scope="function")
+def mock_spryng_client(mocker):
+    mock_config = create_mock_spryng_config(mocker)
+    return create_mock_spryng_client(mocker, mock_config)
+
+
+@pytest.fixture(scope="function")
 def sms_code_template(notify_service):
     return create_custom_template(
         service=notify_service,
@@ -800,6 +827,7 @@ def letter_volumes_email_template(notify_service):
             "",
             "((first_class_volume)) first class letters (((first_class_sheets)) sheets).",
             "((second_class_volume)) second class letters (((second_class_sheets)) sheets).",
+            "((economy_mail_volume)) economy mail letters (((economy_mail_sheets)) sheets).",
             "((international_volume)) international letters (((international_sheets)) sheets).",
             "",
             "Thanks",
@@ -1302,7 +1330,7 @@ def mock_dvla_callback_data():
                 "jobType": "NOTIFY",
                 "jobStatus": "DESPATCHED",
                 "templateReference": "NOTIFY",
-                "transitionDate": "2021-03-31T08:15:07Z",
+                "transitionDate": "2025-03-31T08:15:07Z",
             },
             "metadata": {
                 "handler": {"urn": "dvla:resource:osl:print:print-hub-fulfilment:5.18.0"},

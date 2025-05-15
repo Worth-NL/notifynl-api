@@ -1,10 +1,12 @@
-# This file was automatically copied from notifications-utils@99.1.0
+# This file was automatically copied from notifications-utils@99.1.2
 
 extend-exclude = [
     "migrations/versions/",
+    "migrations_nl/versions/",
     "__pycache__",
     "cache",
     "migrations",
+    "migrations_nl",
     "build",
     "sample_cap_xml_documents.py",
 ]

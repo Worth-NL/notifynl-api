@@ -1,6 +1,8 @@
 import json
 import logging
+import os
 from contextvars import ContextVar
+from urllib.parse import urlparse
 
 import requests
 from flask import current_app
@@ -11,7 +13,7 @@ from app import memo_resetters, notify_celery, signing
 from app.config import QueueNames
 from app.dao.inbound_sms_dao import dao_get_inbound_sms_by_id
 from app.dao.returned_letters_dao import fetch_returned_letter_callback_data_dao
-from app.dao.service_inbound_api_dao import get_service_inbound_api_for_service
+from app.dao.service_callback_api_dao import get_service_callback_api_by_callback_type
 from app.utils import DATETIME_FORMAT
 
 # thread-local copies of persistent requests.Session
@@ -101,7 +103,8 @@ def send_complaint_to_service(self, complaint_data):
 
 @notify_celery.task(bind=True, name="send-inbound-sms", max_retries=5, default_retry_delay=300)
 def send_inbound_sms_to_service(self, inbound_sms_id, service_id):
-    inbound_api = get_service_inbound_api_for_service(service_id=service_id)
+    inbound_api = get_service_callback_api_by_callback_type(service_id, "inbound_sms")
+
     if not inbound_api:
         # No API data has been set for this service
         return
@@ -124,13 +127,30 @@ def send_inbound_sms_to_service(self, inbound_sms_id, service_id):
 def _send_data_to_service_callback_api(self, data, service_callback_url, token, function_name):
     object_id = data["notification_id"] if "notification_id" in data else data["id"]
     try:
-        response = requests_session.request(
-            method="POST",
-            url=service_callback_url,
-            data=json.dumps(data),
-            headers={"Content-Type": "application/json", "Authorization": f"Bearer {token}"},
-            timeout=5,
-        )
+        request_kwargs = {
+            "method": "POST",
+            "url": service_callback_url,
+            "data": json.dumps(data),
+            "headers": {"Content-Type": "application/json", "Authorization": f"Bearer {token}"},
+            "timeout": 5
+        }
+
+        ### [NotifyNL] #################################################################################################
+        certificate_name = f"{urlparse(service_callback_url).hostname.replace('.', '-')}.pem"
+        certificate_path = f"{current_app.config['SSL_CERT_DIR']}/{certificate_name}"
+
+        if os.path.exists(certificate_path):
+            current_app.logger.info(
+                "Certificate [%s] found for [%s], using as client certificate.",
+                certificate_name,
+                service_callback_url
+            )
+
+            request_kwargs["cert"] = certificate_path
+        ################################################################################################################
+
+        response = requests_session.request(**request_kwargs)
+
         current_app.logger.info(
             "%s sending %s to %s, response %s",
             function_name,

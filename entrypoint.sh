@@ -21,6 +21,9 @@ case "$1" in
   migration)
     exec flask db upgrade
     ;;
+  migration-nl)
+    exec flask db upgrade --directory migrations_nl
+    ;;
   functional-test-fixtures)
     exec flask command functional-test-fixtures
     ;;

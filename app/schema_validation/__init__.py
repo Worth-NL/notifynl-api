@@ -7,7 +7,7 @@ from iso8601 import ParseError, iso8601
 from jsonschema import Draft7Validator, FormatChecker, ValidationError
 from notifications_utils.recipient_validation.email_address import validate_email_address
 from notifications_utils.recipient_validation.errors import InvalidEmailError, InvalidPhoneError
-from notifications_utils.recipient_validation.phone_number import PhoneNumber
+from notifications_utils.recipient_validation.notifynl.phone_number import PhoneNumber
 
 format_checker = FormatChecker()
 
@@ -125,15 +125,6 @@ def send_a_file_confirm_email_before_download(instance):
     raise ValidationError(
         f"Unsupported value for confirm_email_before_download: {instance}. Use a boolean true or false value."
     )
-
-
-@format_checker.checks("letter_production_run_date", raises=ValidationError)
-def validate_letter_production_run_date(instance):
-    if isinstance(instance, str):
-        if re.match(r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d+", instance):
-            return True
-
-    raise ValidationError("Datetime format is invalid. It must be in the format %Y-%m-%d %H:%M:%S.%f")
 
 
 def validate(json_to_validate, schema):

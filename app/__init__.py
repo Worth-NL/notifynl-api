@@ -42,6 +42,7 @@ from app.clients.email.aws_ses_stub import AwsSesStubClient
 from app.clients.letter.dvla import DVLAClient
 from app.clients.sms.firetext import FiretextClient
 from app.clients.sms.mmg import MMGClient
+from app.clients.sms.spryng import SpryngClient
 
 db = SQLAlchemy()
 migrate = Migrate()
@@ -84,6 +85,15 @@ get_mmg_client: LazyLocalGetter[MMGClient] = LazyLocalGetter(
 )
 memo_resetters.append(lambda: get_mmg_client.clear())
 mmg_client = LocalProxy(get_mmg_client)
+
+_spryng_client_context_var: ContextVar[SpryngClient] = ContextVar("spryng_client")
+get_spryng_client: LazyLocalGetter[SpryngClient] = LazyLocalGetter(
+    _spryng_client_context_var,
+    lambda: SpryngClient(current_app, statsd_client=statsd_client),
+    expected_type=SpryngClient
+)
+memo_resetters.append(lambda: get_spryng_client.clear())
+spryng_client = LocalProxy(get_spryng_client)
 
 _aws_ses_client_context_var: ContextVar[AwsSesClient] = ContextVar("aws_ses_client")
 get_aws_ses_client: LazyLocalGetter[AwsSesClient] = LazyLocalGetter(

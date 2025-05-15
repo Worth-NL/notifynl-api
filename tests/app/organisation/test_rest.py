@@ -1329,7 +1329,7 @@ def test_notify_org_users_of_request_to_go_live(
             "notification_type": "email",
             "api_key_id": None,
             "key_type": "normal",
-            "reply_to_text": "gov-uk-notify-support@digital.cabinet-office.gov.uk",
+            "reply_to_text": "info@worth.nl",
         }
 
     assert mock_send_notification_to_queue.call_args_list == [
