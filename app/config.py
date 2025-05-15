@@ -503,6 +503,7 @@ class ConfigNL(Config):
     """
     Overrides for NotifyNL usage
     """
+
     NOTIFY_EMAIL_DOMAIN = os.environ.get("NOTIFY_EMAIL_DOMAIN", "notifynl.nl")
     FROM_NUMBER = os.environ.get("FROM_NUMBER", "NOTIFYNL")
     NOTIFY_SUPPORT_EMAIL_ADDRESS = "info@worth.nl"
@@ -543,6 +544,7 @@ class ConfigNL(Config):
 
     # Dutch phones
     # SIMULATED_SMS_NUMBERS = ("+31612345678", "+31623456789", "+31634567890")
+    # TODO: To be fixed with unit tests
     SIMULATED_SMS_NUMBERS = ("+447700900000", "+447700900111", "+447700900222")
 
 
