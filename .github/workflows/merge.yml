@@ -21,6 +21,7 @@ jobs:
     strategy:
       matrix:
         python-version: ["3.11"]
+        dockerfile-target: ["test", "concourse_tests"]
 
     steps:
       - uses: szenius/set-timezone@v2.0
@@ -63,17 +64,15 @@ jobs:
       - uses: docker/setup-buildx-action@v3
         name: Setup buildx
 
-      - name: Docker build and push ${{ env.TAG }}
+      - name: Docker build ${{ env.TAG }} [${{ matrix.dockerfile-target }}]
         uses: docker/build-push-action@v6
         with:
           file: docker/Dockerfile
           load: true
           tags: ${{ env.IMAGE }}:${{ env.TAG }}
+          target: ${{ matrix.dockerfile-target }}
 
-      - name: Test container
-        run: docker run --rm ${{ env.IMAGE }}:${{ env.TAG }}
-
-      - name: Docker build and export ${{ env.TAG }} for test
+      - name: Docker build and push ${{ env.TAG }}
         uses: docker/build-push-action@v6
         with:
           file: docker/Dockerfile

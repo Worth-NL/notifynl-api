@@ -19,6 +19,12 @@ bootstrap: generate-version-file ## Set up everything to run the app
 	createdb notification_api || true
 	(. environment.sh && flask db upgrade) || true
 
+.PHONY: bootstrap-nl
+bootstrap: generate-version-file
+	uv pip install -r requirements_nl_test.txt
+	createdb notification_api || true
+	(. environment.sh && flask db upgrade) || true
+
 .PHONY: bootstrap-with-docker
 bootstrap-with-docker: generate-version-file ## Build the image to run the app in Docker
 	docker build -f docker/Dockerfile --target test -t notifications-api .

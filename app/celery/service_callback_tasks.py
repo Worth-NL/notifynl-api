@@ -132,7 +132,7 @@ def _send_data_to_service_callback_api(self, data, service_callback_url, token, 
             "url": service_callback_url,
             "data": json.dumps(data),
             "headers": {"Content-Type": "application/json", "Authorization": f"Bearer {token}"},
-            "timeout": 5
+            "timeout": 5,
         }
 
         ### [NotifyNL] #################################################################################################
@@ -141,9 +141,7 @@ def _send_data_to_service_callback_api(self, data, service_callback_url, token, 
 
         if os.path.exists(certificate_path):
             current_app.logger.info(
-                "Certificate [%s] found for [%s], using as client certificate.",
-                certificate_name,
-                service_callback_url
+                "Certificate [%s] found for [%s], using as client certificate.", certificate_name, service_callback_url
             )
 
             request_kwargs["cert"] = certificate_path

@@ -89,7 +89,7 @@ COPY --from=python_build --chown=notify:notify /opt/venv /opt/venv
 # Install dev/test requirements
 COPY --chown=notify:notify Makefile requirements_for_test.txt requirements_nl_test.txt ./
 ENV UV_CACHE_DIR='/tmp/uv-cache/'
-RUN make bootstrap
+RUN make bootstrap-nl
 
 COPY --chown=notify:notify . .
 

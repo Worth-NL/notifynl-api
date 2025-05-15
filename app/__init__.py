@@ -90,7 +90,7 @@ _spryng_client_context_var: ContextVar[SpryngClient] = ContextVar("spryng_client
 get_spryng_client: LazyLocalGetter[SpryngClient] = LazyLocalGetter(
     _spryng_client_context_var,
     lambda: SpryngClient(current_app, statsd_client=statsd_client),
-    expected_type=SpryngClient
+    expected_type=SpryngClient,
 )
 memo_resetters.append(lambda: get_spryng_client.clear())
 spryng_client = LocalProxy(get_spryng_client)

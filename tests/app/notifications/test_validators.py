@@ -603,7 +603,7 @@ def test_validate_and_format_recipient_doesnt_raise_for_crown_dependency_num_whe
         ("+447900900123", "447900900123", False, "44", 1),  # UK
         ("07797292290", "447797292290", True, "44", 2),  # UK (Jersey)
         ("74957108855", "74957108855", True, "7", 10),  # Russia
-        ("360623400400", "3623400400", True, "36", 2), # Hungary
+        ("360623400400", "3623400400", True, "36", 2),  # Hungary
     ],
 )
 @pytest.mark.skip(reason="[NOTIFYNL] Dutch phone number implementation breaks this test")
