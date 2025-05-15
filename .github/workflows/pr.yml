@@ -79,3 +79,4 @@ jobs:
       - uses: pavelzw/pytest-action@v2
         with:
           verbose: false
+          emoji: false

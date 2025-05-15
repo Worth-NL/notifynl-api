@@ -543,9 +543,8 @@ class ConfigNL(Config):
     SMS_CODE_TEMPLATE_ID = "f8209d70-9aa2-4a8c-89f9-00514492fa27"
 
     # Dutch phones
-    # SIMULATED_SMS_NUMBERS = ("+31612345678", "+31623456789", "+31634567890")
     # TODO: To be fixed with unit tests
-    SIMULATED_SMS_NUMBERS = ("+447700900000", "+447700900111", "+447700900222")
+    # SIMULATED_SMS_NUMBERS = ("+31612345678", "+31623456789", "+31634567890")
 
 
 class Development(ConfigNL):
