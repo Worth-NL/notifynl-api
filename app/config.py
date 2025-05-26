@@ -577,7 +577,7 @@ class Development(ConfigNL):
     MMG_INBOUND_SMS_AUTH = ["testkey"]
     MMG_INBOUND_SMS_USERNAME = ["username"]
 
-    NOTIFY_EMAIL_DOMAIN = "notifynl.dev"
+    NOTIFY_EMAIL_DOMAIN = "dev.notifynl.nl"
 
     SQLALCHEMY_DATABASE_URI = os.getenv("SQLALCHEMY_DATABASE_URI", "postgresql://localhost/notification_api")
     REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
