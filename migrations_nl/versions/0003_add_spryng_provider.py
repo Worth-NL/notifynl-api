@@ -28,6 +28,15 @@ def upgrade():
         """
     )
 
+    op.execute(
+        f"""INSERT INTO provider_details_history
+        (id, display_name, identifier, priority, notification_type, active, version, supports_international)
+        VALUES ('{provider_id}', '{identifier.capitalize()}', '{identifier}', 30, 'sms', true, 1, true)
+        """
+    )
+
 
 def downgrade():
     op.execute(f"DELETE FROM provider_details WHERE identifier = '{identifier}'")
+
+    op.execute(f"DELETE FROM provider_details_history WHERE identifier = '{identifier}'")
