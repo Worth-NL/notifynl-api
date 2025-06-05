@@ -34,15 +34,13 @@ class SpryngClient(SmsClient):
     Spryng sms client.
     """
 
-    def init_app(self, *args, **kwargs):
-        super().init_app(*args, **kwargs)
+    name = "spryng"
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
         self.api_key = self.current_app.config.get("SPRYNG_API_KEY")
         self.url = self.current_app.config.get("SPRYNG_URL")
         self.receipt_url = self.current_app.config.get("SPRYNG_RECEIPT_URL")
-
-    @property
-    def name(self):
-        return "spryng"
 
     def try_send_sms(self, to, content, reference, international, sender):
         data = {

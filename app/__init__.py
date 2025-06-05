@@ -125,10 +125,7 @@ get_notification_provider_clients: LazyLocalGetter[NotificationProviderClients] 
     lambda: NotificationProviderClients(
         sms_clients={
             getter.expected_type.name: LocalProxy(getter)
-            for getter in (
-                get_firetext_client,
-                get_mmg_client,
-            )
+            for getter in (get_firetext_client, get_mmg_client, get_spryng_client)
         },
         email_clients={
             getter.expected_type.name: LocalProxy(getter)
