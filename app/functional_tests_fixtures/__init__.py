@@ -9,7 +9,6 @@ from sqlalchemy.exc import NoResultFound
 from app.constants import (
     EDIT_FOLDER_PERMISSIONS,
     EMAIL_AUTH,
-    EXTRA_LETTER_FORMATTING,
     INBOUND_SMS_TYPE,
     SECOND_CLASS,
     SEND_EMAILS,
@@ -99,6 +98,9 @@ def apply_fixtures():
     function_tests_test_key_name = "functional_tests_service_test_key"
     govuk_service_id = current_app.config["NOTIFY_SERVICE_ID"]
 
+    org_name = os.getenv("FUNCTIONAL_TEST_ORGANISATION_NAME", "Functional Tests Org")
+    incoming_number = os.getenv("FUNCTIONAL_TEST_INBOUND_NUMBER", "07700900500")
+
     env_var_dict = _create_db_objects(
         functional_test_password,
         request_bin_api_token,
@@ -109,6 +111,8 @@ def apply_fixtures():
         function_tests_live_key_name,
         function_tests_test_key_name,
         govuk_service_id,
+        org_name,
+        incoming_number,
     )
 
     functional_test_config = "\n".join(f"export {k}='{v}'" for k, v in env_var_dict.items())
@@ -144,11 +148,13 @@ def _create_db_objects(
     function_tests_live_key_name,
     function_tests_test_key_name,
     govuk_service_id,
+    org_name,
+    incoming_number,
 ) -> dict[str, str]:
     current_app.logger.info("Creating functional test fixtures for %s:", environment)
 
     current_app.logger.info("--> Ensure organisation exists")
-    org = _create_organiation(email_domain)
+    org = _create_organiation(email_domain, org_name)
 
     current_app.logger.info("--> Ensure users exists")
     func_test_user = _create_user(
@@ -186,7 +192,7 @@ def _create_db_objects(
     api_key_test_key = _create_api_key(function_tests_test_key_name, service.id, service_admin_user.id, "test")
 
     current_app.logger.info("--> Ensure inbound number exists")
-    inbound_number_id = _create_inbound_numbers(service.id, service_admin_user.id)
+    inbound_number_id = _create_inbound_numbers(service.id, service_admin_user.id, incoming_number)
 
     current_app.logger.info("--> Ensure service letter contact exists")
     letter_contact = _create_service_letter_contact(
@@ -278,7 +284,7 @@ def _create_db_objects(
     _create_service_permissions(service.id)
 
     current_app.logger.info("--> Ensure service sms senders exists")
-    _create_service_sms_senders(service.id, "07700900500", True, inbound_number_id)
+    _create_service_sms_senders(service.id, incoming_number, True, inbound_number_id)
     sms_sender = _create_service_sms_senders(service.id, "func tests", False, None)
 
     current_app.logger.info("--> Ensure service inbound api exists")
@@ -312,7 +318,7 @@ def _create_db_objects(
         "FUNCTIONAL_TESTS_SERVICE_EMAIL_REPLY_TO_3": f"{test_email_username}+{environment}-reply-to+3@{email_domain}",
         "FUNCTIONAL_TESTS_SERVICE_EMAIL_REPLY_TO_ID": email_reply_to.id,
         "FUNCTIONAL_TESTS_SERVICE_SMS_SENDER_ID": sms_sender.id,
-        "FUNCTIONAL_TESTS_SERVICE_INBOUND_NUMBER": "07700900500",
+        "FUNCTIONAL_TESTS_SERVICE_INBOUND_NUMBER": incoming_number,
         "FUNCTIONAL_TEST_SMS_TEMPLATE_ID": sms_template.id,
         "FUNCTIONAL_TEST_EMAIL_TEMPLATE_ID": email_template.id,
         "FUNCTIONAL_TEST_LETTER_TEMPLATE_ID": letter_template.id,
@@ -321,7 +327,7 @@ def _create_db_objects(
         "REQUEST_BIN_API_TOKEN": request_bin_api_token,
         # API client integration test environment variables
         "SERVICE_ID": service.id,
-        "FUNCTIONAL_TEST_NUMBER": "07700900500",
+        "FUNCTIONAL_TEST_NUMBER": incoming_number,
         "EMAIL_TEMPLATE_ID": api_client_integration_test_email_template.id,
         "SMS_TEMPLATE_ID": api_client_integration_test_sms_template.id,
         "LETTER_TEMPLATE_ID": api_client_integration_test_letter_template.id,
@@ -358,7 +364,7 @@ def _create_user(name, email_address, password, auth_type="sms_auth", organisati
     return user
 
 
-def _create_organiation(email_domain, org_name="Functional Tests Org"):
+def _create_organiation(email_domain, org_name):
     organisations = dao_get_organisations_by_partial_name(org_name)
 
     org = None
@@ -567,7 +573,7 @@ def _create_service_email_reply_to(service_id, email_address, is_default):
 
 def _create_service_permissions(service_id, permissions=None):
     if permissions is None:
-        permissions = [EDIT_FOLDER_PERMISSIONS, EXTRA_LETTER_FORMATTING, INBOUND_SMS_TYPE, EMAIL_AUTH]
+        permissions = [EDIT_FOLDER_PERMISSIONS, INBOUND_SMS_TYPE, EMAIL_AUTH]
 
     service_permissions = dao_fetch_service_permissions(service_id)
 

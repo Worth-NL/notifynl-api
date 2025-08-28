@@ -29,8 +29,6 @@ class QueueNames:
     ANTIVIRUS = "antivirus-tasks"
     SANITISE_LETTERS = "sanitise-letter-tasks"
     REPORT_REQUESTS_NOTIFICATIONS = "report-requests-notifications-tasks"
-    BROADCASTS = "broadcast-tasks"
-    GOVUK_ALERTS = "govuk-alerts"
 
     @staticmethod
     def all_queues():
@@ -52,18 +50,21 @@ class QueueNames:
             QueueNames.SES_CALLBACKS,
             QueueNames.SMS_CALLBACKS,
             QueueNames.LETTER_CALLBACKS,
-            QueueNames.BROADCASTS,
             QueueNames.REPORT_REQUESTS_NOTIFICATIONS,
         ]
 
+    def external_queues():
+        return [
+            QueueNames.ANTIVIRUS,
+            QueueNames.SANITISE_LETTERS,
+        ]
 
-class BroadcastProvider:
-    EE = "ee"
-    VODAFONE = "vodafone"
-    THREE = "three"
-    O2 = "o2"
-
-    PROVIDERS = [EE, VODAFONE, THREE, O2]
+    @staticmethod
+    def predefined_queues(prefix, aws_region, aws_account_id):
+        return {
+            f"{prefix}{queue}": {"url": f"https://sqs.{aws_region}.amazonaws.com/{aws_account_id}/{prefix}{queue}"}
+            for queue in list(set(QueueNames.all_queues() + QueueNames.external_queues()))
+        }
 
 
 class TaskNames:
@@ -72,7 +73,6 @@ class TaskNames:
     SCAN_FILE = "scan-file"
     SANITISE_LETTER = "sanitise-and-upload-letter"
     CREATE_PDF_FOR_TEMPLATED_LETTER = "create-pdf-for-templated-letter"
-    PUBLISH_GOVUK_ALERTS = "publish-govuk-alerts"
     RECREATE_PDF_FOR_PRECOMPILED_LETTER = "recreate-pdf-for-precompiled-letter"
 
 
@@ -83,6 +83,10 @@ class Config:
     # URL of api app (on AWS this is the internal api endpoint)
     API_HOST_NAME = os.getenv("API_HOST_NAME")
     API_HOST_NAME_INTERNAL = os.getenv("API_HOST_NAME_INTERNAL")
+
+    # Celery log levels
+    CELERY_WORKER_LOG_LEVEL = os.getenv("CELERY_WORKER_LOG_LEVEL", "CRITICAL").upper()
+    CELERY_BEAT_LOG_LEVEL = os.getenv("CELERY_BEAT_LOG_LEVEL", "INFO").upper()
 
     # secrets that internal apps, such as the admin app or document download, must use to authenticate with the API
     ADMIN_CLIENT_ID = "notify-admin"
@@ -183,7 +187,6 @@ class Config:
     NOTIFY_SERVICE_ID = "d6aa2c68-a2d9-4437-ab19-3ae8eb202553"
     NOTIFY_USER_ID = "6af522d0-2915-4e52-83a3-3690455a5fe6"
     INVITATION_EMAIL_TEMPLATE_ID = "4f46df42-f795-4cc4-83bb-65ca312f49cc"
-    BROADCAST_INVITATION_EMAIL_TEMPLATE_ID = "46152f7c-6901-41d5-8590-a5624d0d4359"
     SMS_CODE_TEMPLATE_ID = "36fb0730-6259-4da1-8a80-c8de22ad4246"
     EMAIL_2FA_TEMPLATE_ID = "299726d2-dba6-42b8-8209-30e1d66ea164"
     NEW_USER_EMAIL_VERIFICATION_TEMPLATE_ID = "ece42649-22a8-4d06-b87f-d52d5d3f0a27"
@@ -214,14 +217,15 @@ class Config:
     DVLA_EMAIL_ADDRESSES = json.loads(os.environ.get("DVLA_EMAIL_ADDRESSES", "[]"))
     NOTIFY_SUPPORT_EMAIL_ADDRESS = "gov-uk-notify-support@digital.cabinet-office.gov.uk"
 
+    AWS_ACCOUNT_ID = os.environ.get("AWS_ACCOUNT_ID", "123456789012")
     CELERY = {
         "broker_url": "https://sqs.eu-west-1.amazonaws.com",
         "broker_transport": "sqs",
         "broker_transport_options": {
             "region": AWS_REGION,
-            "visibility_timeout": 310,
             "queue_name_prefix": NOTIFICATION_QUEUE_PREFIX,
             "is_secure": True,
+            "predefined_queues": QueueNames.predefined_queues(NOTIFICATION_QUEUE_PREFIX, AWS_REGION, AWS_ACCOUNT_ID),
         },
         "result_expires": 0,
         "timezone": "UTC",
@@ -324,6 +328,11 @@ class Config:
             "save-daily-notification-processing-time": {
                 "task": "save-daily-notification-processing-time",
                 "schedule": crontab(hour=2, minute=0),
+                "options": {"queue": QueueNames.PERIODIC},
+            },
+            "update-report-status-to-deleted": {
+                "task": "update-report-status-to-deleted",
+                "schedule": crontab(hour=2, minute=00),
                 "options": {"queue": QueueNames.PERIODIC},
             },
             "remove_sms_email_jobs": {
@@ -453,15 +462,6 @@ class Config:
     FIRETEXT_URL = os.environ.get("FIRETEXT_URL", "https://www.firetext.co.uk/api/sendsms/json")
     SES_STUB_URL = os.environ.get("SES_STUB_URL")
 
-    CBC_PROXY_ENABLED = True
-    CBC_PROXY_AWS_ACCESS_KEY_ID = os.environ.get("CBC_PROXY_AWS_ACCESS_KEY_ID", "")
-    CBC_PROXY_AWS_SECRET_ACCESS_KEY = os.environ.get("CBC_PROXY_AWS_SECRET_ACCESS_KEY", "")
-
-    ENABLED_CBCS = {BroadcastProvider.EE, BroadcastProvider.THREE, BroadcastProvider.O2, BroadcastProvider.VODAFONE}
-
-    # as defined in api db migration 0331_add_broadcast_org.py
-    BROADCAST_ORGANISATION_ID = "38e4bf69-93b0-445d-acee-53ea53fe02df"
-
     DVLA_API_BASE_URL = os.environ.get("DVLA_API_BASE_URL", "https://uat.driver-vehicle-licensing.api.gov.uk")
     DVLA_API_TLS_CIPHERS = os.environ.get("DVLA_API_TLS_CIPHERS")
 
@@ -484,16 +484,18 @@ class Config:
     S3_BUCKET_INVALID_PDF = os.environ.get("S3_BUCKET_INVALID_PDF")
     S3_BUCKET_TRANSIENT_UPLOADED_LETTERS = os.environ.get("S3_BUCKET_TRANSIENT_UPLOADED_LETTERS")
     S3_BUCKET_LETTER_SANITISE = os.environ.get("S3_BUCKET_LETTER_SANITISE")
+    S3_BUCKET_REPORT_REQUESTS_DOWNLOAD = os.environ.get("S3_BUCKET_REPORT_REQUESTS_DOWNLOAD")
     FROM_NUMBER = os.environ.get("FROM_NUMBER")
     API_RATE_LIMIT_ENABLED = os.environ.get("API_RATE_LIMIT_ENABLED", "1") == "1"
 
-    SEND_LETTERS_ENABLED = os.environ.get("SEND_LETTERS_ENABLED", "0") == "1"
+    TEST_LETTERS_FAKE_DELIVERY = os.environ.get("TEST_LETTERS_FAKE_DELIVERY", "1") == "1"
     REGISTER_FUNCTIONAL_TESTING_BLUEPRINT = os.environ.get("REGISTER_FUNCTIONAL_TESTING_BLUEPRINT", "0") == "1"
     SEND_ZENDESK_ALERTS_ENABLED = os.environ.get("SEND_ZENDESK_ALERTS_ENABLED", "0") == "1"
     CHECK_SLOW_TEXT_MESSAGE_DELIVERY = os.environ.get("CHECK_SLOW_TEXT_MESSAGE_DELIVERY", "0") == "1"
     WEEKLY_USER_RESEARCH_EMAIL_ENABLED = os.environ.get("WEEKLY_USER_RESEARCH_EMAIL_ENABLED", "0") == "1"
 
     REPORT_REQUEST_NOTIFICATIONS_TIMEOUT_MINUTES = 30
+    REPORT_REQUEST_NOTIFICATIONS_CSV_BATCH_SIZE = 2500
 
 
 ######################
@@ -551,6 +553,15 @@ class Development(ConfigNL):
     DEBUG = True
     SQLALCHEMY_ECHO = False
 
+    CELERY_WORKER_LOG_LEVEL = "INFO"
+
+    CELERY = {
+        **Config.CELERY,
+        "broker_transport_options": {
+            key: value for key, value in Config.CELERY["broker_transport_options"].items() if key != "predefined_queues"
+        },
+    }
+
     SERVER_NAME = os.getenv("SERVER_NAME")
 
     REDIS_ENABLED = os.getenv("REDIS_ENABLED") == "1"
@@ -565,6 +576,7 @@ class Development(ConfigNL):
     S3_BUCKET_INVALID_PDF = f"{NL_PREFIX}-{NOTIFY_ENVIRONMENT}-letters-invalid-pdf"
     S3_BUCKET_TRANSIENT_UPLOADED_LETTERS = f"{NL_PREFIX}-{NOTIFY_ENVIRONMENT}-transient-uploaded-letters"
     S3_BUCKET_LETTER_SANITISE = f"{NL_PREFIX}-{NOTIFY_ENVIRONMENT}-letters-sanitise"
+    S3_BUCKET_REPORT_REQUESTS_DOWNLOAD = f"{NL_PREFIX}-{NOTIFY_ENVIRONMENT}-report-requests-download"
 
     INTERNAL_CLIENT_API_KEYS = {
         Config.ADMIN_CLIENT_ID: ["dev-notify-secret-key"],
@@ -589,8 +601,6 @@ class Development(ConfigNL):
     API_RATE_LIMIT_ENABLED = True
     DVLA_EMAIL_ADDRESSES = ["success@simulator.amazonses.com"]
 
-    CBC_PROXY_ENABLED = False
-
     REGISTER_FUNCTIONAL_TESTING_BLUEPRINT = True
 
     FROM_NUMBER = "development"
@@ -602,6 +612,8 @@ class Test(Development):
     NOTIFY_ENVIRONMENT = "test"
     TESTING = True
 
+    CELERY_WORKER_LOG_LEVEL = "INFO"
+
     S3_BUCKET_CSV_UPLOAD = f"{NL_PREFIX}-{NOTIFY_ENVIRONMENT}-notifications-csv-upload"
     S3_BUCKET_CONTACT_LIST = f"{NL_PREFIX}-{NOTIFY_ENVIRONMENT}-contact-list"
     S3_BUCKET_TEST_LETTERS = f"{NL_PREFIX}-{NOTIFY_ENVIRONMENT}-test-letters"
@@ -610,12 +622,20 @@ class Test(Development):
     S3_BUCKET_INVALID_PDF = f"{NL_PREFIX}-{NOTIFY_ENVIRONMENT}-letters-invalid-pdf"
     S3_BUCKET_TRANSIENT_UPLOADED_LETTERS = f"{NL_PREFIX}-{NOTIFY_ENVIRONMENT}-transient-uploaded-letters"
     S3_BUCKET_LETTER_SANITISE = f"{NL_PREFIX}-{NOTIFY_ENVIRONMENT}-letters-sanitise"
+    S3_BUCKET_REPORT_REQUESTS_DOWNLOAD = f"{NL_PREFIX}-{NOTIFY_ENVIRONMENT}-report-requests-download"
 
     # when testing, the SQLALCHEMY_DATABASE_URI is used for the postgres server's location
     # but the database name is set in the _notify_db fixture
     SQLALCHEMY_RECORD_QUERIES = True
 
-    CELERY = {**Config.CELERY, "broker_url": "you-forgot-to-mock-celery-in-your-tests://", "broker_transport": None}
+    CELERY = {
+        **Config.CELERY,
+        "broker_url": "you-forgot-to-mock-celery-in-your-tests://",
+        "broker_transport": None,
+        "broker_transport_options": {
+            key: value for key, value in Config.CELERY["broker_transport_options"].items() if key != "predefined_queues"
+        },
+    }
 
     ANTIVIRUS_ENABLED = True
 
@@ -630,37 +650,18 @@ class Test(Development):
     MMG_URL = "https://example.com/mmg"
     FIRETEXT_URL = "https://example.com/firetext"
 
-    CBC_PROXY_ENABLED = True
     DVLA_EMAIL_ADDRESSES = ["success@simulator.amazonses.com", "success+2@simulator.amazonses.com"]
 
     DVLA_API_BASE_URL = "https://test-dvla-api.com"
 
     REGISTER_FUNCTIONAL_TESTING_BLUEPRINT = True
 
-    SEND_LETTERS_ENABLED = True
+    TEST_LETTERS_FAKE_DELIVERY = False
 
     SEND_ZENDESK_ALERTS_ENABLED = True
-
-
-class CloudFoundryConfig(Config):
-    pass
-
-
-# CloudFoundry sandbox
-class Sandbox(CloudFoundryConfig):
-    NOTIFY_EMAIL_DOMAIN = "notify.works"
-    NOTIFY_ENVIRONMENT = "sandbox"
-    S3_BUCKET_CSV_UPLOAD = "cf-sandbox-notifications-csv-upload"
-    S3_BUCKET_CONTACT_LIST = "cf-sandbox-contact-list"
-    S3_BUCKET_LETTERS_PDF = "cf-sandbox-letters-pdf"
-    S3_BUCKET_TEST_LETTERS = "cf-sandbox-test-letters"
-    S3_BUCKET_LETTERS_SCAN = "cf-sandbox-letters-scan"
-    S3_BUCKET_INVALID_PDF = "cf-sandbox-letters-invalid-pdf"
-    FROM_NUMBER = "sandbox"
 
 
 configs = {
     "development": Development,
     "test": Test,
-    "sandbox": Sandbox,
 }
