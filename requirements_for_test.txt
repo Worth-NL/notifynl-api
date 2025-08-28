@@ -62,7 +62,7 @@ certifi==2024.7.4
     #   -r requirements.txt
     #   requests
     #   sentry-sdk
-cffi==1.15.1
+cffi==1.17.1
     # via cryptography
 charset-normalizer==2.1.1
     # via
@@ -113,7 +113,7 @@ execnet==2.1.1
     # via pytest-xdist
 flaky==3.8.0
     # via -r requirements_for_test.in
-flask==3.1.0
+flask==3.1.1
     # via
     #   -r requirements.txt
     #   flask-bcrypt
@@ -147,7 +147,7 @@ govuk-bank-holidays==0.15
     # via
     #   -r requirements.txt
     #   notifications-utils
-greenlet==3.0.3
+greenlet==3.2.2
     # via
     #   -r requirements.txt
     #   eventlet
@@ -201,6 +201,7 @@ mako==1.2.3
 markupsafe==2.1.1
     # via
     #   -r requirements.txt
+    #   flask
     #   jinja2
     #   mako
     #   werkzeug
@@ -219,7 +220,7 @@ moto==5.0.11
     # via -r requirements_for_test.in
 notifications-python-client==10.0.1
     # via -r requirements.txt
-notifications-utils @ git+https://github.com/alphagov/notifications-utils.git@ff45d7df41c651261b8ca7ae78b9f0187cd89387
+notifications-utils @ git+https://github.com/alphagov/notifications-utils.git@8a998cf82afe070c9cb2f33913560d67b99a25c8
     # via -r requirements.txt
 ordered-set==4.1.0
     # via
@@ -232,7 +233,7 @@ packaging==23.2
     #   marshmallow
     #   marshmallow-sqlalchemy
     #   pytest
-phonenumbers==8.13.52
+phonenumbers==9.0.9
     # via
     #   -r requirements.txt
     #   notifications-utils
@@ -252,7 +253,7 @@ psycopg2-binary==2.9.10
     # via -r requirements.txt
 pycparser==2.21
     # via cffi
-pycurl==7.44.1
+pycurl==7.45.6
     # via -r requirements.txt
 pyjwt==2.10.1
     # via
@@ -279,7 +280,7 @@ pytest-testmon==2.1.1
     # via -r requirements_for_test_common.in
 pytest-xdist==3.6.1
     # via -r requirements_for_test_common.in
-python-dateutil==2.8.2
+python-dateutil==2.9.0.post0
     # via
     #   -r requirements.txt
     #   arrow
@@ -287,7 +288,8 @@ python-dateutil==2.8.2
     #   celery
     #   freezegun
     #   moto
-python-json-logger==2.0.7
+    #   notifications-utils
+python-json-logger==3.3.0
     # via
     #   -r requirements.txt
     #   notifications-utils
