@@ -759,6 +759,21 @@ class TestNL(DevNL):
     SEND_ZENDESK_ALERTS_ENABLED = True
 
 
+class TestNL2(ConfigNL):
+    NOTIFY_EMAIL_DOMAIN = "test.notifynl.nl"
+    FROM_NUMBER = "test"
+    NOTIFY_ENVIRONMENT = "test"
+
+    S3_BUCKET_CSV_UPLOAD = f"{NL_PREFIX}-{NOTIFY_ENVIRONMENT}-notifications-csv-upload"
+    S3_BUCKET_CONTACT_LIST = f"{NL_PREFIX}-{NOTIFY_ENVIRONMENT}-contact-list"
+    S3_BUCKET_TEST_LETTERS = f"{NL_PREFIX}-{NOTIFY_ENVIRONMENT}-test-letters"
+    S3_BUCKET_LETTERS_PDF = f"{NL_PREFIX}-{NOTIFY_ENVIRONMENT}-letters-pdf"
+    S3_BUCKET_LETTERS_SCAN = f"{NL_PREFIX}-{NOTIFY_ENVIRONMENT}-letters-scan"
+    S3_BUCKET_INVALID_PDF = f"{NL_PREFIX}-{NOTIFY_ENVIRONMENT}-letters-invalid-pdf"
+    S3_BUCKET_TRANSIENT_UPLOADED_LETTERS = f"{NL_PREFIX}-{NOTIFY_ENVIRONMENT}-transient-uploaded-letters"
+    S3_BUCKET_LETTER_SANITISE = f"{NL_PREFIX}-{NOTIFY_ENVIRONMENT}-letters-sanitise"
+
+
 class AccNL(ConfigNL):
     NOTIFY_EMAIL_DOMAIN = "acc.notifynl.nl"
     FROM_NUMBER = "acceptance"
@@ -791,4 +806,4 @@ class ProdNL(ConfigNL):
     S3_BUCKET_LETTER_SANITISE = f"{NL_PREFIX}-{NOTIFY_ENVIRONMENT}-letters-sanitise"
 
 
-configs = {"development": DevNL, "test": TestNL, "acceptance": AccNL, "production": ProdNL}
+configs = {"development": DevNL, "test": TestNL, "testnl": TestNL2, "acceptance": AccNL, "production": ProdNL}
