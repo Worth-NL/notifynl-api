@@ -20,7 +20,7 @@ bootstrap: generate-version-file ## Set up everything to run the app
 	(. environment.sh && flask db upgrade) || true
 
 .PHONY: bootstrap-nl
-bootstrap: generate-version-file
+bootstrap-nl: generate-version-file
 	uv pip install -r requirements_nl_test.txt
 	createdb notification_api || true
 	(. environment.sh && flask db upgrade) || true
