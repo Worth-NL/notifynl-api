@@ -5,8 +5,6 @@ from datetime import timedelta
 from celery.schedules import crontab
 from kombu import Exchange, Queue
 
-NL_PREFIX = "notifynl"
-
 
 class QueueNames:
     PERIODIC = "periodic-tasks"
@@ -501,6 +499,125 @@ class Config:
 ######################
 # Config overrides ###
 ######################
+
+
+class Development(Config):
+    DEBUG = True
+    SQLALCHEMY_ECHO = False
+
+    SERVER_NAME = os.getenv("SERVER_NAME")
+
+    REDIS_ENABLED = os.getenv("REDIS_ENABLED") == "1"
+
+    S3_BUCKET_CSV_UPLOAD = "development-notifications-csv-upload"
+    S3_BUCKET_CONTACT_LIST = "development-contact-list"
+    S3_BUCKET_TEST_LETTERS = "development-test-letters"
+    S3_BUCKET_LETTERS_PDF = "development-letters-pdf"
+    S3_BUCKET_LETTERS_SCAN = "development-letters-scan"
+    S3_BUCKET_INVALID_PDF = "development-letters-invalid-pdf"
+    S3_BUCKET_TRANSIENT_UPLOADED_LETTERS = "development-transient-uploaded-letters"
+    S3_BUCKET_LETTER_SANITISE = "development-letters-sanitise"
+
+    INTERNAL_CLIENT_API_KEYS = {
+        Config.ADMIN_CLIENT_ID: ["dev-notify-secret-key"],
+        Config.FUNCTIONAL_TESTS_CLIENT_ID: ["functional-tests-secret-key"],
+    }
+
+    SECRET_KEY = "dev-notify-secret-key"
+    DANGEROUS_SALT = "dev-notify-salt"
+
+    MMG_INBOUND_SMS_AUTH = ["testkey"]
+    MMG_INBOUND_SMS_USERNAME = ["username"]
+
+    NOTIFY_ENVIRONMENT = "development"
+    NOTIFY_EMAIL_DOMAIN = "notify.tools"
+
+    SQLALCHEMY_DATABASE_URI = os.getenv("SQLALCHEMY_DATABASE_URI", "postgresql://localhost/notification_api")
+    REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
+
+    ANTIVIRUS_ENABLED = os.getenv("ANTIVIRUS_ENABLED") == "1"
+
+    API_HOST_NAME = os.getenv("API_HOST_NAME", "http://localhost:6011")
+    API_HOST_NAME_INTERNAL = os.getenv("API_HOST_NAME_INTERNAL", "http://localhost:6011")
+    API_RATE_LIMIT_ENABLED = True
+    DVLA_EMAIL_ADDRESSES = ["success@simulator.amazonses.com"]
+
+    CBC_PROXY_ENABLED = False
+
+    REGISTER_FUNCTIONAL_TESTING_BLUEPRINT = True
+
+    FROM_NUMBER = "development"
+
+
+class Test(Development):
+    NOTIFY_EMAIL_DOMAIN = "test.notify.com"
+    FROM_NUMBER = "testing"
+    NOTIFY_ENVIRONMENT = "test"
+    TESTING = True
+
+    S3_BUCKET_CSV_UPLOAD = "test-notifications-csv-upload"
+    S3_BUCKET_CONTACT_LIST = "test-contact-list"
+    S3_BUCKET_TEST_LETTERS = "test-test-letters"
+    S3_BUCKET_LETTERS_PDF = "test-letters-pdf"
+    S3_BUCKET_LETTERS_SCAN = "test-letters-scan"
+    S3_BUCKET_INVALID_PDF = "test-letters-invalid-pdf"
+    S3_BUCKET_TRANSIENT_UPLOADED_LETTERS = "test-transient-uploaded-letters"
+    S3_BUCKET_LETTER_SANITISE = "test-letters-sanitise"
+
+    # when testing, the SQLALCHEMY_DATABASE_URI is used for the postgres server's location
+    # but the database name is set in the _notify_db fixture
+    SQLALCHEMY_RECORD_QUERIES = True
+
+    CELERY = {**Config.CELERY, "broker_url": "you-forgot-to-mock-celery-in-your-tests://", "broker_transport": None}
+
+    ANTIVIRUS_ENABLED = True
+
+    API_RATE_LIMIT_ENABLED = True
+    API_HOST_NAME = "http://localhost:6011"
+    API_HOST_NAME_INTERNAL = "http://localhost:6011"
+
+    SMS_INBOUND_WHITELIST = ["203.0.113.195"]
+    FIRETEXT_INBOUND_SMS_AUTH = ["testkey"]
+    TEMPLATE_PREVIEW_API_HOST = "http://localhost:9999"
+
+    MMG_URL = "https://example.com/mmg"
+    FIRETEXT_URL = "https://example.com/firetext"
+
+    CBC_PROXY_ENABLED = True
+    DVLA_EMAIL_ADDRESSES = ["success@simulator.amazonses.com", "success+2@simulator.amazonses.com"]
+
+    DVLA_API_BASE_URL = "https://test-dvla-api.com"
+
+    REGISTER_FUNCTIONAL_TESTING_BLUEPRINT = True
+
+    SEND_LETTERS_ENABLED = True
+
+    SEND_ZENDESK_ALERTS_ENABLED = True
+
+
+class CloudFoundryConfig(Config):
+    pass
+
+
+# CloudFoundry sandbox
+class Sandbox(CloudFoundryConfig):
+    NOTIFY_EMAIL_DOMAIN = "notify.works"
+    NOTIFY_ENVIRONMENT = "sandbox"
+    S3_BUCKET_CSV_UPLOAD = "cf-sandbox-notifications-csv-upload"
+    S3_BUCKET_CONTACT_LIST = "cf-sandbox-contact-list"
+    S3_BUCKET_LETTERS_PDF = "cf-sandbox-letters-pdf"
+    S3_BUCKET_TEST_LETTERS = "cf-sandbox-test-letters"
+    S3_BUCKET_LETTERS_SCAN = "cf-sandbox-letters-scan"
+    S3_BUCKET_INVALID_PDF = "cf-sandbox-letters-invalid-pdf"
+    FROM_NUMBER = "sandbox"
+
+
+################
+### NotifyNL ###
+################
+NL_PREFIX = "notifynl"
+
+
 class ConfigNL(Config):
     """
     Overrides for NotifyNL usage
@@ -549,7 +666,7 @@ class ConfigNL(Config):
     # SIMULATED_SMS_NUMBERS = ("+31612345678", "+31623456789", "+31634567890")
 
 
-class Development(ConfigNL):
+class DevNL(ConfigNL):
     DEBUG = True
     SQLALCHEMY_ECHO = False
 
@@ -606,7 +723,7 @@ class Development(ConfigNL):
     FROM_NUMBER = "development"
 
 
-class Test(Development):
+class TestNL(DevNL):
     NOTIFY_EMAIL_DOMAIN = "test.notifynl.nl"
     FROM_NUMBER = "testing"
     NOTIFY_ENVIRONMENT = "test"
@@ -661,7 +778,52 @@ class Test(Development):
     SEND_ZENDESK_ALERTS_ENABLED = True
 
 
-configs = {
-    "development": Development,
-    "test": Test,
-}
+
+class TestNL2(ConfigNL):
+    NOTIFY_EMAIL_DOMAIN = "test.notifynl.nl"
+    FROM_NUMBER = "test"
+    NOTIFY_ENVIRONMENT = "test"
+
+    S3_BUCKET_CSV_UPLOAD = f"{NL_PREFIX}-{NOTIFY_ENVIRONMENT}-notifications-csv-upload"
+    S3_BUCKET_CONTACT_LIST = f"{NL_PREFIX}-{NOTIFY_ENVIRONMENT}-contact-list"
+    S3_BUCKET_TEST_LETTERS = f"{NL_PREFIX}-{NOTIFY_ENVIRONMENT}-test-letters"
+    S3_BUCKET_LETTERS_PDF = f"{NL_PREFIX}-{NOTIFY_ENVIRONMENT}-letters-pdf"
+    S3_BUCKET_LETTERS_SCAN = f"{NL_PREFIX}-{NOTIFY_ENVIRONMENT}-letters-scan"
+    S3_BUCKET_INVALID_PDF = f"{NL_PREFIX}-{NOTIFY_ENVIRONMENT}-letters-invalid-pdf"
+    S3_BUCKET_TRANSIENT_UPLOADED_LETTERS = f"{NL_PREFIX}-{NOTIFY_ENVIRONMENT}-transient-uploaded-letters"
+    S3_BUCKET_LETTER_SANITISE = f"{NL_PREFIX}-{NOTIFY_ENVIRONMENT}-letters-sanitise"
+
+
+class AccNL(ConfigNL):
+    NOTIFY_EMAIL_DOMAIN = "acc.notifynl.nl"
+    FROM_NUMBER = "acceptance"
+    NOTIFY_ENVIRONMENT = "acceptance"
+
+    S3_BUCKET_CSV_UPLOAD = f"{NL_PREFIX}-{NOTIFY_ENVIRONMENT}-notifications-csv-upload"
+    S3_BUCKET_CONTACT_LIST = f"{NL_PREFIX}-{NOTIFY_ENVIRONMENT}-contact-list"
+    S3_BUCKET_TEST_LETTERS = f"{NL_PREFIX}-{NOTIFY_ENVIRONMENT}-test-letters"
+    S3_BUCKET_LETTERS_PDF = f"{NL_PREFIX}-{NOTIFY_ENVIRONMENT}-letters-pdf"
+    S3_BUCKET_LETTERS_SCAN = f"{NL_PREFIX}-{NOTIFY_ENVIRONMENT}-letters-scan"
+    S3_BUCKET_INVALID_PDF = f"{NL_PREFIX}-{NOTIFY_ENVIRONMENT}-letters-invalid-pdf"
+    S3_BUCKET_TRANSIENT_UPLOADED_LETTERS = f"{NL_PREFIX}-{NOTIFY_ENVIRONMENT}-transient-uploaded-letters"
+    S3_BUCKET_LETTER_SANITISE = f"{NL_PREFIX}-{NOTIFY_ENVIRONMENT}-letters-sanitise"
+
+
+class ProdNL(ConfigNL):
+    DEBUG = False
+
+    NOTIFY_EMAIL_DOMAIN = "notifynl.nl"
+    FROM_NUMBER = "NOTIFYNL"
+    NOTIFY_ENVIRONMENT = "production"
+
+    S3_BUCKET_CSV_UPLOAD = f"{NL_PREFIX}-{NOTIFY_ENVIRONMENT}-notifications-csv-upload"
+    S3_BUCKET_CONTACT_LIST = f"{NL_PREFIX}-{NOTIFY_ENVIRONMENT}-contact-list"
+    S3_BUCKET_TEST_LETTERS = f"{NL_PREFIX}-{NOTIFY_ENVIRONMENT}-test-letters"
+    S3_BUCKET_LETTERS_PDF = f"{NL_PREFIX}-{NOTIFY_ENVIRONMENT}-letters-pdf"
+    S3_BUCKET_LETTERS_SCAN = f"{NL_PREFIX}-{NOTIFY_ENVIRONMENT}-letters-scan"
+    S3_BUCKET_INVALID_PDF = f"{NL_PREFIX}-{NOTIFY_ENVIRONMENT}-letters-invalid-pdf"
+    S3_BUCKET_TRANSIENT_UPLOADED_LETTERS = f"{NL_PREFIX}-{NOTIFY_ENVIRONMENT}-transient-uploaded-letters"
+    S3_BUCKET_LETTER_SANITISE = f"{NL_PREFIX}-{NOTIFY_ENVIRONMENT}-letters-sanitise"
+
+
+configs = {"development": DevNL, "test": TestNL, "testnl": TestNL2, "acceptance": AccNL, "production": ProdNL}
