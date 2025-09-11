@@ -21,11 +21,13 @@ from app.clients.sms.mmg import MMGClient
 from app.clients.sms.spryng import SpryngClient
 from app.config import QueueNames
 from app.constants import (
+    ALL_TYPE,
     EMAIL_TYPE,
     KEY_TYPE_NORMAL,
     KEY_TYPE_TEAM,
     KEY_TYPE_TEST,
     LETTER_TYPE,
+    NOTIFICATION_REQUEST_REPORT_FAILED,
     REPORT_REQUEST_IN_PROGRESS,
     REPORT_REQUEST_NOTIFICATIONS,
     SERVICE_PERMISSION_TYPES,
@@ -197,7 +199,6 @@ def sample_template(sample_user):
         "created_by": sample_user,
         "archived": False,
         "hidden": False,
-        "process_type": "normal",
     }
     template = Template(**data)
     dao_create_template(template)
@@ -1411,7 +1412,7 @@ def mock_celery_task(mocker):
 
 @pytest.fixture(scope="function")
 def sample_report_request(sample_user, sample_service):
-    sample_parameter = {"notification_type": "all", "notification_status": "failed"}
+    sample_parameter = {"notification_type": ALL_TYPE, "notification_status": NOTIFICATION_REQUEST_REPORT_FAILED}
 
     report_request = ReportRequest(
         user_id=sample_user.id,
