@@ -507,7 +507,7 @@ def test_check_if_letters_still_pending_virus_check_restarts_scan_for_stuck_lett
 
     check_if_letters_still_pending_virus_check()
 
-    mock_file_exists.assert_called_once_with("notifynl-test-letters-scan", expected_filename)
+    mock_file_exists.assert_called_once_with("test-letters-scan", expected_filename)
 
     mock_celery.assert_called_once_with(
         name=TaskNames.SCAN_FILE, kwargs={"filename": expected_filename}, queue=QueueNames.ANTIVIRUS
@@ -558,8 +558,8 @@ def test_check_if_letters_still_pending_virus_check_raises_zendesk_if_files_cant
     assert mock_file_exists.call_count == 2
     mock_file_exists.assert_has_calls(
         [
-            call("notifynl-test-letters-scan", "NOTIFY.ONE.D.2.C.20190530134959.PDF"),
-            call("notifynl-test-letters-scan", "NOTIFY.TWO.D.2.C.20190530134320.PDF"),
+            call("test-letters-scan", "NOTIFY.ONE.D.2.C.20190530134959.PDF"),
+            call("test-letters-scan", "NOTIFY.TWO.D.2.C.20190530134320.PDF"),
         ],
         any_order=True,
     )

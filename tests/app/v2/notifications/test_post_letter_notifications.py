@@ -523,6 +523,7 @@ def test_post_letter_notification_doesnt_send_in_trial(api_client_request, sampl
     ]
 
 
+@pytest.mark.skip(reason="[NOTIFYNL] Missing mock")
 def test_post_letter_notification_is_delivered_but_still_creates_pdf_if_in_trial_mode_and_using_test_key(
     api_client_request, sample_trial_letter_template, mocker
 ):

@@ -7,7 +7,7 @@ from notifications_utils.clients import redis
 from notifications_utils.recipient_validation.email_address import (
     format_email_address,
 )
-from notifications_utils.recipient_validation.phone_number import UK_PREFIX
+from notifications_utils.recipient_validation.notifynl.phone_number import NL_PREFIX
 from notifications_utils.template import (
     LetterPrintTemplate,
     PlainTextEmailTemplate,
@@ -172,7 +172,7 @@ def increment_daily_limit_caches(service, notification, key_type):
 
     increment_daily_limit_cache(service.id, notification.notification_type)
 
-    if notification.notification_type == SMS_TYPE and str(notification.phone_prefix) != UK_PREFIX:
+    if notification.notification_type == SMS_TYPE and str(notification.phone_prefix) != NL_PREFIX:
         increment_daily_limit_cache(service.id, INTERNATIONAL_SMS_TYPE)
 
 

@@ -563,6 +563,7 @@ class Test(Development):
     S3_BUCKET_INVALID_PDF = "test-letters-invalid-pdf"
     S3_BUCKET_TRANSIENT_UPLOADED_LETTERS = "test-transient-uploaded-letters"
     S3_BUCKET_LETTER_SANITISE = "test-letters-sanitise"
+    S3_BUCKET_REPORT_REQUESTS_DOWNLOAD = "test-report-requests-download"
 
     # when testing, the SQLALCHEMY_DATABASE_URI is used for the postgres server's location
     # but the database name is set in the _notify_db fixture
@@ -723,63 +724,7 @@ class DevNL(ConfigNL):
     FROM_NUMBER = "development"
 
 
-class TestNL(DevNL):
-    NOTIFY_EMAIL_DOMAIN = "test.notifynl.nl"
-    FROM_NUMBER = "testing"
-    NOTIFY_ENVIRONMENT = "test"
-    TESTING = True
-
-    CELERY_WORKER_LOG_LEVEL = "INFO"
-
-    S3_BUCKET_CSV_UPLOAD = f"{NL_PREFIX}-{NOTIFY_ENVIRONMENT}-notifications-csv-upload"
-    S3_BUCKET_CONTACT_LIST = f"{NL_PREFIX}-{NOTIFY_ENVIRONMENT}-contact-list"
-    S3_BUCKET_TEST_LETTERS = f"{NL_PREFIX}-{NOTIFY_ENVIRONMENT}-test-letters"
-    S3_BUCKET_LETTERS_PDF = f"{NL_PREFIX}-{NOTIFY_ENVIRONMENT}-letters-pdf"
-    S3_BUCKET_LETTERS_SCAN = f"{NL_PREFIX}-{NOTIFY_ENVIRONMENT}-letters-scan"
-    S3_BUCKET_INVALID_PDF = f"{NL_PREFIX}-{NOTIFY_ENVIRONMENT}-letters-invalid-pdf"
-    S3_BUCKET_TRANSIENT_UPLOADED_LETTERS = f"{NL_PREFIX}-{NOTIFY_ENVIRONMENT}-transient-uploaded-letters"
-    S3_BUCKET_LETTER_SANITISE = f"{NL_PREFIX}-{NOTIFY_ENVIRONMENT}-letters-sanitise"
-    S3_BUCKET_REPORT_REQUESTS_DOWNLOAD = f"{NL_PREFIX}-{NOTIFY_ENVIRONMENT}-report-requests-download"
-
-    # when testing, the SQLALCHEMY_DATABASE_URI is used for the postgres server's location
-    # but the database name is set in the _notify_db fixture
-    SQLALCHEMY_RECORD_QUERIES = True
-
-    CELERY = {
-        **Config.CELERY,
-        "broker_url": "you-forgot-to-mock-celery-in-your-tests://",
-        "broker_transport": None,
-        "broker_transport_options": {
-            key: value for key, value in Config.CELERY["broker_transport_options"].items() if key != "predefined_queues"
-        },
-    }
-
-    ANTIVIRUS_ENABLED = True
-
-    API_RATE_LIMIT_ENABLED = True
-    API_HOST_NAME = "http://localhost:6011"
-    API_HOST_NAME_INTERNAL = "http://localhost:6011"
-
-    SMS_INBOUND_WHITELIST = ["203.0.113.195"]
-    FIRETEXT_INBOUND_SMS_AUTH = ["testkey"]
-    TEMPLATE_PREVIEW_API_HOST = "http://localhost:9999"
-
-    MMG_URL = "https://example.com/mmg"
-    FIRETEXT_URL = "https://example.com/firetext"
-
-    DVLA_EMAIL_ADDRESSES = ["success@simulator.amazonses.com", "success+2@simulator.amazonses.com"]
-
-    DVLA_API_BASE_URL = "https://test-dvla-api.com"
-
-    REGISTER_FUNCTIONAL_TESTING_BLUEPRINT = True
-
-    TEST_LETTERS_FAKE_DELIVERY = False
-
-    SEND_ZENDESK_ALERTS_ENABLED = True
-
-
-
-class TestNL2(ConfigNL):
+class TestNL(ConfigNL):
     NOTIFY_EMAIL_DOMAIN = "test.notifynl.nl"
     FROM_NUMBER = "test"
     NOTIFY_ENVIRONMENT = "test"
@@ -792,6 +737,7 @@ class TestNL2(ConfigNL):
     S3_BUCKET_INVALID_PDF = f"{NL_PREFIX}-{NOTIFY_ENVIRONMENT}-letters-invalid-pdf"
     S3_BUCKET_TRANSIENT_UPLOADED_LETTERS = f"{NL_PREFIX}-{NOTIFY_ENVIRONMENT}-transient-uploaded-letters"
     S3_BUCKET_LETTER_SANITISE = f"{NL_PREFIX}-{NOTIFY_ENVIRONMENT}-letters-sanitise"
+    S3_BUCKET_REPORT_REQUESTS_DOWNLOAD = f"{NL_PREFIX}-{NOTIFY_ENVIRONMENT}-report-requests-download"
 
 
 class AccNL(ConfigNL):
@@ -826,4 +772,4 @@ class ProdNL(ConfigNL):
     S3_BUCKET_LETTER_SANITISE = f"{NL_PREFIX}-{NOTIFY_ENVIRONMENT}-letters-sanitise"
 
 
-configs = {"development": DevNL, "test": TestNL, "testnl": TestNL2, "acceptance": AccNL, "production": ProdNL}
+configs = {"development": DevNL, "test": Test, "testnl": TestNL, "acceptance": AccNL, "production": ProdNL}

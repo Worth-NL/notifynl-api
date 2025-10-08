@@ -219,7 +219,7 @@ moto==5.0.11
     # via -r requirements_nl_test.in
 notifications-python-client==10.0.1
     # via -r requirements_nl.txt
-notifications-utils @ git+https://github.com/Worth-NL/notifynl-utils.git@3814be6471b46c13ecc11c3a62ef0af3e1f45db9
+notifications-utils @ git+https://github.com/Worth-NL/notifynl-utils.git@c8f5fd91401608b9d8cec3f59dcca1f89880aa87
     # via -r requirements_nl.txt
 ordered-set==4.1.0
     # via
@@ -302,6 +302,7 @@ python-dateutil==2.9.0.post0
     #   celery
     #   freezegun
     #   moto
+    #   notifications-utils
 python-dotenv==1.1.1
     # via
     #   -r requirements_nl_test.in
