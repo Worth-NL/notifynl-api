@@ -51,6 +51,7 @@ class QueueNames:
             QueueNames.REPORT_REQUESTS_NOTIFICATIONS,
         ]
 
+    @staticmethod
     def external_queues():
         return [
             QueueNames.ANTIVIRUS,
@@ -625,7 +626,7 @@ class ConfigNL(Config):
     """
 
     NOTIFY_EMAIL_DOMAIN = os.environ.get("NOTIFY_EMAIL_DOMAIN", "notifynl.nl")
-    FROM_NUMBER = os.environ.get("FROM_NUMBER", "NOTIFYNL")
+    FROM_NUMBER = os.environ.get("FROM_NUMBER", "NOTIFYNLD")
     NOTIFY_SUPPORT_EMAIL_ADDRESS = "info@worth.nl"
 
     # Spryng setup
@@ -726,8 +727,15 @@ class DevNL(ConfigNL):
 
 class TestNL(ConfigNL):
     NOTIFY_EMAIL_DOMAIN = "test.notifynl.nl"
-    FROM_NUMBER = "test"
+    FROM_NUMBER = "NOTIFYNLT"
     NOTIFY_ENVIRONMENT = "test"
+
+    CELERY = {
+        **Config.CELERY,
+        "broker_transport_options": {
+            key: value for key, value in Config.CELERY["broker_transport_options"].items() if key != "predefined_queues"
+        },
+    }
 
     S3_BUCKET_CSV_UPLOAD = f"{NL_PREFIX}-{NOTIFY_ENVIRONMENT}-notifications-csv-upload"
     S3_BUCKET_CONTACT_LIST = f"{NL_PREFIX}-{NOTIFY_ENVIRONMENT}-contact-list"
@@ -742,7 +750,7 @@ class TestNL(ConfigNL):
 
 class AccNL(ConfigNL):
     NOTIFY_EMAIL_DOMAIN = "acc.notifynl.nl"
-    FROM_NUMBER = "acceptance"
+    FROM_NUMBER = "NOTIFYNLA"
     NOTIFY_ENVIRONMENT = "acceptance"
 
     S3_BUCKET_CSV_UPLOAD = f"{NL_PREFIX}-{NOTIFY_ENVIRONMENT}-notifications-csv-upload"
@@ -753,6 +761,7 @@ class AccNL(ConfigNL):
     S3_BUCKET_INVALID_PDF = f"{NL_PREFIX}-{NOTIFY_ENVIRONMENT}-letters-invalid-pdf"
     S3_BUCKET_TRANSIENT_UPLOADED_LETTERS = f"{NL_PREFIX}-{NOTIFY_ENVIRONMENT}-transient-uploaded-letters"
     S3_BUCKET_LETTER_SANITISE = f"{NL_PREFIX}-{NOTIFY_ENVIRONMENT}-letters-sanitise"
+    S3_BUCKET_REPORT_REQUESTS_DOWNLOAD = f"{NL_PREFIX}-{NOTIFY_ENVIRONMENT}-report-requests-download"
 
 
 class ProdNL(ConfigNL):
@@ -770,6 +779,7 @@ class ProdNL(ConfigNL):
     S3_BUCKET_INVALID_PDF = f"{NL_PREFIX}-{NOTIFY_ENVIRONMENT}-letters-invalid-pdf"
     S3_BUCKET_TRANSIENT_UPLOADED_LETTERS = f"{NL_PREFIX}-{NOTIFY_ENVIRONMENT}-transient-uploaded-letters"
     S3_BUCKET_LETTER_SANITISE = f"{NL_PREFIX}-{NOTIFY_ENVIRONMENT}-letters-sanitise"
+    S3_BUCKET_REPORT_REQUESTS_DOWNLOAD = f"{NL_PREFIX}-{NOTIFY_ENVIRONMENT}-report-requests-download"
 
 
 configs = {"development": DevNL, "test": Test, "testnl": TestNL, "acceptance": AccNL, "production": ProdNL}
