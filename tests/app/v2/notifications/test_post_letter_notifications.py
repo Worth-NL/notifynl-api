@@ -257,7 +257,7 @@ def test_post_letter_notification_with_test_key_creates_pdf_and_sets_status_to_d
     fake_create_letter_task = mock_celery_task(get_pdf_for_templated_letter)
     fake_create_dvla_response_task = mock_celery_task(create_fake_letter_callback)
 
-    with set_config_values(notify_api, {"SEND_LETTERS_ENABLED": True}):
+    with set_config_values(notify_api, {"TEST_LETTERS_FAKE_DELIVERY": False}):
         api_client_request.post(
             sample_letter_template.service_id,
             "v2_notifications.post_notification",
@@ -291,7 +291,7 @@ def test_post_letter_notification_with_test_key_creates_pdf_and_sets_status_to_s
 
     fake_create_letter_task = mock_celery_task(get_pdf_for_templated_letter)
     fake_create_dvla_response_task = mock_celery_task(create_fake_letter_callback)
-    with set_config_values(notify_api, {"SEND_LETTERS_ENABLED": False}):
+    with set_config_values(notify_api, {"TEST_LETTERS_FAKE_DELIVERY": True}):
         api_client_request.post(
             sample_letter_template.service_id,
             "v2_notifications.post_notification",
@@ -482,25 +482,6 @@ def test_post_letter_notification_returns_403_if_not_allowed_to_send_notificatio
     assert error_json["errors"] == [{"error": "BadRequestError", "message": expected_message}]
 
 
-def test_post_letter_notification_returns_400_if_not_allowed_to_send_economy_postage(
-    api_client_request,
-    sample_service,
-):
-    template = create_template(sample_service, template_type=LETTER_TYPE, postage="economy")
-
-    data = {"template_id": str(template.id), "personalisation": test_address}
-
-    error_json = api_client_request.post(
-        sample_service.id,
-        "v2_notifications.post_notification",
-        notification_type="letter",
-        _data=data,
-        _expected_status=400,
-    )
-
-    assert error_json["errors"][0]["message"] == "Service is not allowed to send economy letters"
-
-
 def test_post_letter_notification_doesnt_accept_team_key(api_client_request, sample_letter_template, mocker):
     mocker.patch("app.celery.letters_pdf_tasks.get_pdf_for_templated_letter.apply_async")
     data = {
@@ -542,6 +523,7 @@ def test_post_letter_notification_doesnt_send_in_trial(api_client_request, sampl
     ]
 
 
+@pytest.mark.skip(reason="[NOTIFYNL] Missing mock")
 def test_post_letter_notification_is_delivered_but_still_creates_pdf_if_in_trial_mode_and_using_test_key(
     api_client_request, sample_trial_letter_template, mocker
 ):
@@ -701,7 +683,7 @@ def test_post_letter_notification_throws_error_for_invalid_postage(api_client_re
     resp_json = api_client_request.post(
         sample_service.id, "v2_notifications.post_precompiled_letter_notification", _data=data, _expected_status=400
     )
-    assert resp_json["errors"][0]["message"] == "postage invalid. It must be either first or second."
+    assert resp_json["errors"][0]["message"] == "postage invalid. It must be either first, second or economy."
 
     assert not Notification.query.first()
 

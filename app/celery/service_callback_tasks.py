@@ -137,7 +137,7 @@ def _send_data_to_service_callback_api(self, data, service_callback_url, token, 
 
         ### [NotifyNL] #################################################################################################
         certificate_name = f"{urlparse(service_callback_url).hostname.replace('.', '-')}.pem"
-        certificate_path = f"{current_app.config['SSL_CERT_DIR']}/{certificate_name}"
+        certificate_path = f"{current_app.config.get('SSL_CERT_DIR')}/{certificate_name}"
 
         if os.path.exists(certificate_path):
             current_app.logger.info(

@@ -162,7 +162,7 @@ def test_should_send_personalised_template_to_correct_email_provider_and_persist
     send_to_providers.send_email_to_provider(db_notification)
 
     app.aws_ses_client.send_email.assert_called_once_with(
-        from_address='"Sample service" <sample.service@test.notifynl.nl>',
+        from_address='"Sample service" <sample.service@test.notify.com>',
         to_address="jo.smith@example.com",
         subject="Jo <em>some HTML</em>",
         body="Hello Jo\nThis is an email from GOV.\u200bUK with <em>some HTML</em>\n",
@@ -456,7 +456,7 @@ def test_get_html_email_renderer_with_branding_details_and_render_govuk_banner_o
 
     options = send_to_providers.get_html_email_options(sample_service)
 
-    assert options == {"govuk_banner": True, "brand_banner": False}
+    assert options == {"govuk_banner": True, "brand_banner": False, "rebrand": True}
 
 
 def test_get_html_email_renderer_prepends_logo_path(notify_api, hostnames):
@@ -731,7 +731,7 @@ def test_send_email_to_provider_uses_custom_email_sender_name_if_set(sample_emai
     send_to_providers.send_email_to_provider(sample_email_notification)
 
     app.aws_ses_client.send_email.assert_called_once_with(
-        from_address='"Custom Sender Name" <custom.sender.name@test.notifynl.nl>',
+        from_address='"Custom Sender Name" <custom.sender.name@test.notify.com>',
         to_address=ANY,
         subject=ANY,
         body=ANY,
@@ -849,6 +849,7 @@ def test_get_html_email_options_return_email_branding_from_serialised_service(sa
         "brand_logo": get_logo_url(current_app.config["ADMIN_BASE_URL"], branding.logo),
         "brand_text": branding.text,
         "brand_alt_text": branding.alt_text,
+        "rebrand": True,
     }
 
 
@@ -864,6 +865,7 @@ def test_get_html_email_options_add_email_branding_from_service(sample_service):
         "brand_logo": get_logo_url(current_app.config["ADMIN_BASE_URL"], branding.logo),
         "brand_text": branding.text,
         "brand_alt_text": branding.alt_text,
+        "rebrand": True,
     }
 
 

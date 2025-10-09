@@ -225,8 +225,6 @@ class ServiceSchema(BaseSchema, UUIDsAsStringsMixin):
     sms_message_limit = field_for(models.Service, "sms_message_limit", required=True)
     letter_message_limit = field_for(models.Service, "letter_message_limit", required=True)
     go_live_at = field_for(models.Service, "go_live_at", format=DATETIME_FORMAT_NO_TIMEZONE)
-    allowed_broadcast_provider = fields.Method(dump_only=True, serialize="_get_allowed_broadcast_provider")
-    broadcast_channel = fields.Method(dump_only=True, serialize="_get_broadcast_channel")
     name = fields.String(required=True)
     custom_email_sender_name = fields.String(allow_none=True)
     # this can only be set via custom_email_sender_name or name
@@ -238,12 +236,6 @@ class ServiceSchema(BaseSchema, UUIDsAsStringsMixin):
             {"callback_id": str(callback.id), "callback_type": callback.callback_type}
             for callback in service.service_callback_api
         ]
-
-    def _get_allowed_broadcast_provider(self, service):
-        return service.allowed_broadcast_provider
-
-    def _get_broadcast_channel(self, service):
-        return service.broadcast_channel
 
     def get_letter_logo_filename(self, service):
         return service.letter_branding and service.letter_branding.filename
@@ -272,7 +264,6 @@ class ServiceSchema(BaseSchema, UUIDsAsStringsMixin):
             "all_template_folders",
             "annual_billing",
             "api_keys",
-            "broadcast_messages",
             "complaints",
             "contact_list",
             "created_at",
@@ -286,8 +277,6 @@ class ServiceSchema(BaseSchema, UUIDsAsStringsMixin):
             "letter_logo_filename",
             "reply_to_email_addresses",
             "returned_letters",
-            "service_broadcast_provider_restriction",
-            "service_broadcast_settings",
             "service_sms_senders",
             "templates",
             "updated_at",
@@ -349,7 +338,6 @@ class DetailedServiceSchema(BaseSchema):
             "all_template_folders",
             "annual_billing",
             "api_keys",
-            "broadcast_messages",
             "contact_list",
             "created_by",
             "crown",
@@ -360,7 +348,6 @@ class DetailedServiceSchema(BaseSchema):
             "email_branding",
             "email_message_limit",
             "guest_list",
-            "inbound_api",
             "inbound_number",
             "inbound_sms",
             "jobs",
@@ -399,6 +386,12 @@ class BaseTemplateSchema(BaseSchema):
     reply_to_text = fields.Method("get_reply_to_text", allow_none=True)
     letter_attachment = fields.Method("get_letter_attachment", allow_none=True)
     letter_languages = fields.Method("get_letter_languages", "load_letter_languages", allow_none=True)
+    is_precompiled_letter = fields.Method("get_is_precompiled_letter")
+    created_at = FlexibleDateTime()
+    updated_at = FlexibleDateTime()
+
+    def get_is_precompiled_letter(self, template):
+        return template.is_precompiled_letter
 
     def get_reply_to(self, template):
         return template.reply_to
@@ -422,17 +415,10 @@ class BaseTemplateSchema(BaseSchema):
 
 class TemplateSchema(BaseTemplateSchema, UUIDsAsStringsMixin):
     created_by = field_for(models.Template, "created_by", required=True)
-    process_type = field_for(models.Template, "process_type")
     redact_personalisation = fields.Method("redact")
-    is_precompiled_letter = fields.Method("get_is_precompiled_letter")
-    created_at = FlexibleDateTime()
-    updated_at = FlexibleDateTime()
 
     def redact(self, template):
         return template.redact_personalisation
-
-    def get_is_precompiled_letter(self, template):
-        return template.is_precompiled_letter
 
     @validates_schema
     def validate_type(self, data, **kwargs):
@@ -444,65 +430,22 @@ class TemplateSchema(BaseTemplateSchema, UUIDsAsStringsMixin):
 
 class TemplateSchemaNoDetail(TemplateSchema):
     class Meta(TemplateSchema.Meta):
-        exclude = TemplateSchema.Meta.exclude + (
-            "archived",
-            "broadcast_data",
-            "created_at",
-            "created_by",
-            "created_by_id",
-            "has_unsubscribe_link",
-            "hidden",
-            "letter_attachment",
-            "postage",
-            "process_type",
-            "redact_personalisation",
-            "reply_to",
-            "reply_to_text",
-            "service",
-            "service_letter_contact",
-            "subject",
-            "template_redacted",
-            "updated_at",
-            "version",
-            "letter_welsh_subject",
-            "letter_welsh_content",
-            "letter_languages",
-        )
-
-    @pre_dump
-    def remove_content_for_non_broadcast_templates(self, template, **kwargs):
-        if template.template_type != app.constants.BROADCAST_TYPE:
-            template.content = None
-
-        return template
+        fields = [
+            "folder",
+            "id",
+            "is_precompiled_letter",
+            "name",
+            "template_type",
+        ]
+        exclude = []
 
 
-class TemplateHistorySchema(BaseSchema):
-    reply_to = fields.Method("get_reply_to", allow_none=True)
-    reply_to_text = fields.Method("get_reply_to_text", allow_none=True)
-    process_type = field_for(models.Template, "process_type")
-    is_precompiled_letter = fields.Method("get_is_precompiled_letter")
-    letter_attachment = fields.Method("get_letter_attachment", allow_none=True)
-
+class TemplateHistorySchema(BaseTemplateSchema, UUIDsAsStringsMixin):
     created_by = fields.Nested(UserSchema, only=["id", "name", "email_address"], dump_only=True)
-    created_at = field_for(models.Template, "created_at", format=DATETIME_FORMAT_NO_TIMEZONE)
-    updated_at = FlexibleDateTime()
-
-    def get_reply_to(self, template):
-        return template.reply_to
-
-    def get_reply_to_text(self, template):
-        return template.get_reply_to_text()
-
-    def get_letter_attachment(self, template):
-        return template.letter_attachment.serialize() if template.letter_attachment_id else None
-
-    def get_is_precompiled_letter(self, template):
-        return template.is_precompiled_letter
 
     class Meta(BaseSchema.Meta):
         model = models.TemplateHistory
-        exclude = ("broadcast_messages",)
+        exclude = tuple(set(BaseTemplateSchema.Meta.exclude) - {"jobs"})
 
 
 class ApiKeySchema(BaseSchema):

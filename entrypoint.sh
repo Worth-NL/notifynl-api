@@ -55,9 +55,6 @@ case "$1" in
     # Only consume the notify-internal-tasks queue on this app so that Notify messages are processed as a priority
     exec $COMMON_CMD notify-internal-tasks
     ;;
-  api-worker-broadcasts)
-    exec $COMMON_CMD broadcast-tasks
-    ;;
   api-worker-receipts)
     exec $COMMON_CMD ses-callbacks,sms-callbacks,letter-callbacks
     ;;
@@ -68,7 +65,7 @@ case "$1" in
     exec $COMMON_CMD report-requests-notifications-tasks
     ;;
   celery-beat)
-    exec celery -A run_celery.notify_celery beat --loglevel=INFO
+    exec celery --quiet -A run_celery.notify_celery beat
     ;;
   *)
     echo -e "'\033[31m'FATAL: missing argument'\033[0m'" && exit 1

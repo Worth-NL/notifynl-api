@@ -40,6 +40,7 @@ from app.dao.notifications_dao import (
     get_service_ids_with_notifications_before,
     move_notifications_to_notification_history,
 )
+from app.dao.report_requests_dao import update_report_requests_status_to_deleted
 from app.dao.service_data_retention_dao import (
     fetch_service_data_retention_for_all_services_by_notification_type,
 )
@@ -372,10 +373,8 @@ def delete_unneeded_notification_history_by_hour():
             # We pass datetimes as args to the next task but celery will actually call `isoformat` on these
             # and send them over as strings
             [start_datetime, end_datetime],
-            # We use the broadcasts queue temporarily as it pulled from by a worker doing no work
-            # We don't want to put the tasks on the periodic queue because they make take up all
-            # the workers capacity, stopping other important tasks from happening
-            queue=QueueNames.BROADCASTS,
+            # We use the reporting queue as it's not used for most of the day
+            queue=QueueNames.REPORTING,
         )
         current_app.logger.info(
             "Created delete_unneeded_notification_history_for_specific_hour task between %s and %s",
@@ -394,3 +393,14 @@ def delete_unneeded_notification_history_for_specific_hour(start_datetime: str, 
     )
 
     delete_notification_history_between_two_datetimes(start_datetime, end_datetime)
+
+
+@notify_celery.task(name="update-report-status-to-deleted")
+@cronitor("update-report-status-to-deleted")
+def update_report_status_to_deleted():
+    try:
+        update_report_requests_status_to_deleted()
+        current_app.logger.info("Successfully updated report status to deleted.")
+    except SQLAlchemyError as e:
+        current_app.logger.error("Failed to update report status to deleted: %s", str(e))
+        raise
