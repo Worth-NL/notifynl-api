@@ -150,7 +150,7 @@ mistune==0.8.4
     # via notifications-utils
 notifications-python-client==10.0.1
     # via -r requirements_nl.in
-notifications-utils @ git+https://github.com/Worth-NL/notifynl-utils.git@c8f5fd91401608b9d8cec3f59dcca1f89880aa87
+notifications-utils @ git+https://github.com/Worth-NL/notifynl-utils.git@b4d1c6afdc36d0ff63bc6c0a1984f78e3b6c0d43
     # via -r requirements_nl.in
 ordered-set==4.1.0
     # via notifications-utils

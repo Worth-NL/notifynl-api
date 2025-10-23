@@ -17,6 +17,7 @@ depends_on = None
 
 templates = [
     # Create new account
+    # config.py/ConfigNL.NEW_USER_EMAIL_VERIFICATION_TEMPLATE_ID
     {
         "id": "afd325cd-c83e-4b0b-8426-7acb9c0aa62b",
         "name": "NotifyNL email verification code",
@@ -27,6 +28,7 @@ templates = [
                     """,
     },
     # Invitation to collaborate - service
+    # config.py/ConfigNL.INVITATION_EMAIL_TEMPLATE_ID
     {
         "id": "b24bf0fa-dd64-4105-867c-4ed529e12df3",
         "name": "NotifyNL service invitation email",
@@ -39,6 +41,7 @@ templates = [
                     """,
     },
     # Invitation to collaborate - organisation
+    # config.py/ConfigNL.ORGANISATION_INVITATION_EMAIL_TEMPLATE_ID
     {
         "id": "dfd254da-39d1-468f-bd0d-2c9e017c13a6",
         "name": "NotifyNL organisation invitation email",
@@ -52,6 +55,7 @@ templates = [
                     """,
     },
     # SMS verification code
+    # config.py/ConfigNL.SMS_CODE_TEMPLATE_ID
     {
         "id": "f8209d70-9aa2-4a8c-89f9-00514492fa27",
         "name": "NotifyNL SMS verify code",
@@ -60,6 +64,7 @@ templates = [
         "content": "((verify_code)) is your NotifyNL authentication code",
     },
     # Password reset
+    # config.py/ConfigNL.PASSWORD_RESET_TEMPLATE_ID
     {
         "id": "4cc48b09-62d0-473f-8514-3023b306a0fb",
         "name": "NotifyNL password reset email",
@@ -74,6 +79,7 @@ templates = [
                     """,
     },
     # Create account for existing email
+    # config.py/ConfigNL.ALREADY_REGISTERED_EMAIL_TEMPLATE_ID
     {
         "id": "bb3c17a8-6009-4f67-a943-353982c15c98",
         "name": "Your NotifyNL account",
@@ -85,6 +91,7 @@ templates = [
                     """,
     },
     # Change email address
+    # config.py/ConfigNL.CHANGE_EMAIL_CONFIRMATION_TEMPLATE_ID
     {
         "id": "9eefb5bf-f1fb-46ce-9079-691260b0af9b",
         "name": "Confirm new email address",
@@ -95,6 +102,7 @@ templates = [
                     """,
     },
     # Email verification code
+    # config.py/ConfigNL.EMAIL_2FA_TEMPLATE_ID
     {
         "id": "320a5f19-600f-451e-9646-11206c69828d",
         "name": "NotifyNL email verify code",
@@ -105,6 +113,7 @@ templates = [
                     """,
     },
     # Verify reply-to address
+    # config.py/ConfigNL.REPLY_TO_EMAIL_ADDRESS_VERIFICATION_TEMPLATE_ID
     {
         "id": "fcf9095b-d1e3-46d9-b44f-752887c09322",
         "name": "Verify email reply-to address for a service on NotifyNL",
@@ -112,13 +121,13 @@ templates = [
         "subject": "Your NotifyNL reply-to email address",
         "content": """Hi,\n\n
                     This address has been provided as a reply-to email address for a NotifyNL account.\n
-                    Any replies from users to emails they receive through NotifyNL will come back to this email
-                    address.\n\n
+                    Any replies from users to emails they receive through NotifyNL will come back to this email address.\n\n
                     This is just a quick check to make sure the address is valid.\n\n
                     No need to reply.
                     """,
     },
     # Broadcast invitation email
+    # config.py/ConfigNL.BROADCAST_INVITATION_EMAIL_TEMPLATE_ID
     {
         "id": "86761e21-b39c-43e1-a06b-a3340bc2bc7a",
         "name": "NotifyNL broadcast invitation email",
@@ -137,8 +146,8 @@ templates = [
 def upgrade():
     op.get_bind()
     insert = """INSERT INTO {} (id, name, template_type, created_at, content, archived, service_id,
-                                subject, created_by_id, version, process_type, hidden, has_unsubscribe_link)
-                VALUES ('{}', '{}', '{}', current_timestamp, '{}', False, '{}', '{}', '{}', 1, 'normal', False, False)
+                                subject, created_by_id, version, hidden, has_unsubscribe_link)
+                VALUES ('{}', '{}', '{}', current_timestamp, '{}', False, '{}', '{}', '{}', 1, False, False)
             """
 
     template_redacted_insert = """INSERT INTO template_redacted (template_id, redact_personalisation,
