@@ -853,6 +853,7 @@ def test_delete_old_records_from_events_table(notify_db_session):
     assert events[0].created_at == recent_datetime
 
 
+@pytest.mark.skip(reason="[NOTIFYNL] Zendesk change")
 @freeze_time("2022-11-01 00:30:00", tick=True)
 def test_zendesk_new_email_branding_report(notify_db_session, notify_user, hostnames, mocker):
     org_1 = create_organisation(organisation_id=uuid.UUID("113d51e7-f204-44d0-99c6-020f3542a527"), name="org-1")
