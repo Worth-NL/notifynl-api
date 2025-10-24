@@ -637,6 +637,25 @@ class ConfigNL(Config):
     # dashboard
     # SPRYNG_RECEIPT_URL = os.getenv("SPRYNG_RECEIPT_URL")
 
+    # Celery overrides
+    BROKER_TRANSPORT_OPTIONS = {
+        key: value for key, value in Config.CELERY["broker_transport_options"].items() if key != "predefined_queues"
+    }
+
+    BEAT_SCHEDULE = {
+        key: value for key, value in Config.CELERY["beat_schedule"].items() if key != "check-time-to-collate-letters"
+    }
+
+    LETTER_COLLATION_FREQUENCY = os.getenv("LETTER_COLLATION_FREQUENCY", "*/5")
+
+    BEAT_SCHEDULE["check-time-to-collate-letters"] = {
+        "task": "check-time-to-collate-letters",
+        "schedule": crontab(minute=LETTER_COLLATION_FREQUENCY),  # every 5 minutes, adjust as needed
+        "options": {"queue": QueueNames.PERIODIC},
+    }
+
+    CELERY = {**Config.CELERY, "broker_transport_options": BROKER_TRANSPORT_OPTIONS, "beat_schedule": BEAT_SCHEDULE}
+
     # Client-side SSL setup
     # NOTE: For mTLS setup, trusted certificates should be added to the system certificates.
     # For a custom bundle to be used, override the CURL_CA_BUNDLE environment variable.
@@ -673,13 +692,6 @@ class DevNL(ConfigNL):
     SQLALCHEMY_ECHO = False
 
     CELERY_WORKER_LOG_LEVEL = "INFO"
-
-    CELERY = {
-        **Config.CELERY,
-        "broker_transport_options": {
-            key: value for key, value in Config.CELERY["broker_transport_options"].items() if key != "predefined_queues"
-        },
-    }
 
     SERVER_NAME = os.getenv("SERVER_NAME")
 
@@ -730,13 +742,6 @@ class TestNL(ConfigNL):
     FROM_NUMBER = "NOTIFYNLT"
     NOTIFY_ENVIRONMENT = "test"
 
-    CELERY = {
-        **Config.CELERY,
-        "broker_transport_options": {
-            key: value for key, value in Config.CELERY["broker_transport_options"].items() if key != "predefined_queues"
-        },
-    }
-
     S3_BUCKET_CSV_UPLOAD = f"{NL_PREFIX}-{NOTIFY_ENVIRONMENT}-notifications-csv-upload"
     S3_BUCKET_CONTACT_LIST = f"{NL_PREFIX}-{NOTIFY_ENVIRONMENT}-contact-list"
     S3_BUCKET_TEST_LETTERS = f"{NL_PREFIX}-{NOTIFY_ENVIRONMENT}-test-letters"
@@ -763,6 +768,8 @@ class AccNL(ConfigNL):
     S3_BUCKET_LETTER_SANITISE = f"{NL_PREFIX}-{NOTIFY_ENVIRONMENT}-letters-sanitise"
     S3_BUCKET_REPORT_REQUESTS_DOWNLOAD = f"{NL_PREFIX}-{NOTIFY_ENVIRONMENT}-report-requests-download"
 
+    REGISTER_FUNCTIONAL_TESTING_BLUEPRINT = False
+
 
 class ProdNL(ConfigNL):
     DEBUG = False
@@ -780,6 +787,8 @@ class ProdNL(ConfigNL):
     S3_BUCKET_TRANSIENT_UPLOADED_LETTERS = f"{NL_PREFIX}-{NOTIFY_ENVIRONMENT}-transient-uploaded-letters"
     S3_BUCKET_LETTER_SANITISE = f"{NL_PREFIX}-{NOTIFY_ENVIRONMENT}-letters-sanitise"
     S3_BUCKET_REPORT_REQUESTS_DOWNLOAD = f"{NL_PREFIX}-{NOTIFY_ENVIRONMENT}-report-requests-download"
+
+    REGISTER_FUNCTIONAL_TESTING_BLUEPRINT = False
 
 
 configs = {"development": DevNL, "test": Test, "testnl": TestNL, "acceptance": AccNL, "production": ProdNL}
