@@ -1,5 +1,4 @@
 from datetime import datetime, timedelta
-from datetime import time as dt_time
 
 from botocore.exceptions import ClientError as BotoClientError
 from flask import current_app
@@ -166,14 +165,12 @@ def check_time_to_collate_letters():
     """
     datetime_local = convert_utc_to_bst(datetime.utcnow())
 
-    if not (dt_time(17, 50) <= datetime_local.time() < dt_time(18, 50)):
-        current_app.logger.info("Ignoring collate_letter_pdfs_to_be_sent task outside of expected celery task window")
-        return
-
     if datetime_local.time() < LETTER_PROCESSING_DEADLINE:
         datetime_local = datetime_local - timedelta(days=1)
 
     print_run_deadline_utc = convert_bst_to_utc(datetime_local.replace(hour=17, minute=30, second=0, microsecond=0))
+
+    current_app.logger.info("running letter collation for deadline: %s", print_run_deadline_utc)
 
     collate_letter_pdfs_to_be_sent.apply_async([print_run_deadline_utc.isoformat()], queue=QueueNames.PERIODIC)
 

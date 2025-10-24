@@ -235,6 +235,7 @@ class TestCheckTimeToCollateLetters:
 
         assert mock_collate.call_args_list == [mocker.call([expected_time_called_with], queue=QueueNames.PERIODIC)]
 
+    @pytest.mark.skip(reason="[NOTIFYNL] Schedule change")
     @pytest.mark.parametrize(
         "time_to_run_task, should_run",
         [
