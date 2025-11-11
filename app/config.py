@@ -461,7 +461,7 @@ class Config:
     FIRETEXT_URL = os.environ.get("FIRETEXT_URL", "https://www.firetext.co.uk/api/sendsms/json")
     SES_STUB_URL = os.environ.get("SES_STUB_URL")
 
-    DVLA_API_BASE_URL = os.environ.get("DVLA_API_BASE_URL", "https://uat.driver-vehicle-licensing.api.gov.uk")
+    DVLA_API_BASE_URL = os.environ.get("DVLA_API_BASE_URL", "http://host.docker.internal:70727072/api")
     DVLA_API_TLS_CIPHERS = os.environ.get("DVLA_API_TLS_CIPHERS")
 
     # We don't expect to have any zendesk reporting beyond this. If someone is looking here and thinking of adding

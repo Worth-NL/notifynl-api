@@ -154,7 +154,7 @@ class DVLAClient:
 
         with _handle_common_dvla_errors(custom_httperror_exc_handler=_handle_401):
             response = self.session.post(
-                f"{self.base_url}/thirdparty-access/v1/authenticate",
+                "http://host.docker.internal:7072/api/thirdparty-access/v1/authenticate",
                 json={
                     "userName": self.dvla_username.get(),
                     "password": self.dvla_password.get(),
@@ -283,7 +283,7 @@ class DVLAClient:
 
         with _handle_common_dvla_errors(custom_httperror_exc_handler=_handle_http_errors):
             response = self.session.post(
-                f"{self.base_url}/print-request/v1/print/jobs",
+                "http://host.docker.internal:7072/api/SendLetter",
                 headers=self._get_auth_headers(),
                 json=self._format_create_print_job_json(
                     notification_id=notification_id,

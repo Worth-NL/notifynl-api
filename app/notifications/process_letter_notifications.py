@@ -1,6 +1,10 @@
+import base64
+
+from flask import current_app
 from notifications_utils.recipient_validation.postal_address import PostalAddress
 
-from app import create_random_identifier
+from app import create_random_identifier, statsd_client
+from app.clients.letter.dvla import DVLAClient
 from app.constants import LETTER_TYPE
 from app.notifications.process_notifications import persist_notification
 
@@ -16,10 +20,15 @@ def create_letter_notification(
     updated_at=None,
     postage=None,
 ):
+    """
+    Create a letter notification and send it immediately via DVLA client
+    using a hardcoded PDF. This bypasses the batch process.
+    """
+
+    # Persist the notification
     notification = persist_notification(
         template_id=template.id,
         template_version=template.version,
-        # we only accept addresses_with_underscores from the API (from CSV we also accept dashes, spaces etc)
         recipient=PostalAddress.from_personalisation(letter_data["personalisation"]).normalised,
         service=service,
         personalisation=letter_data["personalisation"],
@@ -33,9 +42,33 @@ def create_letter_notification(
         status=status,
         reply_to_text=reply_to_text,
         billable_units=billable_units,
-        # letter_data.get('postage') is only set for precompiled letters (if international it is set after sanitise)
-        # letters from a template will pass in 'europe' or 'rest-of-world' if None then use postage from template
         postage=postage or letter_data.get("postage") or template.postage,
         updated_at=updated_at,
     )
+
+    # Instantiate DVLA client inside the function
+    dvla_client = DVLAClient(application=current_app, statsd_client=statsd_client)
+
+    # Reconstruct address from notification personalisation
+    address = PostalAddress.from_personalisation(notification.personalisation)
+
+    # Hardcoded PDF (replace with your base64 string)
+    pdf_base64 = """placehere"""
+    pdf_file = base64.b64decode(pdf_base64)
+
+    # Send immediately
+    try:
+        dvla_client.send_letter(
+            notification_id=str(notification.id),
+            reference=notification.reference,
+            address=address,
+            postage=notification.postage,
+            service_id=service.id,
+            organisation_id=service.id,
+            pdf_file=pdf_file,
+            callback_url="http://host.docker.internal:7072/api/SendLetter",
+        )
+    except Exception as e:
+        current_app.logger.exception("Failed to send letter immediately: %s", e)
+
     return notification
