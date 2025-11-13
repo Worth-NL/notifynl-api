@@ -7,7 +7,6 @@
             "command": "set -a && source .env && .venv/bin/python -m flask db upgrade",
             "problemMatcher": "$python",
             "presentation": {
-                "reveal": "silent",
                 "showReuseMessage": false,
                 "close": true
             }
@@ -19,7 +18,6 @@
             "problemMatcher": "$python",
             "dependsOn": ["Run GOV.UK migrations"],
             "presentation": {
-                "reveal": "silent",
                 "showReuseMessage": false,
                 "close": true
             }
@@ -31,7 +29,27 @@
             "problemMatcher": [],
             "dependsOn": ["Run NOTIFYNL migrations"],
             "presentation": {
-                "reveal": "silent",
+                "showReuseMessage": false,
+                "close": true
+            }
+        },
+        {
+            "label": "Install API Python requirements",
+            "type": "shell",
+            "command": "uv pip install -r requirements_nl_test.txt",
+            "problemMatcher": [],
+            "presentation": {
+                "showReuseMessage": false,
+                "close": true
+            }
+        },
+        {
+            "label": "Install local notifynl-utils",
+            "type": "shell",
+            "command": "uv pip uninstall notifynl-utils && uv pip install -e ../notifynl-utils",
+            "dependsOn": ["Install API Python requirements"],
+            "problemMatcher": [],
+            "presentation": {
                 "showReuseMessage": false,
                 "close": true
             }
