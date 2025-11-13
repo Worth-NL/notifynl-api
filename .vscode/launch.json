@@ -1,0 +1,64 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "API",
+      "type": "debugpy",
+      "request": "launch",
+      "envFile": ".env",
+      "module": "flask",
+      "args": [
+        "run",
+        "--port",
+        "6011",
+        "--debug"
+      ],
+      "consoleName": "API",
+      "autoStartBrowser": false,
+      "preLaunchTask": "Deactivate Spryng provider"
+    },
+    {
+      "name": "Worker",
+      "type": "debugpy",
+      "request": "launch",
+      "envFile": ".env",
+      "module": "celery",
+      "args": [
+        "-A",
+        "run_celery.notify_celery",
+        "worker",
+        "-l",
+        "INFO",
+        "-E",
+        "-P",
+        "solo"
+      ],
+      "consoleName": "API worker"
+    },
+    {
+      "name": "Beat",
+      "type": "debugpy",
+      "request": "launch",
+      "envFile": ".env",
+      "module": "celery",
+      "args": [
+        "-A",
+        "run_celery.notify_celery",
+        "beat",
+        "-l",
+        "INFO"
+      ],
+      "consoleName": "Celery beat"
+    }
+  ],
+  "compounds": [
+    {
+        "name": "Notify API",
+        "configurations": [
+            "API",
+            "Worker",
+            "Beat"
+        ]
+    }
+  ]
+}

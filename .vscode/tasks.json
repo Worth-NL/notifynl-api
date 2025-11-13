@@ -1,0 +1,40 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "Run GOV.UK migrations",
+            "type": "shell",
+            "command": "set -a && source .env && .venv/bin/python -m flask db upgrade",
+            "problemMatcher": "$python",
+            "presentation": {
+                "reveal": "silent",
+                "showReuseMessage": false,
+                "close": true
+            }
+        },
+        {
+            "label": "Run NOTIFYNL migrations",
+            "type": "shell",
+            "command": "set -a && source .env && .venv/bin/python -m flask db upgrade -d migrations_nl",
+            "problemMatcher": "$python",
+            "dependsOn": ["Run GOV.UK migrations"],
+            "presentation": {
+                "reveal": "silent",
+                "showReuseMessage": false,
+                "close": true
+            }
+        },
+        {
+            "label": "Deactivate Spryng provider",
+            "type": "shell",
+            "command": "set -a && source .env && psql \"$SQLALCHEMY_DATABASE_URI\" -c \"UPDATE provider_details SET active = FALSE WHERE identifier = 'spryng'; UPDATE provider_details_history SET active = FALSE WHERE identifier = 'spryng';\"",
+            "problemMatcher": [],
+            "dependsOn": ["Run NOTIFYNL migrations"],
+            "presentation": {
+                "reveal": "silent",
+                "showReuseMessage": false,
+                "close": true
+            }
+        }
+    ]
+}
