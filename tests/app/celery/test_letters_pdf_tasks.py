@@ -318,6 +318,7 @@ class TestCollateLetterPdfsToBeSent:
         mock_send_via_api.assert_called_once_with(datetime(2021, 6, 1, 17, 30))
 
 
+@pytest.mark.skip(reason="[NOTIFYNL] Schedule was removed, so this query will always return every result")
 def test_send_dvla_letters_via_api(sample_letter_template, mock_celery_task):
     mock_celery = mock_celery_task(shatter_deliver_letter_tasks)
 
