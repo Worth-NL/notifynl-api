@@ -816,6 +816,20 @@ def dao_get_letters_to_be_printed(print_run_deadline_local, query_limit=10000):
     return notifications
 
 
+def dao_get_letters_to_be_printed_all(query_limit=10000):
+    notifications = (
+        Notification.query.with_entities(Notification.id)
+        .filter(
+            Notification.notification_type == LETTER_TYPE,
+            Notification.status == NOTIFICATION_CREATED,
+            Notification.key_type == KEY_TYPE_NORMAL,
+            Notification.billable_units > 0,
+        )
+        .yield_per(query_limit)
+    )
+    return notifications
+
+
 def dao_get_letters_and_sheets_volume_by_postage(print_run_deadline_local):
     notifications = (
         db.session.query(
