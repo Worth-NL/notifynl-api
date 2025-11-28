@@ -2,10 +2,53 @@
     "version": "2.0.0",
     "tasks": [
         {
+            "label": "Generate API version file",
+            "type": "shell",
+            "command": "make generate-version-file",
+            "problemMatcher": [],
+            "presentation": {
+                "showReuseMessage": false,
+                "close": true
+            }
+        },
+        {
+            "label": "Install API Python requirements",
+            "type": "shell",
+            "command": "uv pip install -r requirements_nl_test.txt",
+            "dependsOn": ["Generate API version file"],
+            "problemMatcher": [],
+            "presentation": {
+                "showReuseMessage": false,
+                "close": true
+            },
+            "options": {
+                "env": {
+                    "UV_LINK_MODE": "copy"
+                }
+            }
+        },
+        {
+            "label": "Install API local notifynl-utils",
+            "type": "shell",
+            "command": "uv pip uninstall notifynl-utils && uv pip install -e ../notifynl-utils",
+            "dependsOn": ["Install API Python requirements"],
+            "problemMatcher": [],
+            "presentation": {
+                "showReuseMessage": false,
+                "close": true
+            },
+            "options": {
+                "env": {
+                    "UV_LINK_MODE": "copy"
+                }
+            }
+        },
+        {
             "label": "Run GOV.UK migrations",
             "type": "shell",
             "command": "set -a && source .env && .venv/bin/python -m flask db upgrade",
             "problemMatcher": "$python",
+            "dependsOn": ["Install API local notifynl-utils"],
             "presentation": {
                 "showReuseMessage": false,
                 "close": true
@@ -34,25 +77,15 @@
             }
         },
         {
-            "label": "Install API Python requirements",
+            "label": "API pre-launch",
             "type": "shell",
-            "command": "uv pip install -r requirements_nl_test.txt",
+            "command": "echo \"API pre-launch\"",
+            "dependsOn": ["Deactivate Spryng provider"],
             "problemMatcher": [],
             "presentation": {
                 "showReuseMessage": false,
                 "close": true
-            }
-        },
-        {
-            "label": "Install local notifynl-utils",
-            "type": "shell",
-            "command": "uv pip uninstall notifynl-utils && uv pip install -e ../notifynl-utils",
-            "dependsOn": ["Install API Python requirements"],
-            "problemMatcher": [],
-            "presentation": {
-                "showReuseMessage": false,
-                "close": true
-            }
+            },
         }
     ]
 }

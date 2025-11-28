@@ -15,7 +15,7 @@
       ],
       "consoleName": "API",
       "autoStartBrowser": false,
-      "preLaunchTask": "Deactivate Spryng provider"
+      "preLaunchTask": "API pre-launch"
     },
     {
       "name": "Worker",
