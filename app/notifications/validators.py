@@ -10,7 +10,7 @@ from notifications_utils.recipient_validation.errors import InvalidPhoneError
 from notifications_utils.recipient_validation.notifynl.phone_number import (
     PhoneNumber,
 )
-from notifications_utils.recipient_validation.postal_address import PostalAddress
+from notifications_utils.recipient_validation.notifynl.postal_address import PostalAddress
 from sqlalchemy.orm.exc import NoResultFound
 
 from app import redis_store
