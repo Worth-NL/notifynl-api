@@ -8,7 +8,7 @@ from celery.exceptions import MaxRetriesExceededError
 from flask import current_app
 from freezegun import freeze_time
 from moto import mock_aws
-from notifications_utils.recipient_validation.postal_address import PostalAddress
+from notifications_utils.recipient_validation.notifynl.postal_address import PostalAddress
 
 import app
 from app.celery import provider_tasks

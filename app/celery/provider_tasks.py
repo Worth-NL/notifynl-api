@@ -4,7 +4,7 @@ from uuid import UUID
 
 from botocore.exceptions import ClientError as BotoClientError
 from flask import current_app
-from notifications_utils.recipient_validation.postal_address import PostalAddress
+from notifications_utils.recipient_validation.notifynl.postal_address import PostalAddress
 from sqlalchemy.orm.exc import NoResultFound
 
 from app import dvla_client, notify_celery, signing
