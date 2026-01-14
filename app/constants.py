@@ -149,22 +149,18 @@ DVLA_TO_NOTIFICATION_STATUS_MAP = {
 }
 
 # Letter postage zones
-FIRST_CLASS = "netherlands"
-SECOND_CLASS = "netherlands"
-ECONOMY_CLASS = "netherlands"
+NETHERLANDS = "netherlands"
 EUROPE = "europe"
 REST_OF_WORLD = "rest-of-world"
 
 # Aggregated letter postage types
-POSTAGE_TYPES = [SECOND_CLASS, EUROPE, REST_OF_WORLD]
-UK_POSTAGE_TYPES = [SECOND_CLASS]
+POSTAGE_TYPES = [NETHERLANDS, EUROPE, REST_OF_WORLD]
+UK_POSTAGE_TYPES = [NETHERLANDS]
 INTERNATIONAL_POSTAGE_TYPES = [EUROPE, REST_OF_WORLD]
 
 # Map postage zones to abbreviations for our print provider
 RESOLVE_POSTAGE_FOR_FILE_NAME = {
-    FIRST_CLASS: 1,
-    SECOND_CLASS: 2,
-    ECONOMY_CLASS: "ECONOMY",
+    NETHERLANDS: 1,
     EUROPE: "E",
     REST_OF_WORLD: "N",
 }
