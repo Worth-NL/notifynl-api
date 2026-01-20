@@ -125,7 +125,7 @@ Het is alleen een noodgeval als je:
 Gebruik alsnog de [supportpagina](https://admin.notifynl.nl/support).
 
 Als je de supportpagina niet kunt gebruiken, stuur dan een e-mail naar:
-ooh-gov-uk-notify-support@digital.cabinet-office.gov.uk
+info@worth.nl
 
 Gebruik dit e-mailadres uitsluitend voor noodgevallen buiten kantooruren.
 
