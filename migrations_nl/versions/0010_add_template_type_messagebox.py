@@ -1,7 +1,7 @@
 """add template type messagebox
 
-Revision ID: 0008
-Revises: 0008
+Revision ID: 0010
+Revises: 0010
 Create Date: 2025-11-21 15:05:59.982957
 
 """
@@ -10,8 +10,8 @@ import sqlalchemy as sa
 from alembic import op
 
 # revision identifiers, used by Alembic.
-revision = '0008'
-down_revision = '0007'
+revision = '0010'
+down_revision = '0009'
 branch_labels = None
 depends_on = None
 

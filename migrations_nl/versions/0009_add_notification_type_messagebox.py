@@ -1,7 +1,7 @@
 """add notification type messagebox
 
-Revision ID: 0007
-Revises: 0007
+Revision ID: 0009
+Revises: 0009
 Create Date: 2025-11-21 15:05:59.982957
 
 """
@@ -10,8 +10,8 @@ import sqlalchemy as sa
 
 
 # revision identifiers, used by Alembic.
-revision = '0007'
-down_revision = '0006'
+revision = '0009'
+down_revision = '0007'
 branch_labels = None
 depends_on = None
 
