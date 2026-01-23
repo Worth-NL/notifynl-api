@@ -28,7 +28,7 @@ from app.constants import (
 from app.cronitor import cronitor
 from app.dao.notifications_dao import (
     dao_get_letters_and_sheets_volume_by_postage,
-    dao_get_letters_to_be_printed,
+    dao_get_letters_to_be_printed_all,
     dao_get_notification_by_reference,
     dao_update_notification,
     dao_update_notifications_by_reference,
@@ -236,8 +236,13 @@ def send_letters_volume_email_to_dvla(letters_volumes, date):
 
 def send_dvla_letters_via_api(print_run_deadline_local, batch_size=100):
     current_app.logger.info("send-dvla-letters-for-day-via-api - starting queuing")
+
+    letters_to_be_printed = dao_get_letters_to_be_printed_all()
+
+    current_app.logger.info("::: Queueing %s items", letters_to_be_printed.count())
+
     for batch in batched(
-        (row.id for row in dao_get_letters_to_be_printed(print_run_deadline_local)),
+        (row.id for row in letters_to_be_printed),
         batch_size,
     ):
         shatter_deliver_letter_tasks.apply_async([batch], queue=QueueNames.PERIODIC)
