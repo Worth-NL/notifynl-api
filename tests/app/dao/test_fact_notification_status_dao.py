@@ -609,7 +609,7 @@ def test_get_total_notifications_for_date_range(sample_service):
     results = get_total_notifications_for_date_range(start_date=datetime(2021, 3, 1), end_date=datetime(2021, 3, 1))
 
     assert len(results) == 1
-    assert results[0] == ("2021-03-01", 15, 20, 3)
+    assert results[0] == ("2021-03-01", 15, 20, 3, 0)
 
 
 @freeze_time("2022-03-31T18:00:00")

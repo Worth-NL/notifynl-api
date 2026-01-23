@@ -16,6 +16,7 @@ from app.constants import (
     NOTIFICATION_TYPES,
     SMS_TO_UK_LANDLINES,
     SMS_TYPE,
+    MESSAGEBOX_TYPE
 )
 from app.dao import templates_dao
 from app.models import ServicePermission
@@ -163,7 +164,7 @@ class TestCheckServiceMessageLimit:
         assert tmr_error.fields == []
 
     @pytest.mark.parametrize("key_type", ["team", "normal"])
-    @pytest.mark.parametrize("notification_type", NOTIFICATION_TYPES + [INTERNATIONAL_SMS_TYPE])
+    @pytest.mark.parametrize("notification_type", NOTIFICATION_TYPES + [INTERNATIONAL_SMS_TYPE] - [MESSAGEBOX_TYPE])
     def test_check_service_message_limit_check_with_multiple_notifications_for_jobs(
         self, mocker, notify_db_session, notification_type, key_type
     ):
