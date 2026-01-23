@@ -85,5 +85,7 @@ def test_get_all_templates_for_invalid_type_returns_400(api_client_request, samp
 
     assert json_response == {
         "status_code": 400,
-        "errors": [{"message": "type coconut is not one of [sms, email, letter, messagebox]", "error": "ValidationError"}],
+        "errors": [
+            {"message": "type coconut is not one of [sms, email, letter, messagebox]", "error": "ValidationError"}
+        ],
     }

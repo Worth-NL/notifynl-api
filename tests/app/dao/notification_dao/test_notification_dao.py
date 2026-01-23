@@ -961,7 +961,11 @@ def test_is_delivery_slow_for_providers(
     expected_result,
 ):
     normal_notification = partial(
-        create_notification, template=sample_template, sent_by="spryng", sent_at=datetime.now(), updated_at=datetime.now()
+        create_notification,
+        template=sample_template,
+        sent_by="spryng",
+        sent_at=datetime.now(),
+        updated_at=datetime.now()
     )
 
     slow_notification = partial(
