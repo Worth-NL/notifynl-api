@@ -116,6 +116,18 @@ def _notify_db(notify_api, worker_id):
     )
     assert result.returncode == 0, result.stderr.decode()
 
+    # NotifyNL migrations, else certain types won't exist
+    result = subprocess.run(
+        ["flask", "db", "upgrade", "-d", "migrations_nl"],
+        env={
+            **os.environ,
+            "SQLALCHEMY_DATABASE_URI": current_app.config["SQLALCHEMY_DATABASE_URI"],
+            "FLASK_APP": "application:application",
+        },
+        capture_output=True,
+    )
+    assert result.returncode == 0, result.stderr.decode()
+
     # now db is initialised, run cleanup on it to remove any artifacts from migrations (such as the notify service and
     # templates). Otherwise the very first test executed by a worker will be running on a different db setup to
     # other tests that run later.
