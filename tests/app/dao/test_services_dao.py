@@ -16,8 +16,8 @@ from app.constants import (
     KEY_TYPE_TEAM,
     KEY_TYPE_TEST,
     LETTER_TYPE,
+    MESSAGEBOX_TYPE,
     SMS_TYPE,
-    MESSAGEBOX_TYPE
 )
 from app.dao.inbound_numbers_dao import (
     dao_get_available_inbound_numbers,

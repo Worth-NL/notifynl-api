@@ -21,6 +21,7 @@ from app.constants import (
     KEY_TYPE_TEAM,
     KEY_TYPE_TEST,
     LETTER_TYPE,
+    MESSAGEBOX_TYPE,
     NOTIFICATION_RETURNED_LETTER,
     NOTIFICATION_TYPES,
     REPORT_REQUEST_NOTIFICATIONS,
@@ -28,7 +29,6 @@ from app.constants import (
     SERVICE_JOIN_REQUEST_APPROVED,
     SERVICE_JOIN_REQUEST_CANCELLED,
     SMS_TYPE,
-    MESSAGEBOX_TYPE
 )
 from app.dao.organisation_dao import dao_add_service_to_organisation
 from app.dao.report_requests_dao import dao_create_report_request

@@ -10,9 +10,9 @@ from app.constants import (
     KEY_TYPE_TEAM,
     KEY_TYPE_TEST,
     LETTER_TYPE,
+    MESSAGEBOX_TYPE,
     PRECOMPILED_TEMPLATE_NAME,
     SMS_TYPE,
-    MESSAGEBOX_TYPE
 )
 from tests.app.db import (
     create_ft_notification_status,

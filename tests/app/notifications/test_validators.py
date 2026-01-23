@@ -13,10 +13,10 @@ from app.constants import (
     KEY_TYPE_NORMAL,
     KEY_TYPE_TEST,
     LETTER_TYPE,
+    MESSAGEBOX_TYPE,
     NOTIFICATION_TYPES,
     SMS_TO_UK_LANDLINES,
     SMS_TYPE,
-    MESSAGEBOX_TYPE
 )
 from app.dao import templates_dao
 from app.models import ServicePermission
