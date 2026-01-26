@@ -164,7 +164,7 @@ class TestCheckServiceMessageLimit:
         assert tmr_error.fields == []
 
     @pytest.mark.parametrize("key_type", ["team", "normal"])
-    @pytest.mark.parametrize("notification_type", NOTIFICATION_TYPES + [INTERNATIONAL_SMS_TYPE] - [MESSAGEBOX_TYPE])
+    @pytest.mark.parametrize("notification_type", NOTIFICATION_TYPES.remove(MESSAGEBOX_TYPE) + [INTERNATIONAL_SMS_TYPE])
     def test_check_service_message_limit_check_with_multiple_notifications_for_jobs(
         self, mocker, notify_db_session, notification_type, key_type
     ):
