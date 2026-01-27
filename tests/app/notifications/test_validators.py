@@ -13,12 +13,10 @@ from app.constants import (
     KEY_TYPE_NORMAL,
     KEY_TYPE_TEST,
     LETTER_TYPE,
-    MESSAGEBOX_TYPE,
+    MESSAGEBOX_TYPE,  # noqa: F401
+    NOTIFICATION_TYPES,
     SMS_TO_UK_LANDLINES,
     SMS_TYPE,
-)
-from app.constants import (
-    NOTIFICATION_TYPES as SYS_NOTIFICATION_TYPES,
 )
 from app.dao import templates_dao
 from app.models import ServicePermission
@@ -66,7 +64,7 @@ from tests.app.db import (
 from tests.conftest import set_config
 
 # TODO: [NOTIFYNL] messagebox notification type needs message limits built before this can be reverted
-NOTIFICATION_TYPES = [SMS_TYPE, EMAIL_TYPE, LETTER_TYPE]
+NOTIFICATION_TYPES = [SMS_TYPE, EMAIL_TYPE, LETTER_TYPE]  # noqa: F811
 NOTIFICATION_TYPES_INT = [SMS_TYPE, EMAIL_TYPE, LETTER_TYPE, INTERNATIONAL_SMS_TYPE]
 
 
