@@ -14,9 +14,11 @@ from app.constants import (
     KEY_TYPE_TEST,
     LETTER_TYPE,
     MESSAGEBOX_TYPE,
-    NOTIFICATION_TYPES,
     SMS_TO_UK_LANDLINES,
     SMS_TYPE,
+)
+from app.constants import (
+    NOTIFICATION_TYPES as SYS_NOTIFICATION_TYPES,
 )
 from app.dao import templates_dao
 from app.models import ServicePermission
@@ -62,6 +64,9 @@ from tests.app.db import (
     create_template,
 )
 from tests.conftest import set_config
+
+# TODO: [NOTIFYNL] messagebox notification type needs message limits built before this can be reverted
+NOTIFICATION_TYPES = SYS_NOTIFICATION_TYPES.remove(MESSAGEBOX_TYPE)
 
 
 # all of these tests should have redis enabled (except where we specifically disable it)
@@ -164,7 +169,7 @@ class TestCheckServiceMessageLimit:
         assert tmr_error.fields == []
 
     @pytest.mark.parametrize("key_type", ["team", "normal"])
-    @pytest.mark.parametrize("notification_type", NOTIFICATION_TYPES.remove(MESSAGEBOX_TYPE) + [INTERNATIONAL_SMS_TYPE])
+    @pytest.mark.parametrize("notification_type", NOTIFICATION_TYPES + [INTERNATIONAL_SMS_TYPE])
     def test_check_service_message_limit_check_with_multiple_notifications_for_jobs(
         self, mocker, notify_db_session, notification_type, key_type
     ):

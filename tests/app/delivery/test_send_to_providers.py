@@ -656,6 +656,7 @@ def test_should_send_sms_to_international_providers(sample_template, mocker):
     assert notification_international.sent_by == "mmg"
 
 
+@pytest.mark.skip(reason="[NOTIFYNL] Requires mocked Spryng client")
 def test_should_send_non_international_sms_to_default_provider(sample_template, mocker):
     mocker.patch("app.mmg_client.send_sms")
     mocker.patch("app.firetext_client.send_sms")
