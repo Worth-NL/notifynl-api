@@ -66,8 +66,8 @@ from tests.app.db import (
 from tests.conftest import set_config
 
 # TODO: [NOTIFYNL] messagebox notification type needs message limits built before this can be reverted
-NOTIFICATION_TYPES : list = SYS_NOTIFICATION_TYPES.remove(MESSAGEBOX_TYPE)
-NOTIFICATION_TYPES_INT : list = NOTIFICATION_TYPES.append(INTERNATIONAL_SMS_TYPE)
+NOTIFICATION_TYPES = [SMS_TYPE, EMAIL_TYPE, LETTER_TYPE]
+NOTIFICATION_TYPES_INT = [SMS_TYPE, EMAIL_TYPE, LETTER_TYPE, INTERNATIONAL_SMS_TYPE]
 
 
 # all of these tests should have redis enabled (except where we specifically disable it)
