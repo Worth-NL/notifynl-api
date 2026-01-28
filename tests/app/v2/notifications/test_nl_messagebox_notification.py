@@ -46,7 +46,7 @@ def test_service_messagebox_permissions(sample_service_full_permissions):
 def test_service_messagebox_rate_limiting(mocker):
     mock_rate_limit = mocker.patch("app.notifications.validators.check_service_over_api_rate_limit")
     mock_daily_limit = mocker.patch("app.notifications.validators.check_service_over_daily_message_limit")
-    service = create_service(service_permissions=[MESSAGEBOX_TYPE])
+    service = create_service(service_permissions=[MESSAGEBOX_TYPE], service_name="Sample messagebox service")
     api_key = create_api_key(service=service)
 
     check_rate_limiting(service, api_key, notification_type=MESSAGEBOX_TYPE)
