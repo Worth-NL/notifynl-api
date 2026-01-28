@@ -89,6 +89,7 @@ jobs:
           verbose: false
           emoji: false
           custom-arguments: --junitxml=reports/pytest-unit.xml
+          custom-pytest: uv run pytest
 
       - uses: dorny/test-reporter@v2
         if: ${{ !cancelled() }}

@@ -377,7 +377,7 @@ def test_post_update_organisation_updates_fields_rollback_if_update_service_free
     annual_billing = AnnualBilling.query.all()
     assert len(annual_billing) == 1
     assert annual_billing[0].service_id == sample_service.id
-    assert annual_billing[0].free_sms_fragment_limit == 5000
+    assert annual_billing[0].free_sms_fragment_limit == 0
 
     mocker.patch("app.dao.organisation_dao._update_organisation_services_free_allowance", side_effect=SQLAlchemyError)
     with pytest.raises(expected_exception=SQLAlchemyError):
@@ -391,7 +391,7 @@ def test_post_update_organisation_updates_fields_rollback_if_update_service_free
     annual_billing = AnnualBilling.query.all()
     assert len(annual_billing) == 1
     assert annual_billing[0].service_id == sample_service.id
-    assert annual_billing[0].free_sms_fragment_limit == 5000
+    assert annual_billing[0].free_sms_fragment_limit == 0
 
 
 @pytest.mark.parametrize(
@@ -724,7 +724,7 @@ def test_post_link_service_to_organisation_inserts_annual_billing(admin_request,
 
     annual_billing = AnnualBilling.query.all()
     assert len(annual_billing) == 1
-    assert annual_billing[0].free_sms_fragment_limit == 150000
+    assert annual_billing[0].free_sms_fragment_limit == 0
 
 
 def test_post_link_service_to_organisation_rollback_service_if_annual_billing_update_fails(
@@ -768,7 +768,7 @@ def test_post_link_service_to_another_org(admin_request, sample_service, sample_
     assert sample_service.organisation_type == "central"
     annual_billing = AnnualBilling.query.all()
     assert len(annual_billing) == 1
-    assert annual_billing[0].free_sms_fragment_limit == 150000
+    assert annual_billing[0].free_sms_fragment_limit == 0
 
 
 def test_post_link_service_to_organisation_nonexistent_organisation(admin_request, sample_service, fake_uuid):

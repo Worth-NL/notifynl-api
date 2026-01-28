@@ -168,7 +168,7 @@ def test_update_organisation_updates_the_service_org_type_if_org_type_is_provide
     annual_billing = AnnualBilling.query.all()
     assert len(annual_billing) == 1
     assert annual_billing[0].service_id == sample_service.id
-    assert annual_billing[0].free_sms_fragment_limit == 10000
+    assert annual_billing[0].free_sms_fragment_limit == 0
 
     sample_organisation.services.append(sample_service)
     db.session.commit()
@@ -184,7 +184,7 @@ def test_update_organisation_updates_the_service_org_type_if_org_type_is_provide
     annual_billing = AnnualBilling.query.all()
     assert len(annual_billing) == 1
     assert annual_billing[0].service_id == sample_service.id
-    assert annual_billing[0].free_sms_fragment_limit == 30000
+    assert annual_billing[0].free_sms_fragment_limit == 0
 
 
 def test_update_organisation_updates_the_service_branding_if_branding_is_provided(

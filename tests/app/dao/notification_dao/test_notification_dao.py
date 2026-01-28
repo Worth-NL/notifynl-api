@@ -961,13 +961,17 @@ def test_is_delivery_slow_for_providers(
     expected_result,
 ):
     normal_notification = partial(
-        create_notification, template=sample_template, sent_by="mmg", sent_at=datetime.now(), updated_at=datetime.now()
+        create_notification,
+        template=sample_template,
+        sent_by="spryng",
+        sent_at=datetime.now(),
+        updated_at=datetime.now()
     )
 
     slow_notification = partial(
         create_notification,
         template=sample_template,
-        sent_by="mmg",
+        sent_by="spryng",
         sent_at=datetime.now() - timedelta(minutes=5),
         updated_at=datetime.now(),
     )
@@ -982,18 +986,18 @@ def test_is_delivery_slow_for_providers(
         slow_notification(status="delivered")
 
     result = is_delivery_slow_for_providers(10, 5, threshold)
-    assert result == {"firetext": False, "mmg": expected_result}
+    assert result == {"firetext": False, "spryng": expected_result}
 
 
 @pytest.mark.parametrize(
     "options,expected_result",
     [
-        ({"status": NOTIFICATION_DELIVERED, "sent_by": "mmg"}, True),
-        ({"status": NOTIFICATION_PENDING, "sent_by": "mmg"}, True),
-        ({"status": NOTIFICATION_SENDING, "sent_by": "mmg"}, True),
-        ({"status": NOTIFICATION_TEMPORARY_FAILURE, "sent_by": "mmg"}, False),
-        ({"status": NOTIFICATION_DELIVERED, "sent_by": "mmg", "sent_at": None}, False),
-        ({"status": NOTIFICATION_DELIVERED, "sent_by": "mmg", "key_type": KEY_TYPE_TEST}, False),
+        ({"status": NOTIFICATION_DELIVERED, "sent_by": "spryng"}, True),
+        ({"status": NOTIFICATION_PENDING, "sent_by": "spryng"}, True),
+        ({"status": NOTIFICATION_SENDING, "sent_by": "spryng"}, True),
+        ({"status": NOTIFICATION_TEMPORARY_FAILURE, "sent_by": "spryng"}, False),
+        ({"status": NOTIFICATION_DELIVERED, "sent_by": "spryng", "sent_at": None}, False),
+        ({"status": NOTIFICATION_DELIVERED, "sent_by": "spryng", "key_type": KEY_TYPE_TEST}, False),
         ({"status": NOTIFICATION_SENDING, "sent_by": "firetext"}, False),
         ({"status": NOTIFICATION_DELIVERED, "sent_by": "firetext"}, False),
     ],
@@ -1010,7 +1014,7 @@ def test_delivery_is_delivery_slow_for_providers_filters_out_notifications_it_sh
     create_slow_notification_with.update(options)
     create_notification(**create_slow_notification_with)
     result = is_delivery_slow_for_providers(10, 5, 0.1)
-    assert result["mmg"] == expected_result
+    assert result["spryng"] == expected_result
 
 
 def test_dao_get_notifications_by_recipient(sample_template):
