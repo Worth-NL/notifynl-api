@@ -232,6 +232,9 @@ def register_blueprint(application):
     from app.notifications.notifications_letter_callback import (
         letter_callback_blueprint,
     )
+    from app.notifications.notifications_messagebox_callback import (
+        messagebox_callback_blueprint,
+    )
     from app.notifications.notifications_sms_callback import (
         sms_callback_blueprint,
     )
@@ -287,6 +290,10 @@ def register_blueprint(application):
     # delivery receipts
     sms_callback_blueprint.before_request(requires_no_auth)
     application.register_blueprint(sms_callback_blueprint)
+
+    # delivery receipts messagebox
+    messagebox_callback_blueprint.before_request(requires_no_auth)
+    application.register_blueprint(messagebox_callback_blueprint)
 
     # inbound sms
     receive_notifications_blueprint.before_request(requires_no_auth)
@@ -381,6 +388,7 @@ def register_v2_blueprints(application):
     from app.v2.notifications import (  # noqa
         get_notifications,
         post_notifications,
+        post_notifications_messagebox,
         v2_notification_blueprint,
     )
     from app.v2.template import (  # noqa

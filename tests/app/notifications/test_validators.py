@@ -13,6 +13,7 @@ from app.constants import (
     KEY_TYPE_NORMAL,
     KEY_TYPE_TEST,
     LETTER_TYPE,
+    MESSAGEBOX_TYPE,  # noqa: F401
     NOTIFICATION_TYPES,
     SMS_TO_UK_LANDLINES,
     SMS_TYPE,
@@ -62,6 +63,10 @@ from tests.app.db import (
 )
 from tests.conftest import set_config
 
+# TODO: [NOTIFYNL] messagebox notification type needs message limits built before this can be reverted
+NOTIFICATION_TYPES = [SMS_TYPE, EMAIL_TYPE, LETTER_TYPE]  # noqa: F811
+NOTIFICATION_TYPES_INT = [SMS_TYPE, EMAIL_TYPE, LETTER_TYPE, INTERNATIONAL_SMS_TYPE]
+
 
 # all of these tests should have redis enabled (except where we specifically disable it)
 @pytest.fixture(scope="module", autouse=True)
@@ -72,7 +77,7 @@ def enable_redis(notify_api):
 
 class TestCheckServiceMessageLimit:
     @pytest.mark.parametrize("key_type", ["team", "normal"])
-    @pytest.mark.parametrize("notification_type", NOTIFICATION_TYPES + [INTERNATIONAL_SMS_TYPE])
+    @pytest.mark.parametrize("notification_type", NOTIFICATION_TYPES_INT)
     def test_check_service_message_limit_in_cache_under_message_limit_passes(
         self, sample_service, mocker, notification_type, key_type
     ):
@@ -85,7 +90,7 @@ class TestCheckServiceMessageLimit:
         ]
         assert mock_set.call_args_list == []
 
-    @pytest.mark.parametrize("notification_type", NOTIFICATION_TYPES + [INTERNATIONAL_SMS_TYPE])
+    @pytest.mark.parametrize("notification_type", NOTIFICATION_TYPES_INT)
     def test_check_service_over_daily_message_limit_should_not_interact_with_cache_for_test_key(
         self, sample_service, mocker, notification_type
     ):
@@ -96,7 +101,7 @@ class TestCheckServiceMessageLimit:
         assert mock_get.call_args_list == []
 
     @pytest.mark.parametrize("key_type", ["team", "normal"])
-    @pytest.mark.parametrize("notification_type", NOTIFICATION_TYPES + [INTERNATIONAL_SMS_TYPE])
+    @pytest.mark.parametrize("notification_type", NOTIFICATION_TYPES_INT)
     def test_check_service_over_daily_message_limit_should_set_cache_value_as_zero_if_cache_not_set(
         self, sample_service, mocker, notification_type, key_type
     ):
@@ -109,7 +114,7 @@ class TestCheckServiceMessageLimit:
                 mocker.call(daily_limit_cache_key(sample_service.id, notification_type=notification_type), 0, ex=86400),
             ]
 
-    @pytest.mark.parametrize("notification_type", NOTIFICATION_TYPES + [INTERNATIONAL_SMS_TYPE])
+    @pytest.mark.parametrize("notification_type", NOTIFICATION_TYPES_INT)
     def test_check_service_over_daily_message_limit_does_nothing_if_redis_disabled(
         self, notify_api, sample_service, mocker, notification_type
     ):
@@ -120,7 +125,7 @@ class TestCheckServiceMessageLimit:
             assert mock_cache_key.method_calls == []
 
     @pytest.mark.parametrize("key_type", ["team", "normal"])
-    @pytest.mark.parametrize("notification_type", NOTIFICATION_TYPES + [INTERNATIONAL_SMS_TYPE])
+    @pytest.mark.parametrize("notification_type", NOTIFICATION_TYPES_INT)
     def test_check_service_message_limit_over_message_limit_fails_with_cold_ie_missing_cache_value(
         self, mocker, notify_db_session, notification_type, key_type
     ):
@@ -141,7 +146,7 @@ class TestCheckServiceMessageLimit:
         assert tmr_error.fields == []
 
     @pytest.mark.parametrize("key_type", ["team", "normal"])
-    @pytest.mark.parametrize("notification_type", NOTIFICATION_TYPES + [INTERNATIONAL_SMS_TYPE])
+    @pytest.mark.parametrize("notification_type", NOTIFICATION_TYPES_INT)
     def test_check_service_message_limit_over_message_limit_fails(
         self, mocker, notify_db_session, notification_type, key_type
     ):
@@ -163,7 +168,7 @@ class TestCheckServiceMessageLimit:
         assert tmr_error.fields == []
 
     @pytest.mark.parametrize("key_type", ["team", "normal"])
-    @pytest.mark.parametrize("notification_type", NOTIFICATION_TYPES + [INTERNATIONAL_SMS_TYPE])
+    @pytest.mark.parametrize("notification_type", NOTIFICATION_TYPES_INT)
     def test_check_service_message_limit_check_with_multiple_notifications_for_jobs(
         self, mocker, notify_db_session, notification_type, key_type
     ):

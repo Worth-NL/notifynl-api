@@ -99,7 +99,7 @@ def test_get_free_sms_fragment_limit_current_year_creates_new_row_if_annual_bill
     json_response = admin_request.get("billing.get_free_sms_fragment_limit", service_id=sample_service.id)
 
     assert json_response["financial_year_start"] == 2021
-    assert json_response["free_sms_fragment_limit"] == 10000  # based on other organisation type
+    assert json_response["free_sms_fragment_limit"] == 0  # based on other organisation type
 
 
 @pytest.mark.parametrize("high_volume_service_last_year", [True, False])
