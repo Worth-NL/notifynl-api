@@ -137,3 +137,58 @@ jobs:
           tags: ${{ env.IMAGE }}:${{ steps.set-tag.outputs.tag }}
           platforms: linux/amd64
           provenance: false
+
+    outputs:
+      tag: ${{ steps.set-tag.outputs.tag }}
+
+  deploy:
+    runs-on: ubuntu-latest
+    needs: build
+    environment:
+      name: Test
+      url: https://api.test.notifynl.nl
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: Worth-NL/notifynl-charts-private
+          ref: main
+          token: ${{ secrets.RELEASE_TOKEN }}
+        name: Checkout Worth-NL/notifynl-charts-private
+
+      - uses: bwvolleyball/k8s-toolkit@v1.0.0
+        with:
+          config: ${{ secrets.K8S_CONFIG }}
+
+      - name: Helm chart dependency build
+        run: helm dependency build
+        working-directory: ${{ github.workspace }}/notifynl-full
+
+      - name: Deploy new tag
+        id: helm-deploy
+        run: helm upgrade --install notifynl notifynl-full/ -n ${{ vars.NAMESPACE }} --reuse-values --set apps.admin.image.tag=${{ needs.build.outputs.tag }} --wait --timeout 300s
+
+      - name: Comment on PR if deployment fails
+        if: failure() && steps.helm-deploy.outcome == 'failure' && github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: [
+                "❌ **Test environment deployment failed**",
+                "",
+                "- Environment: `Test`",
+                "- Image tag: `${{ needs.build.outputs.tag }}`",
+                "- Step: `helm upgrade --install notifynl notifynl-full/ -n ${{ vars.NAMESPACE }} --reuse-values --set apps.admin.image.tag=${{ needs.build.outputs.tag }} --wait --timeout 300s`",
+                "",
+                "Check the workflow logs for the Helm error output."
+                "",
+                "Most likely issues:",
+                "- DB migration desync",
+                "- Package visibility",
+                "- ghcr.io credentials expiration or change"
+              ].join("\n")
+            })
