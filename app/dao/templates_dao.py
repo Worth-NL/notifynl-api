@@ -4,7 +4,7 @@ from flask import current_app
 from sqlalchemy import asc, desc
 
 from app import db
-from app.constants import LETTER_TYPE, SECOND_CLASS
+from app.constants import LETTER_TYPE, NETHERLANDS
 from app.dao.dao_utils import VersionOptions, autocommit, version_class
 from app.dao.users_dao import get_user_by_id
 from app.models import Template, TemplateHistory, TemplateRedacted
@@ -103,7 +103,7 @@ def get_precompiled_letter_template(service_id):
         hidden=True,
         subject="Pre-compiled PDF",
         content="",
-        postage=SECOND_CLASS,
+        postage=NETHERLANDS,
     )
 
     dao_create_template(template)

@@ -10,7 +10,7 @@ from app.constants import (
     EDIT_FOLDER_PERMISSIONS,
     EMAIL_AUTH,
     INBOUND_SMS_TYPE,
-    SECOND_CLASS,
+    NETHERLANDS,
     SEND_EMAILS,
     SEND_LETTERS,
     SEND_TEXTS,
@@ -531,7 +531,7 @@ def _create_letter_template(service, user_id, name, subject, content, letter_con
     )
 
     new_template.service = service
-    new_template.postage = SECOND_CLASS
+    new_template.postage = NETHERLANDS
     new_template.service_letter_contact_id = letter_contact_id
 
     dao_create_template(new_template)

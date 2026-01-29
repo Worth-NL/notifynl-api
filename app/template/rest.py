@@ -14,7 +14,7 @@ from pypdf.errors import PdfReadError
 from requests import post as requests_post
 from sqlalchemy.orm.exc import NoResultFound
 
-from app.constants import LETTER_TYPE, QR_CODE_TOO_LONG, SECOND_CLASS, SMS_TYPE
+from app.constants import LETTER_TYPE, NETHERLANDS, QR_CODE_TOO_LONG, SMS_TYPE
 from app.dao.notifications_dao import get_notification_by_id
 from app.dao.services_dao import dao_fetch_service_by_id
 from app.dao.template_folder_dao import (
@@ -88,7 +88,7 @@ def create_template(service_id):
         raise InvalidRequest(errors, 403)
 
     if not new_template.postage and new_template.template_type == LETTER_TYPE:
-        new_template.postage = SECOND_CLASS
+        new_template.postage = NETHERLANDS
 
     new_template.service = fetched_service
 
