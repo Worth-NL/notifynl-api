@@ -184,7 +184,7 @@ jobs:
                 "- Image tag: `${{ needs.build.outputs.tag }}`",
                 "- Step: `helm upgrade --install notifynl notifynl-full/ -n ${{ vars.NAMESPACE }} --reuse-values --set apps.admin.image.tag=${{ needs.build.outputs.tag }} --wait --timeout 300s`",
                 "",
-                "Check the workflow logs for the Helm error output."
+                "Check the workflow logs for the Helm error output.",
                 "",
                 "Most likely issues:",
                 "- DB migration desync",
