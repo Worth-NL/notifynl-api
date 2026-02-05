@@ -177,7 +177,7 @@ jobs:
           -n ${{ vars.NAMESPACE }} \
           --reuse-values \
           --set apps.api.image.tag=${{ needs.build.outputs.tag }} \
-          --set apps.api.initContainers[0].image=${{ env.IMAGE }}:${{ needs.build.outputs.tag }} \
+          --set-string apps.api.initContainers[0].image=${{ env.IMAGE }}:${{ needs.build.outputs.tag }} \
           --set apps.apiWorkerRetryTasks.image.tag=${{ needs.build.outputs.tag }} \
           --set apps.apiWorkerLetters.image.tag=${{ needs.build.outputs.tag }} \
           --set apps.apiWorkerJobs.image.tag=${{ needs.build.outputs.tag }} \
