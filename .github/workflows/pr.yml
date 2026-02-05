@@ -171,7 +171,27 @@ jobs:
 
       - name: Deploy new tag
         id: helm-deploy
-        run: helm upgrade --install notifynl notifynl-full/ -n ${{ vars.NAMESPACE }} --reuse-values --set apps.admin.image.tag=${{ needs.build.outputs.tag }} --wait --timeout 300s
+        run: |
+          set -x
+          helm upgrade --install notifynl notifynl-full/ \
+          -n ${{ vars.NAMESPACE }} \
+          --reuse-values \
+          --set apps.api.image.tag=${{ needs.build.outputs.tag }} \
+          --set apps.api.initContainers[0].image=${{ env.IMAGE }}:${{ needs.build.outputs.tag }} \
+          --set apps.apiWorkerRetryTasks.image.tag=${{ needs.build.outputs.tag }} \
+          --set apps.apiWorkerLetters.image.tag=${{ needs.build.outputs.tag }} \
+          --set apps.apiWorkerJobs.image.tag=${{ needs.build.outputs.tag }} \
+          --set apps.apiWorkerResearch.image.tag=${{ needs.build.outputs.tag }} \
+          --set apps.apiWorkerSender.image.tag=${{ needs.build.outputs.tag }} \
+          --set apps.apiWorkerSenderLetters.image.tag=${{ needs.build.outputs.tag }} \
+          --set apps.apiWorkerPeriodic.image.tag=${{ needs.build.outputs.tag }} \
+          --set apps.apiWorkerReporting.image.tag=${{ needs.build.outputs.tag }} \
+          --set apps.apiWorkerSenderLeapiWorkerInternaltters.image.tag=${{ needs.build.outputs.tag }} \
+          --set apps.apiWorkerReceipts.image.tag=${{ needs.build.outputs.tag }} \
+          --set apps.apiWorkerServiceCallbacks.image.tag=${{ needs.build.outputs.tag }} \
+          --set apps.apiWorkerReportRequestsNotificationsTasks.image.tag=${{ needs.build.outputs.tag }} \
+          --wait \
+          --timeout 300s
 
       - name: Comment on PR if deployment fails
         if: failure() && steps.helm-deploy.outcome == 'failure' && github.event_name == 'pull_request'
@@ -187,9 +207,12 @@ jobs:
                 "",
                 "- Environment: `Test`",
                 "- Image tag: `${{ needs.build.outputs.tag }}`",
-                "- Step: `helm upgrade --install notifynl notifynl-full/ -n ${{ vars.NAMESPACE }} --reuse-values --set apps.admin.image.tag=${{ needs.build.outputs.tag }} --wait --timeout 300s`",
                 "",
                 "Check the workflow logs for the Helm error output.",
+                "",
+                "Check the test env k8s state/logs.",
+                "",
+                "Check if the helm release needs a rollback.",
                 "",
                 "Most likely issues:",
                 "- DB migration desync",
