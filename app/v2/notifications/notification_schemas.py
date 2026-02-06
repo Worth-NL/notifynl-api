@@ -290,3 +290,34 @@ post_letter_response = {
     },
     "required": ["id", "content", "uri", "template"],
 }
+
+post_messagebox_request = {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "description": "POST berichtenbox notification schema",
+    "type": "object",
+    "title": "POST v2/notifications/berichtenbox",
+    "properties": {
+        "reference": {"type": "string", "maxLength": 1_000},
+    },
+    "required": [],
+    "additionalProperties": False,
+}
+
+post_messagebox_response = {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "description": "POST berichtenbox notification response schema",
+    "type": "object",
+    "title": "response v2/notifications/berichtenbox",
+    "properties": {
+        "id": uuid,
+        "organisation_id": {
+            "oneOf": [
+                uuid,
+                { "type": "null" }
+            ]
+        },
+        "uri": {"type": "string", "format": "uri"},
+    },
+    "required": ["id", "uri"],
+    "additionalProperties": False,
+}

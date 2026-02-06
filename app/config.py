@@ -23,6 +23,7 @@ class QueueNames:
     LETTERS = "letter-tasks"
     SES_CALLBACKS = "ses-callbacks"
     SMS_CALLBACKS = "sms-callbacks"
+    MESSAGEBOX_CALLBACKS = "messagebox-callbacks"
     LETTER_CALLBACKS = "letter-callbacks"
     ANTIVIRUS = "antivirus-tasks"
     SANITISE_LETTERS = "sanitise-letter-tasks"
@@ -47,6 +48,7 @@ class QueueNames:
             QueueNames.LETTERS,
             QueueNames.SES_CALLBACKS,
             QueueNames.SMS_CALLBACKS,
+            QueueNames.MESSAGEBOX_CALLBACKS,
             QueueNames.LETTER_CALLBACKS,
             QueueNames.REPORT_REQUESTS_NOTIFICATIONS,
         ]

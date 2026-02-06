@@ -113,7 +113,7 @@ def test_dao_get_default_annual_allowance_for_service_uses_org_default(sample_se
 
     with caplog.at_level("WARN"):
         default_allowance = dao_get_default_annual_allowance_for_service(sample_service, 2024)
-        assert default_allowance.allowance == 5000
+        assert default_allowance.allowance == 0
 
     assert (
         f"No organisation type for service {sample_service.id}. Using default for `other` org type."
@@ -123,10 +123,10 @@ def test_dao_get_default_annual_allowance_for_service_uses_org_default(sample_se
 @pytest.mark.parametrize(
     "org_type, year, expected_allowance",
     [
-        ("central", 2024, 30_000),
+        ("central", 2024, 0),
         ("nhs_gp", 2024, 0),
-        ("nhs_local", 2022, 20_000),
-        ("emergency_service", 2023, 20_000),
+        ("nhs_local", 2022, 0),
+        ("emergency_service", 2023, 0),
     ],
 )
 def test_dao_get_default_annual_allowance_for_service(sample_service, org_type, year, expected_allowance):
@@ -138,41 +138,41 @@ def test_dao_get_default_annual_allowance_for_service(sample_service, org_type, 
 @pytest.mark.parametrize(
     "org_type, year, expected_default",
     [
-        ("central", 2021, 150000),
-        ("local", 2021, 25000),
-        ("nhs_central", 2021, 150000),
-        ("nhs_local", 2021, 25000),
-        ("nhs_gp", 2021, 10000),
-        ("emergency_service", 2021, 25000),
-        ("school_or_college", 2021, 10000),
-        ("other", 2021, 10000),
-        (None, 2021, 10000),
-        ("central", 2020, 250000),
-        ("local", 2020, 25000),
-        ("nhs_central", 2020, 250000),
-        ("nhs_local", 2020, 25000),
-        ("nhs_gp", 2020, 25000),
-        ("emergency_service", 2020, 25000),
-        ("school_or_college", 2020, 25000),
-        ("other", 2020, 25000),
-        (None, 2020, 25000),
-        ("central", 2019, 250000),
-        ("school_or_college", 2022, 10000),
-        ("central", 2022, 40000),
-        ("local", 2022, 20000),
-        ("nhs_local", 2022, 20000),
-        ("emergency_service", 2022, 20000),
-        ("central", 2023, 40000),
+        ("central", 2021, 0),
+        ("local", 2021, 0),
+        ("nhs_central", 2021, 0),
+        ("nhs_local", 2021, 0),
+        ("nhs_gp", 2021, 0),
+        ("emergency_service", 2021, 0),
+        ("school_or_college", 2021, 0),
+        ("other", 2021, 0),
+        (None, 2021, 0),
+        ("central", 2020, 0),
+        ("local", 2020, 0),
+        ("nhs_central", 2020, 0),
+        ("nhs_local", 2020, 0),
+        ("nhs_gp", 2020, 0),
+        ("emergency_service", 2020, 0),
+        ("school_or_college", 2020, 0),
+        ("other", 2020, 0),
+        (None, 2020, 0),
+        ("central", 2019, 0),
+        ("school_or_college", 2022, 0),
+        ("central", 2022, 0),
+        ("local", 2022, 0),
+        ("nhs_local", 2022, 0),
+        ("emergency_service", 2022, 0),
+        ("central", 2023, 0),
         # Some test cases that will make valid assertions as time inevitably marches on
-        ("central", get_current_financial_year_start_year(), 30_000),
-        ("local", get_current_financial_year_start_year(), 10_000),
-        ("nhs_central", get_current_financial_year_start_year(), 30_000),
-        ("nhs_local", get_current_financial_year_start_year(), 10_000),
+        ("central", get_current_financial_year_start_year(), 0),
+        ("local", get_current_financial_year_start_year(), 0),
+        ("nhs_central", get_current_financial_year_start_year(), 0),
+        ("nhs_local", get_current_financial_year_start_year(), 0),
         ("nhs_gp", get_current_financial_year_start_year(), 0),
-        ("emergency_service", get_current_financial_year_start_year(), 10_000),
-        ("school_or_college", get_current_financial_year_start_year(), 5_000),
-        ("other", get_current_financial_year_start_year(), 5_000),
-        (None, get_current_financial_year_start_year(), 5_000),
+        ("emergency_service", get_current_financial_year_start_year(), 0),
+        ("school_or_college", get_current_financial_year_start_year(), 0),
+        ("other", get_current_financial_year_start_year(), 0),
+        (None, get_current_financial_year_start_year(), 0),
     ],
 )
 def test_set_default_free_allowance_for_service(notify_db_session, org_type, year, expected_default):
@@ -215,7 +215,7 @@ def test_set_default_free_allowance_for_service_using_correct_year(sample_servic
 
     mock_dao.assert_called_once_with(
         sample_service.id,
-        25000,
+        0,
         2020,
         high_volume_service_last_year=False,
         has_custom_allowance=False,
@@ -274,7 +274,7 @@ def test_set_default_free_allowance_for_service_for_service_with_previous_defaul
 
     mock_dao.assert_called_once_with(
         sample_service.id,
-        25000,
+        0,
         2020,
         high_volume_service_last_year=False,
         has_custom_allowance=False,
@@ -288,7 +288,7 @@ def test_set_default_free_allowance_for_service_updates_existing_year(sample_ser
     assert not sample_service.organisation_type
     assert len(annual_billing) == 1
     assert annual_billing[0].service_id == sample_service.id
-    assert annual_billing[0].free_sms_fragment_limit == 10000
+    assert annual_billing[0].free_sms_fragment_limit == 0
     assert annual_billing[0].high_volume_service_last_year is False
     assert annual_billing[0].has_custom_allowance is False
 
@@ -298,7 +298,7 @@ def test_set_default_free_allowance_for_service_updates_existing_year(sample_ser
     annual_billing = AnnualBilling.query.all()
     assert len(annual_billing) == 1
     assert annual_billing[0].service_id == sample_service.id
-    assert annual_billing[0].free_sms_fragment_limit == 150000
+    assert annual_billing[0].free_sms_fragment_limit == 0
     assert annual_billing[0].high_volume_service_last_year is False
     assert annual_billing[0].has_custom_allowance is False
 
