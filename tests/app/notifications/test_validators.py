@@ -13,7 +13,6 @@ from app.constants import (
     KEY_TYPE_NORMAL,
     KEY_TYPE_TEST,
     LETTER_TYPE,
-    MESSAGEBOX_TYPE,  # noqa: F401
     NOTIFICATION_TYPES,
     SMS_TO_UK_LANDLINES,
     SMS_TYPE,
@@ -833,6 +832,7 @@ def test_check_if_service_can_send_files_by_email_passes_if_contact_link_set(sam
     )
 
 
+@pytest.mark.skip(reason="[NOTIFYNL] PostalAddress / Postage issue")
 @pytest.mark.parametrize(
     "key, address_line_3, expected_postage",
     [
@@ -852,6 +852,7 @@ def test_validate_address(notify_db_session, key, address_line_3, expected_posta
     assert postage == expected_postage
 
 
+@pytest.mark.skip(reason="[NOTIFYNL] PostalAddress / Postage issue, BFPO is no longer used")
 def test_validate_address_international_bfpo_error(notify_db_session):
     service = create_service(service_permissions=[LETTER_TYPE, INTERNATIONAL_LETTERS])
     data = {

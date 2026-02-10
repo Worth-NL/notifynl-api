@@ -291,19 +291,11 @@ def validate_address(service, letter_data):
         if not address.city:
             raise ValidationError(message="cant detect a dutch city, city name must be in the same line as postcode")
 
-    # if address.has_invalid_country_for_bfpo_address:
-    #     raise ValidationError(message="The last line of a BFPO address must not be a country.")
-    # if not address.has_valid_last_line:
-    # if address.allow_international_letters:
-    # raise ValidationError(message="Last line of address must be a real UK postcode or another country")
-    # raise ValidationError(
-    #     message="Options for last line are: a country, a city of the netherlands, a NL postcode with a city"
-    # )
-
     if address.international:
         return address.postage
     else:
         return None
+    # TODO: do we want to keep using validate address to get the postage ???
 
 
 def check_template_can_contain_documents(template_type, personalisation):

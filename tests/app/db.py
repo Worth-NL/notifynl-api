@@ -3,13 +3,7 @@ import uuid
 from datetime import datetime, timedelta
 
 from app import db
-from app.constants import (
-    EMAIL_TYPE,
-    KEY_TYPE_NORMAL,
-    LETTER_TYPE,
-    MOBILE_TYPE,
-    SMS_TYPE,
-)
+from app.constants import DEFAULT_POSTAGE, EMAIL_TYPE, KEY_TYPE_NORMAL, LETTER_TYPE, MOBILE_TYPE, SMS_TYPE
 from app.dao import fact_processing_time_dao
 from app.dao.email_branding_dao import dao_create_email_branding
 from app.dao.inbound_sms_dao import dao_create_inbound_sms
@@ -279,7 +273,7 @@ def create_notification(
             api_key = create_api_key(template.service, key_type=key_type)
 
     if template.template_type == "letter" and postage is None:
-        postage = "second"
+        postage = DEFAULT_POSTAGE
 
     if template.template_type == "sms" and rate_multiplier is None:
         rate_multiplier = 1
