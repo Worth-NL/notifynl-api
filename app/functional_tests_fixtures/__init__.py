@@ -401,6 +401,7 @@ def _create_service(org_id, user, service_name="Functional Tests"):
                 "sms_message_limit": 1000,
                 "letter_message_limit": 1000,
                 "email_message_limit": 1000,
+                "messagebox_message_limit": 1000,
                 "contact_link": current_app.config["ADMIN_BASE_URL"],
             }
         )

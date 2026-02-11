@@ -86,6 +86,7 @@ class SerialisedService(SerialisedModel):
     letter_message_limit: int
     sms_message_limit: int
     international_sms_message_limit: int
+    messagebox_message_limit: int
     permissions: Any
     rate_limit: int
     restricted: bool

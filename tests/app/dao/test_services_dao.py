@@ -804,6 +804,7 @@ def test_fetch_stats_filters_on_service(notify_db_session):
         email_message_limit=1000,
         sms_message_limit=1000,
         letter_message_limit=1000,
+        messagebox_message_limit=1000,
     )
     dao_create_service(service_two, service_one.created_by)
 

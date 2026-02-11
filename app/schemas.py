@@ -224,6 +224,7 @@ class ServiceSchema(BaseSchema, UUIDsAsStringsMixin):
     international_sms_message_limit = field_for(models.Service, "international_sms_message_limit", required=False)
     sms_message_limit = field_for(models.Service, "sms_message_limit", required=True)
     letter_message_limit = field_for(models.Service, "letter_message_limit", required=True)
+    messagebox_message_limit = field_for(models.Service, "messagebox_message_limit", required=True)
     go_live_at = field_for(models.Service, "go_live_at", format=DATETIME_FORMAT_NO_TIMEZONE)
     name = fields.String(required=True)
     custom_email_sender_name = fields.String(allow_none=True)
@@ -358,6 +359,7 @@ class DetailedServiceSchema(BaseSchema):
             "returned_letters",
             "service_sms_senders",
             "sms_message_limit",
+            "messagebox_message_limit",
             "templates",
             "users",
             "version",
@@ -670,6 +672,7 @@ class ServiceHistorySchema(ma.Schema):
     email_message_limit = fields.Integer()
     sms_message_limit = fields.Integer()
     letter_message_limit = fields.Integer()
+    messagebox_message_limit = fields.Integer()
     restricted = fields.Boolean()
     custom_email_sender_name = fields.String()
     email_sender_local_part = fields.String()
