@@ -18,7 +18,9 @@ depends_on = None
 
 def upgrade():
     op.add_column("services", sa.Column("messagebox_message_limit", sa.BigInteger(), nullable=True))
+    op.add_column("services_history", sa.Column("messagebox_message_limit", sa.BigInteger(), nullable=True))
 
 
 def downgrade():
+    op.drop_column("services", "messagebox_message_limit")
     op.drop_column("services_history", "messagebox_message_limit")
