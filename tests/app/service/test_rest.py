@@ -289,6 +289,7 @@ def test_get_service_by_id(admin_request, sample_service):
         "restricted",
         "service_callback_api",
         "sms_message_limit",
+        "messagebox_message_limit",
         "volume_email",
         "volume_letter",
         "volume_sms",
@@ -310,14 +311,8 @@ def test_get_service_list_has_default_permissions(admin_request, service_factory
     json_resp = admin_request.get("service.get_services")
     assert len(json_resp["data"]) == 3
     assert all(
-        set(json["permissions"]) == {
-            EMAIL_TYPE,
-            SMS_TYPE,
-            INTERNATIONAL_SMS_TYPE,
-            LETTER_TYPE,
-            INTERNATIONAL_LETTERS,
-            MESSAGEBOX_TYPE
-        }
+        set(json["permissions"])
+        == {EMAIL_TYPE, SMS_TYPE, INTERNATIONAL_SMS_TYPE, LETTER_TYPE, INTERNATIONAL_LETTERS, MESSAGEBOX_TYPE}
         for json in json_resp["data"]
     )
 
@@ -331,7 +326,7 @@ def test_get_service_by_id_has_default_service_permissions(admin_request, sample
         INTERNATIONAL_SMS_TYPE,
         LETTER_TYPE,
         INTERNATIONAL_LETTERS,
-        MESSAGEBOX_TYPE
+        MESSAGEBOX_TYPE,
     }
 
 
@@ -393,6 +388,7 @@ def test_create_service(
         "email_message_limit": 1000,
         "sms_message_limit": 1000,
         "letter_message_limit": 1000,
+        "messagebox_message_limit": 1000,
         "restricted": False,
         "active": False,
         "created_by": str(sample_user.id),
@@ -427,6 +423,7 @@ def test_create_service_should_create_annual_billing_for_service(admin_request, 
         "email_message_limit": 1000,
         "sms_message_limit": 1000,
         "letter_message_limit": 1000,
+        "messagebox_message_limit": 1000,
         "restricted": False,
         "active": False,
         "created_by": str(sample_user.id),
@@ -448,6 +445,7 @@ def test_create_service_should_raise_exception_and_not_create_service_if_annual_
         "email_message_limit": 1000,
         "sms_message_limit": 1000,
         "letter_message_limit": 1000,
+        "messagebox_message_limit": 1000,
         "restricted": False,
         "active": False,
         "created_by": str(sample_user.id),
@@ -481,6 +479,7 @@ def test_create_service_inherits_branding_from_organisation(
             "email_message_limit": 1000,
             "sms_message_limit": 1000,
             "letter_message_limit": 1000,
+            "messagebox_message_limit": 1000,
             "restricted": False,
             "active": False,
             "created_by": str(sample_user.id),
@@ -500,6 +499,7 @@ def test_should_not_create_service_with_missing_user_id_field(notify_api, fake_u
                 "email_message_limit": 1000,
                 "sms_message_limit": 1000,
                 "letter_message_limit": 1000,
+                "messagebox_message_limit": 1000,
                 "restricted": False,
                 "active": False,
                 "created_by": str(fake_uuid),
@@ -521,6 +521,7 @@ def test_should_error_if_created_by_missing(notify_api, sample_user):
                 "email_message_limit": 1000,
                 "sms_message_limit": 1000,
                 "letter_message_limit": 1000,
+                "messagebox_message_limit": 1000,
                 "restricted": False,
                 "active": False,
                 "user_id": str(sample_user.id),
@@ -543,6 +544,7 @@ def test_should_not_create_service_with_missing_if_user_id_is_not_in_database(no
                 "email_message_limit": 1000,
                 "sms_message_limit": 1000,
                 "letter_message_limit": 1000,
+                "messagebox_message_limit": 1000,
                 "restricted": False,
                 "active": False,
                 "created_by": str(fake_uuid),
@@ -570,6 +572,7 @@ def test_should_not_create_service_if_missing_data(notify_api, sample_user):
             assert "Missing data for required field." in json_resp["message"]["email_message_limit"]
             assert "Missing data for required field." in json_resp["message"]["sms_message_limit"]
             assert "Missing data for required field." in json_resp["message"]["letter_message_limit"]
+            assert "Missing data for required field." in json_resp["message"]["messagebox_message_limit"]
             assert "Missing data for required field." in json_resp["message"]["restricted"]
 
 
@@ -582,6 +585,7 @@ def test_should_not_create_service_with_duplicate_name(notify_api, sample_user, 
                 "email_message_limit": 1000,
                 "sms_message_limit": 1000,
                 "letter_message_limit": 1000,
+                "messagebox_message_limit": 1000,
                 "restricted": False,
                 "active": False,
                 "created_by": str(sample_user.id),
@@ -607,6 +611,7 @@ def test_create_service_should_throw_duplicate_key_constraint_for_existing_norma
                 "email_message_limit": 1000,
                 "sms_message_limit": 1000,
                 "letter_message_limit": 1000,
+                "messagebox_message_limit": 1000,
                 "restricted": False,
                 "active": False,
                 "created_by": str(sample_user.id),
@@ -793,6 +798,7 @@ def test_update_service_sets_volumes(
         ["international_sms_message_limit", 1123],
         ["sms_message_limit", 1123456],
         ["letter_message_limit", 123456],
+        ["messagebox_message_limit", 123456],
     ],
 )
 def test_update_service_sets_daily_limits(
@@ -1096,6 +1102,7 @@ def test_default_permissions_are_added_for_user_service(notify_api, notify_db_se
                 "email_message_limit": 1000,
                 "sms_message_limit": 1000,
                 "letter_message_limit": 1000,
+                "messagebox_message_limit": 1000,
                 "restricted": False,
                 "active": False,
                 "created_by": str(sample_user.id),
@@ -1947,7 +1954,7 @@ def test_get_services_with_detailed_flag(client, sample_template):
         EMAIL_TYPE: {"delivered": 0, "failed": 0, "requested": 0},
         SMS_TYPE: {"delivered": 0, "failed": 0, "requested": 3},
         LETTER_TYPE: {"delivered": 0, "failed": 0, "requested": 0},
-        MESSAGEBOX_TYPE: {"delivered": 0, "failed": 0, "requested": 0}
+        MESSAGEBOX_TYPE: {"delivered": 0, "failed": 0, "requested": 0},
     }
 
 
@@ -1969,7 +1976,7 @@ def test_get_services_with_detailed_flag_excluding_from_test_key(client, sample_
         EMAIL_TYPE: {"delivered": 0, "failed": 0, "requested": 0},
         SMS_TYPE: {"delivered": 0, "failed": 0, "requested": 2},
         LETTER_TYPE: {"delivered": 0, "failed": 0, "requested": 0},
-        MESSAGEBOX_TYPE: {"delivered": 0, "failed": 0, "requested": 0}
+        MESSAGEBOX_TYPE: {"delivered": 0, "failed": 0, "requested": 0},
     }
 
 
@@ -2021,14 +2028,14 @@ def test_get_detailed_services_groups_by_service(notify_db_session):
         EMAIL_TYPE: {"delivered": 0, "failed": 0, "requested": 0},
         SMS_TYPE: {"delivered": 1, "failed": 0, "requested": 3},
         LETTER_TYPE: {"delivered": 0, "failed": 0, "requested": 0},
-        MESSAGEBOX_TYPE: {"delivered": 0, "failed": 0, "requested": 0}
+        MESSAGEBOX_TYPE: {"delivered": 0, "failed": 0, "requested": 0},
     }
     assert data[1]["id"] == str(service_2.id)
     assert data[1]["statistics"] == {
         EMAIL_TYPE: {"delivered": 0, "failed": 0, "requested": 0},
         SMS_TYPE: {"delivered": 0, "failed": 0, "requested": 1},
         LETTER_TYPE: {"delivered": 0, "failed": 0, "requested": 0},
-        MESSAGEBOX_TYPE: {"delivered": 0, "failed": 0, "requested": 0}
+        MESSAGEBOX_TYPE: {"delivered": 0, "failed": 0, "requested": 0},
     }
 
 
@@ -2050,14 +2057,14 @@ def test_get_detailed_services_includes_services_with_no_notifications(notify_db
         EMAIL_TYPE: {"delivered": 0, "failed": 0, "requested": 0},
         SMS_TYPE: {"delivered": 0, "failed": 0, "requested": 1},
         LETTER_TYPE: {"delivered": 0, "failed": 0, "requested": 0},
-        MESSAGEBOX_TYPE: {"delivered": 0, "failed": 0, "requested": 0}
+        MESSAGEBOX_TYPE: {"delivered": 0, "failed": 0, "requested": 0},
     }
     assert data[1]["id"] == str(service_2.id)
     assert data[1]["statistics"] == {
         EMAIL_TYPE: {"delivered": 0, "failed": 0, "requested": 0},
         SMS_TYPE: {"delivered": 0, "failed": 0, "requested": 0},
         LETTER_TYPE: {"delivered": 0, "failed": 0, "requested": 0},
-        MESSAGEBOX_TYPE: {"delivered": 0, "failed": 0, "requested": 0}
+        MESSAGEBOX_TYPE: {"delivered": 0, "failed": 0, "requested": 0},
     }
 
 
@@ -2078,7 +2085,7 @@ def test_get_detailed_services_only_includes_todays_notifications(sample_templat
         EMAIL_TYPE: {"delivered": 0, "failed": 0, "requested": 0},
         SMS_TYPE: {"delivered": 0, "failed": 0, "requested": 3},
         LETTER_TYPE: {"delivered": 0, "failed": 0, "requested": 0},
-        MESSAGEBOX_TYPE: {"delivered": 0, "failed": 0, "requested": 0}
+        MESSAGEBOX_TYPE: {"delivered": 0, "failed": 0, "requested": 0},
     }
 
 

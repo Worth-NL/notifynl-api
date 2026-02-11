@@ -130,7 +130,11 @@ class TestCheckServiceMessageLimit:
         self, mocker, notify_db_session, notification_type, key_type
     ):
         service = create_service(
-            email_message_limit=4, letter_message_limit=4, sms_message_limit=4, international_sms_message_limit=4
+            email_message_limit=4,
+            letter_message_limit=4,
+            sms_message_limit=4,
+            international_sms_message_limit=4,
+            messagebox_message_limit=4,
         )
         mocker.patch("app.redis_store.get", return_value=None)
 
@@ -155,6 +159,7 @@ class TestCheckServiceMessageLimit:
             letter_message_limit=4,
             sms_message_limit=4,
             international_sms_message_limit=4,
+            messagebox_message_limit=4,
         )
         mocker.patch("app.redis_store.get", return_value="5")
 
@@ -177,6 +182,7 @@ class TestCheckServiceMessageLimit:
             letter_message_limit=10,
             sms_message_limit=10,
             international_sms_message_limit=10,
+            messagebox_message_limit=10,
         )
         mocker.patch("app.redis_store.get", return_value="9")
 

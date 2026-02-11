@@ -560,6 +560,7 @@ class Service(db.Model, Versioned):
         db.BigInteger, index=False, unique=False, nullable=False, default=250_000
     )
     email_message_limit = db.Column(db.BigInteger, index=False, unique=False, nullable=False, default=999_999_999)
+    messagebox_message_limit = db.Column(db.BigInteger, index=False, unique=False, nullable=False, default=999_999_999)
 
     volume_sms = db.Column(db.Integer(), nullable=True, unique=False)
     volume_email = db.Column(db.Integer(), nullable=True, unique=False)

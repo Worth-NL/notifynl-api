@@ -21,12 +21,14 @@ from app.constants import (
     KEY_TYPE_TEAM,
     KEY_TYPE_TEST,
     LETTER_TYPE,
+    MESSAGEBOX_TYPE,
     SMS_TO_UK_LANDLINES,
     SMS_TYPE,
 )
 from app.dao.service_email_reply_to_dao import dao_get_reply_to_by_id
 from app.dao.service_letter_contact_dao import dao_get_letter_contact_by_id
 from app.dao.service_sms_sender_dao import dao_get_service_sms_senders_by_id
+from app.models import Service
 from app.notifications.process_notifications import (
     create_content_for_notification,
 )
@@ -57,7 +59,7 @@ def check_service_over_api_rate_limit(service, key_type):
                 raise RateLimitError(rate_limit, interval, key_type)
 
 
-def check_service_over_daily_message_limit(service, key_type, notification_type, num_notifications=1):
+def check_service_over_daily_message_limit(service: Service, key_type, notification_type, num_notifications=1):
     if key_type == KEY_TYPE_TEST or not current_app.config["REDIS_ENABLED"]:
         return
 
@@ -66,6 +68,7 @@ def check_service_over_daily_message_limit(service, key_type, notification_type,
         SMS_TYPE: service.sms_message_limit,
         INTERNATIONAL_SMS_TYPE: service.international_sms_message_limit,
         LETTER_TYPE: service.letter_message_limit,
+        MESSAGEBOX_TYPE: service.messagebox_message_limit,
     }
 
     limit_name = notification_type
