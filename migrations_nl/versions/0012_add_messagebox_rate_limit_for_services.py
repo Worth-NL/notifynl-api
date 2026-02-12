@@ -16,11 +16,14 @@ branch_labels = None
 depends_on = None
 
 
+MBOX_MSG_LIMIT_COLUMN = "messagebox_message_limit"
+
+
 def upgrade():
-    op.add_column("services", sa.Column("messagebox_message_limit", sa.BigInteger(), nullable=True))
-    op.add_column("services_history", sa.Column("messagebox_message_limit", sa.BigInteger(), nullable=True))
+    op.add_column("services", sa.Column(MBOX_MSG_LIMIT_COLUMN, sa.BigInteger(), nullable=True))
+    op.add_column("services_history", sa.Column(MBOX_MSG_LIMIT_COLUMN, sa.BigInteger(), nullable=True))
 
 
 def downgrade():
-    op.drop_column("services", "messagebox_message_limit")
-    op.drop_column("services_history", "messagebox_message_limit")
+    op.drop_column("services", MBOX_MSG_LIMIT_COLUMN)
+    op.drop_column("services_history", MBOX_MSG_LIMIT_COLUMN)
