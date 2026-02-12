@@ -260,7 +260,7 @@ class DVLAClient:
         notification_id: str,
         reference: str,
         address: PostalAddress,
-        postage: Literal["netherlands", "rest-of-world", "economy"],
+        postage: Literal["netherlands", "rest-of-world", "europe"],
         service_id: str,
         organisation_id: str,
         pdf_file: bytes,
@@ -393,7 +393,7 @@ class DVLAClient:
             if not isinstance(value, str):
                 return value
 
-            max_length = {"postcode": 10, "country": 256}.get(key, 45)
+            max_length = {"postcode": 40, "country": 256}.get(key, 45)
             return value[:max_length]
 
         # there'll only ever be one nested dict in address_data, but we dont know what the key is so we need to iterate
