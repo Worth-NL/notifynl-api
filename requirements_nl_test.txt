@@ -219,7 +219,7 @@ moto==5.0.11
     # via -r requirements_nl_test.in
 notifications-python-client==10.0.1
     # via -r requirements_nl.txt
-notifications-utils @ git+https://github.com/Worth-NL/notifynl-utils.git@d1ca54ae7c9a06a3110319a56d7749172ce73593
+notifications-utils @ git+https://github.com/Worth-NL/notifynl-utils.git@9f10d50088b9ad73af262fe49f8fec7e6324be96
     # via -r requirements_nl.txt
 ordered-set==4.1.0
     # via
