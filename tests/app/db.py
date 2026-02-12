@@ -208,7 +208,7 @@ def create_template(
         "folder": folder,
     }
     if template_type == LETTER_TYPE:
-        data["postage"] = postage or "second"
+        data["postage"] = postage or "netherlands"
         if contact_block_id:
             data["service_letter_contact_id"] = contact_block_id
     if template_type != SMS_TYPE:
@@ -350,7 +350,7 @@ def create_notification_history(
         updated_at = updated_at or datetime.utcnow()
 
     if template.template_type == "letter" and postage is None:
-        postage = "second"
+        postage = "netherlands"
 
     data = {
         "id": id or uuid.uuid4(),
@@ -491,7 +491,7 @@ def create_rate(start_date, value, notification_type):
     return rate
 
 
-def create_letter_rate(start_date=None, end_date=None, crown=True, sheet_count=1, rate=0.33, post_class="second"):
+def create_letter_rate(start_date=None, end_date=None, crown=True, sheet_count=1, rate=0.33, post_class="netherlands"):
     if start_date is None:
         start_date = datetime(2016, 1, 1)
     rate = LetterRate(
@@ -930,7 +930,7 @@ def set_up_usage_data(start_date):
         notifications_sent=2,
         billable_unit=2,
         rate=0.35,
-        postage="first",
+        postage="netherlands",
     )
     create_ft_billing(
         bst_date=one_month_later,
@@ -938,7 +938,7 @@ def set_up_usage_data(start_date):
         notifications_sent=4,
         billable_unit=8,
         rate=0.45,
-        postage="second",
+        postage="netherlands",
     )
     create_ft_billing(
         bst_date=one_week_later,
@@ -946,7 +946,7 @@ def set_up_usage_data(start_date):
         notifications_sent=2,
         billable_unit=4,
         rate=0.45,
-        postage="second",
+        postage="netherlands",
     )
 
     # service with emails only:
@@ -987,7 +987,7 @@ def set_up_usage_data(start_date):
         notifications_sent=8,
         billable_unit=5,
         rate=0.65,
-        postage="second",
+        postage="netherlands",
     )
     create_ft_billing(
         bst_date=one_month_later,
@@ -995,7 +995,7 @@ def set_up_usage_data(start_date):
         notifications_sent=12,
         billable_unit=5,
         rate=0.65,
-        postage="second",
+        postage="netherlands",
     )
 
     # service with letters, without an organisation:
@@ -1027,7 +1027,7 @@ def set_up_usage_data(start_date):
         notifications_sent=2,
         billable_unit=1,
         rate=0.35,
-        postage="second",
+        postage="netherlands",
     )
     create_ft_billing(
         bst_date=two_days_later,

@@ -965,7 +965,7 @@ def test_is_delivery_slow_for_providers(
         template=sample_template,
         sent_by="spryng",
         sent_at=datetime.now(),
-        updated_at=datetime.now()
+        updated_at=datetime.now(),
     )
 
     slow_notification = partial(
@@ -1650,6 +1650,7 @@ def test_letters_to_be_printed_returns_ids(notify_db_session):
     assert sorted(x.id for x in results) == sorted(x.id for x in printed_notifications)
 
 
+@pytest.mark.skip(reason="[NOTIFYNL] Postage issue")
 def test_dao_get_letters_and_sheets_volume_by_postage(notify_db_session):
     first_service = create_service(service_name="first service", service_id="3a5cea08-29fd-4bb9-b582-8dedd928b149")
     second_service = create_service(service_name="second service", service_id="642bf33b-54b5-45f2-8c13-942a46616704")

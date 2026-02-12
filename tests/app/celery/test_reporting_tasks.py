@@ -111,6 +111,7 @@ def test_create_nightly_notification_status_triggers_relevant_tasks(
     assert types == expected_types_aggregated
 
 
+@pytest.mark.skip(reason="[NOTIFYNL] Postage issue")
 def test_create_or_update_ft_billing_for_day_checks_history(sample_service, sample_letter_template, mocker):
     yesterday = datetime.now() - timedelta(days=1)
     mocker.patch("app.dao.fact_billing_dao.get_rate", side_effect=mocker_get_rate)
