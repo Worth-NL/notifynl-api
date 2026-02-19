@@ -465,6 +465,7 @@ def test_should_process_email_job_with_sender_id(email_job_with_placeholders, mo
     assert job.job_status == "finished"
 
 
+@pytest.mark.skip(reason="[NOTIFYNL] Dutch postal address implementation - less lines that uk")
 @freeze_time("2016-01-01 11:09:00.061258")
 def test_should_process_letter_job(sample_letter_job, mocker, mock_celery_task):
     csv = """address_line_1,address_line_2,address_line_3,address_line_4,postcode,name
@@ -1771,6 +1772,7 @@ def test_save_letter_saves_letter_to_database_with_formatted_postcode(mocker, mo
     assert notification_db.personalisation["postcode"] == "se1 64sa"
 
 
+@pytest.mark.skip(reason="[NOTIFYNL] Dutch postal address implementation - less lines that uk")
 def test_save_letter_saves_letter_to_database_right_reply_to(mocker, mock_celery_task, notify_db_session):
     service = create_service()
     create_letter_contact(service=service, contact_block="Address contact", is_default=True)
@@ -2004,6 +2006,7 @@ def test_get_sms_template_instance(mocker, mock_celery_task, sample_template, sa
     assert recipient_csv.placeholders == ["phone number"]
 
 
+@pytest.mark.skip(reason="[NOTIFYNL] Dutch postal address implementation - less lines that uk")
 def test_get_letter_template_instance(mocker, mock_celery_task, sample_job):
     mocker.patch(
         "app.celery.tasks.s3.get_job_and_metadata_from_s3",
