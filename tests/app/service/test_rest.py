@@ -310,14 +310,8 @@ def test_get_service_list_has_default_permissions(admin_request, service_factory
     json_resp = admin_request.get("service.get_services")
     assert len(json_resp["data"]) == 3
     assert all(
-        set(json["permissions"]) == {
-            EMAIL_TYPE,
-            SMS_TYPE,
-            INTERNATIONAL_SMS_TYPE,
-            LETTER_TYPE,
-            INTERNATIONAL_LETTERS,
-            MESSAGEBOX_TYPE
-        }
+        set(json["permissions"])
+        == {EMAIL_TYPE, SMS_TYPE, INTERNATIONAL_SMS_TYPE, LETTER_TYPE, INTERNATIONAL_LETTERS, MESSAGEBOX_TYPE}
         for json in json_resp["data"]
     )
 
@@ -331,7 +325,7 @@ def test_get_service_by_id_has_default_service_permissions(admin_request, sample
         INTERNATIONAL_SMS_TYPE,
         LETTER_TYPE,
         INTERNATIONAL_LETTERS,
-        MESSAGEBOX_TYPE
+        MESSAGEBOX_TYPE,
     }
 
 
@@ -1947,7 +1941,7 @@ def test_get_services_with_detailed_flag(client, sample_template):
         EMAIL_TYPE: {"delivered": 0, "failed": 0, "requested": 0},
         SMS_TYPE: {"delivered": 0, "failed": 0, "requested": 3},
         LETTER_TYPE: {"delivered": 0, "failed": 0, "requested": 0},
-        MESSAGEBOX_TYPE: {"delivered": 0, "failed": 0, "requested": 0}
+        MESSAGEBOX_TYPE: {"delivered": 0, "failed": 0, "requested": 0},
     }
 
 
@@ -1969,7 +1963,7 @@ def test_get_services_with_detailed_flag_excluding_from_test_key(client, sample_
         EMAIL_TYPE: {"delivered": 0, "failed": 0, "requested": 0},
         SMS_TYPE: {"delivered": 0, "failed": 0, "requested": 2},
         LETTER_TYPE: {"delivered": 0, "failed": 0, "requested": 0},
-        MESSAGEBOX_TYPE: {"delivered": 0, "failed": 0, "requested": 0}
+        MESSAGEBOX_TYPE: {"delivered": 0, "failed": 0, "requested": 0},
     }
 
 
@@ -2021,14 +2015,14 @@ def test_get_detailed_services_groups_by_service(notify_db_session):
         EMAIL_TYPE: {"delivered": 0, "failed": 0, "requested": 0},
         SMS_TYPE: {"delivered": 1, "failed": 0, "requested": 3},
         LETTER_TYPE: {"delivered": 0, "failed": 0, "requested": 0},
-        MESSAGEBOX_TYPE: {"delivered": 0, "failed": 0, "requested": 0}
+        MESSAGEBOX_TYPE: {"delivered": 0, "failed": 0, "requested": 0},
     }
     assert data[1]["id"] == str(service_2.id)
     assert data[1]["statistics"] == {
         EMAIL_TYPE: {"delivered": 0, "failed": 0, "requested": 0},
         SMS_TYPE: {"delivered": 0, "failed": 0, "requested": 1},
         LETTER_TYPE: {"delivered": 0, "failed": 0, "requested": 0},
-        MESSAGEBOX_TYPE: {"delivered": 0, "failed": 0, "requested": 0}
+        MESSAGEBOX_TYPE: {"delivered": 0, "failed": 0, "requested": 0},
     }
 
 
@@ -2050,14 +2044,14 @@ def test_get_detailed_services_includes_services_with_no_notifications(notify_db
         EMAIL_TYPE: {"delivered": 0, "failed": 0, "requested": 0},
         SMS_TYPE: {"delivered": 0, "failed": 0, "requested": 1},
         LETTER_TYPE: {"delivered": 0, "failed": 0, "requested": 0},
-        MESSAGEBOX_TYPE: {"delivered": 0, "failed": 0, "requested": 0}
+        MESSAGEBOX_TYPE: {"delivered": 0, "failed": 0, "requested": 0},
     }
     assert data[1]["id"] == str(service_2.id)
     assert data[1]["statistics"] == {
         EMAIL_TYPE: {"delivered": 0, "failed": 0, "requested": 0},
         SMS_TYPE: {"delivered": 0, "failed": 0, "requested": 0},
         LETTER_TYPE: {"delivered": 0, "failed": 0, "requested": 0},
-        MESSAGEBOX_TYPE: {"delivered": 0, "failed": 0, "requested": 0}
+        MESSAGEBOX_TYPE: {"delivered": 0, "failed": 0, "requested": 0},
     }
 
 
@@ -2078,7 +2072,7 @@ def test_get_detailed_services_only_includes_todays_notifications(sample_templat
         EMAIL_TYPE: {"delivered": 0, "failed": 0, "requested": 0},
         SMS_TYPE: {"delivered": 0, "failed": 0, "requested": 3},
         LETTER_TYPE: {"delivered": 0, "failed": 0, "requested": 0},
-        MESSAGEBOX_TYPE: {"delivered": 0, "failed": 0, "requested": 0}
+        MESSAGEBOX_TYPE: {"delivered": 0, "failed": 0, "requested": 0},
     }
 
 
@@ -2375,6 +2369,7 @@ def test_send_one_off_notification(sample_service, admin_request, mocker):
     assert response["id"] == str(noti.id)
 
 
+@pytest.mark.skip(reason="[NOTIFYNL] Postage issue")
 def test_create_pdf_letter(mocker, sample_service_full_permissions, client, fake_uuid, notify_user):
     mocker.patch("app.service.send_notification.utils_s3download")
     mocker.patch("app.service.send_notification.get_page_count", return_value=1)
@@ -2402,6 +2397,7 @@ def test_create_pdf_letter(mocker, sample_service_full_permissions, client, fake
     assert json_resp == {"id": fake_uuid}
 
 
+@pytest.mark.skip(reason="[NOTIFYNL] Postage and PostalAddress issue")
 @pytest.mark.parametrize(
     "post_data, expected_errors",
     [

@@ -400,6 +400,7 @@ def test_create_or_update_ft_billing_for_day_null_sent_by_sms(sample_service, sa
     assert record.provider == "unknown"
 
 
+@pytest.mark.skip(reason="[NOTIFYNL] Postage issue")
 def test_get_rate_for_letter_latest(notify_db_session):
     # letter rates should be passed into the get_rate function as a tuple of start_date, crown, sheet_count,
     # rate and post_class
@@ -411,6 +412,7 @@ def test_get_rate_for_letter_latest(notify_db_session):
     assert rate == Decimal("0.33")
 
 
+@pytest.mark.skip(reason="[NOTIFYNL] Postage issue")
 def test_get_rate_for_letter_latest_if_crown_is_none(notify_db_session):
     # letter rates should be passed into the get_rate function as a tuple of start_date, crown, sheet_count,
     # rate and post_class

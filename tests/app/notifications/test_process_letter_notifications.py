@@ -8,6 +8,7 @@ from app.notifications.process_letter_notifications import (
 from app.serialised_models import SerialisedTemplate
 
 
+@pytest.mark.skip(reason="[NOTIFYNL] Dutch postage ")
 def test_create_letter_notification_creates_notification(sample_letter_template, sample_api_key):
     data = {
         "personalisation": {

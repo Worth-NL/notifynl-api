@@ -286,7 +286,7 @@ def validate_address(service, letter_data):
     if not address.international:
         if not address.postcode:
             raise ValidationError(
-                message="Cant detect a dutch postcode, postcode must be in the second line together with a city"
+                message="Cant detect a dutch postcode, postcode must be in the same line together with a city"
             )
         if not address.city:
             raise ValidationError(message="cant detect a dutch city, city name must be in the same line as postcode")

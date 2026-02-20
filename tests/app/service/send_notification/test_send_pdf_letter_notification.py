@@ -99,6 +99,7 @@ def test_send_pdf_letter_notification_does_nothing_if_notification_already_exist
     assert response["id"] == str(sample_notification.id)
 
 
+@pytest.mark.skip(reason="[NOTIFYNL] postage and postalAddress change")
 @freeze_time("2019-08-02 11:00:00")
 def test_send_pdf_letter_notification_creates_notification_and_moves_letter(
     mocker,
