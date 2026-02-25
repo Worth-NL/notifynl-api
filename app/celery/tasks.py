@@ -6,7 +6,7 @@ from botocore.exceptions import ClientError as BotoClientError
 from flask import current_app
 from notifications_utils.insensitive_dict import InsensitiveDict
 from notifications_utils.recipient_validation.errors import InvalidPhoneError
-from notifications_utils.recipient_validation.postal_address import PostalAddress
+from notifications_utils.recipient_validation.notifynl.postal_address import PostalAddress
 from notifications_utils.recipients import RecipientCSV
 from sqlalchemy.exc import SQLAlchemyError
 

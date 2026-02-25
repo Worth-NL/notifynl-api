@@ -243,7 +243,7 @@ def sample_email_template(sample_user):
 
 @pytest.fixture
 def sample_letter_template(sample_service_full_permissions):
-    return create_template(sample_service_full_permissions, template_type=LETTER_TYPE, postage="second")
+    return create_template(sample_service_full_permissions, template_type=LETTER_TYPE, postage="netherlands")
 
 
 @pytest.fixture

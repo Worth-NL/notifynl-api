@@ -10,12 +10,12 @@ import boto3
 import jwt
 import requests
 from flask import current_app
-from notifications_utils.recipient_validation.postal_address import PostalAddress
+from notifications_utils.recipient_validation.notifynl.postal_address import PostalAddress
 from requests.adapters import HTTPAdapter
 from urllib3.util.ssl_ import create_urllib3_context
 
 from app.clients import ClientException
-from app.constants import ECONOMY_CLASS, EUROPE, FIRST_CLASS, INTERNATIONAL_POSTAGE_TYPES, REST_OF_WORLD
+from app.constants import EUROPE, INTERNATIONAL_POSTAGE_TYPES, NETHERLANDS, REST_OF_WORLD
 
 
 class DvlaException(ClientException):
@@ -260,7 +260,7 @@ class DVLAClient:
         notification_id: str,
         reference: str,
         address: PostalAddress,
-        postage: Literal["first", "second", "europe", "rest-of-world", "economy"],
+        postage: Literal["netherlands", "rest-of-world", "europe"],
         service_id: str,
         organisation_id: str,
         pdf_file: bytes,
@@ -332,14 +332,12 @@ class DVLAClient:
         }
 
         # `despatchMethod` should not be added for second class letters
-        if postage == FIRST_CLASS:
-            json_payload["standardParams"]["despatchMethod"] = "FIRST"
+        if postage == NETHERLANDS:
+            json_payload["standardParams"]["despatchMethod"] = "NETHERLANDS"
         elif postage == EUROPE:
             json_payload["standardParams"]["despatchMethod"] = "INTERNATIONAL_EU"
         elif postage == REST_OF_WORLD:
             json_payload["standardParams"]["despatchMethod"] = "INTERNATIONAL_ROW"
-        elif postage == ECONOMY_CLASS:
-            json_payload["standardParams"]["despatchMethod"] = "ECONOMY"
 
         return json_payload
 
@@ -395,7 +393,7 @@ class DVLAClient:
             if not isinstance(value, str):
                 return value
 
-            max_length = {"postcode": 10, "country": 256}.get(key, 45)
+            max_length = {"postcode": 40, "country": 256}.get(key, 45)
             return value[:max_length]
 
         # there'll only ever be one nested dict in address_data, but we dont know what the key is so we need to iterate
