@@ -9,6 +9,8 @@ from notifications_utils.recipient_validation.email_address import validate_emai
 from notifications_utils.recipient_validation.errors import InvalidEmailError, InvalidPhoneError
 from notifications_utils.recipient_validation.notifynl.phone_number import PhoneNumber
 
+from app.constants import EUROPE, NETHERLANDS, REST_OF_WORLD
+
 format_checker = FormatChecker()
 
 
@@ -47,8 +49,8 @@ def validate_schema_postage(instance):
     For validating postage on templates and user requests, where postage can only be `first` or `second`
     """
     if isinstance(instance, str):
-        if instance not in ["first", "second", "economy"]:
-            raise ValidationError("invalid. It must be either first, second or economy.")
+        if instance not in [NETHERLANDS, EUROPE, REST_OF_WORLD]:
+            raise ValidationError("invalid. It must be either " + NETHERLANDS + ", " + EUROPE + " or " + REST_OF_WORLD)
     return True
 
 
@@ -58,8 +60,8 @@ def validate_schema_postage_including_international(instance):
     For validating postage sent by admin when sending a precompiled letter, where postage can include international
     """
     if isinstance(instance, str):
-        if instance not in ["first", "second", "economy", "europe", "rest-of-world"]:
-            raise ValidationError("invalid. It must be first, second, economy, europe or rest-of-world.")
+        if instance not in [NETHERLANDS, EUROPE, REST_OF_WORLD]:
+            raise ValidationError("invalid. It must be " + NETHERLANDS + ", " + EUROPE + " or " + REST_OF_WORLD)
     return True
 
 

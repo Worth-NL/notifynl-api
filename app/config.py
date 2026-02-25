@@ -216,7 +216,7 @@ class Config:
     SERVICE_JOIN_REQUEST_APPROVED_TEMPLATE_ID = "4d8ee728-100e-4f0e-8793-5638cfa4ffa4"
     # we only need real email in Live environment (production)
     DVLA_EMAIL_ADDRESSES = json.loads(os.environ.get("DVLA_EMAIL_ADDRESSES", "[]"))
-    NOTIFY_SUPPORT_EMAIL_ADDRESS = "gov-uk-notify-support@digital.cabinet-office.gov.uk"
+    NOTIFY_SUPPORT_EMAIL_ADDRESS = "support@notificatie.nl"
 
     AWS_ACCOUNT_ID = os.environ.get("AWS_ACCOUNT_ID", "123456789012")
     CELERY = {

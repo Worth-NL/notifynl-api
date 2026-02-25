@@ -10,7 +10,7 @@ from notifications_utils.recipient_validation.errors import InvalidPhoneError
 from notifications_utils.recipient_validation.notifynl.phone_number import (
     PhoneNumber,
 )
-from notifications_utils.recipient_validation.postal_address import PostalAddress
+from notifications_utils.recipient_validation.notifynl.postal_address import PostalAddress
 from sqlalchemy.orm.exc import NoResultFound
 
 from app import redis_store
@@ -274,26 +274,31 @@ def validate_address(service, letter_data):
         letter_data,
         allow_international_letters=(INTERNATIONAL_LETTERS in str(service.permissions)),
     )
+
     if not address.has_enough_lines:
         raise ValidationError(message=f"Address must be at least {PostalAddress.MIN_LINES} lines")
+
     if address.has_too_many_lines:
         raise ValidationError(message=f"Address must be no more than {PostalAddress.MAX_LINES} lines")
-    if address.has_invalid_country_for_bfpo_address:
-        raise ValidationError(message="The last line of a BFPO address must not be a country.")
-    if not address.has_valid_last_line:
-        if address.allow_international_letters:
-            raise ValidationError(message="Last line of address must be a real UK postcode or another country")
-        raise ValidationError(message="Must be a real UK postcode")
+
     if address.has_invalid_characters:
         raise ValidationError(
             message="Address lines must not start with any of the following characters: @ ( ) = [ ] ” \\ / , < >"
         )
-    if address.has_no_fixed_abode_address:
-        raise ValidationError(message="Must be a real address")
+
+    if not address.international:
+        if not address.postcode:
+            raise ValidationError(
+                message="Cant detect a dutch postcode, postcode must be in the same line together with a city"
+            )
+        if not address.city:
+            raise ValidationError(message="cant detect a dutch city, city name must be in the same line as postcode")
+
     if address.international:
         return address.postage
     else:
         return None
+    # TODO: do we want to keep using validate address to get the postage ???
 
 
 def check_template_can_contain_documents(template_type, personalisation):

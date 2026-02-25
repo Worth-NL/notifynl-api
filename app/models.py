@@ -10,8 +10,8 @@ from notifications_utils.letter_timings import get_letter_timings
 from notifications_utils.recipient_validation.email_address import validate_email_address
 from notifications_utils.recipient_validation.errors import InvalidRecipientError
 from notifications_utils.recipient_validation.notifynl.phone_number import PhoneNumber
-from notifications_utils.recipient_validation.postal_address import (
-    address_lines_1_to_6_and_postcode_keys,
+from notifications_utils.recipient_validation.notifynl.postal_address import (
+    address_lines_1_to_5_and_postcode_keys,
 )
 from notifications_utils.safe_string import make_string_safe_for_email_local_part
 from notifications_utils.template import (
@@ -1647,9 +1647,8 @@ class Notification(db.Model):
                 serialized["line_3"],
                 serialized["line_4"],
                 serialized["line_5"],
-                serialized["line_6"],
                 serialized["postcode"],
-            ) = (personalisation.get(line) for line in address_lines_1_to_6_and_postcode_keys)
+            ) = (personalisation.get(line) for line in address_lines_1_to_5_and_postcode_keys)
 
             serialized["estimated_delivery"] = get_letter_timings(
                 serialized["created_at"], postage=self.postage

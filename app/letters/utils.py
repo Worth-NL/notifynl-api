@@ -16,9 +16,9 @@ from app import redis_store
 from app.constants import (
     KEY_TYPE_TEST,
     LETTER_TYPE,
+    NETHERLANDS,
     NOTIFICATION_VALIDATION_FAILED,
     RESOLVE_POSTAGE_FOR_FILE_NAME,
-    SECOND_CLASS,
 )
 
 
@@ -57,7 +57,7 @@ def find_letter_pdf_in_s3(notification):
     return item
 
 
-def generate_letter_pdf_filename(reference, created_at, ignore_folder=False, postage=SECOND_CLASS):
+def generate_letter_pdf_filename(reference, created_at, ignore_folder=False, postage=NETHERLANDS):
     upload_file_name = LETTERS_PDF_FILE_LOCATION_STRUCTURE.format(
         folder="" if ignore_folder else get_folder_name(created_at),
         reference=reference,

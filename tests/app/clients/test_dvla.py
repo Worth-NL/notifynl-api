@@ -16,7 +16,7 @@ import requests
 import trustme
 from flask import current_app
 from moto import mock_aws
-from notifications_utils.recipient_validation.postal_address import PostalAddress
+from notifications_utils.recipient_validation.notifynl.postal_address import PostalAddress
 from redis.exceptions import LockError
 
 from app.clients.letter.dvla import (
@@ -461,6 +461,7 @@ def test_format_create_print_job_json_adds_callback_key_if_url_provided(dvla_cli
     }
 
 
+@pytest.mark.skip(reason="[NOTIFYNL] POSTAGE issue")
 def test_format_create_print_job_json_adds_despatchMethod_key_for_first_class_post(dvla_client):
     formatted_json = dvla_client._format_create_print_job_json(
         notification_id="my_notification_id",
@@ -476,6 +477,7 @@ def test_format_create_print_job_json_adds_despatchMethod_key_for_first_class_po
     assert formatted_json["standardParams"]["despatchMethod"] == "FIRST"
 
 
+@pytest.mark.skip(reason="[NOTIFYNL] POSTAGE issue")
 @pytest.mark.parametrize(
     "address, recipient, unstructured_address",
     [
@@ -627,6 +629,7 @@ def test_send_international_letter(dvla_client, dvla_authenticate, postage, desp
     }
 
 
+@pytest.mark.skip(reason="[NOTIFYNL] PostalAddress issue -  no BFPO")
 def test_send_bfpo_letter(dvla_client, dvla_authenticate, rmock):
     print_mock = rmock.post(
         f"{current_app.config['DVLA_API_BASE_URL']}/print-request/v1/print/jobs",
@@ -1024,6 +1027,7 @@ class TestDVLAApiClientRestrictedCiphers:
         assert "alert handshake failure" in str(e.value)
 
 
+@pytest.mark.skip(reason="[NOTIFYNL] Postage issue - no ECONONY")
 def test_format_create_print_job_json_adds_despatchMethod_key_for_economy_class_post(dvla_client):
     formatted_json = dvla_client._format_create_print_job_json(
         notification_id="my_notification_id",

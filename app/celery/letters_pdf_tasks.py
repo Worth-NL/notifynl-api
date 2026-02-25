@@ -3,7 +3,7 @@ from datetime import datetime, timedelta
 from botocore.exceptions import ClientError as BotoClientError
 from flask import current_app
 from notifications_utils.letter_timings import LETTER_PROCESSING_DEADLINE
-from notifications_utils.recipient_validation.postal_address import PostalAddress
+from notifications_utils.recipient_validation.notifynl.postal_address import PostalAddress
 from notifications_utils.timezones import convert_bst_to_utc, convert_utc_to_bst
 
 from app import notify_celery, signing
@@ -11,8 +11,6 @@ from app.aws import s3
 from app.celery.provider_tasks import deliver_letter
 from app.config import QueueNames, TaskNames
 from app.constants import (
-    ECONOMY_CLASS,
-    FIRST_CLASS,
     INTERNATIONAL_LETTERS,
     INTERNATIONAL_POSTAGE_TYPES,
     KEY_TYPE_NORMAL,
@@ -23,7 +21,6 @@ from app.constants import (
     NOTIFICATION_TECHNICAL_FAILURE,
     NOTIFICATION_VALIDATION_FAILED,
     NOTIFICATION_VIRUS_SCAN_FAILED,
-    SECOND_CLASS,
 )
 from app.cronitor import cronitor
 from app.dao.notifications_dao import (
@@ -197,15 +194,8 @@ def send_letters_volume_email_to_dvla(letters_volumes, date):
     for item in letters_volumes:
         personalisation["total_volume"] += item.letters_count
         personalisation["total_sheets"] += item.sheets_count
-        if item.postage in (FIRST_CLASS, SECOND_CLASS):
-            personalisation[f"{item.postage}_class_volume"] = item.letters_count
-            personalisation[f"{item.postage}_class_sheets"] = item.sheets_count
-        elif item.postage == ECONOMY_CLASS:
-            personalisation["economy_mail_volume"] = item.letters_count
-            personalisation["economy_mail_sheets"] = item.sheets_count
-        else:
-            personalisation["international_volume"] += item.letters_count
-            personalisation["international_sheets"] += item.sheets_count
+        personalisation[f"{item.postage}_class_volume"] = item.letters_count
+        personalisation[f"{item.postage}_class_sheets"] = item.sheets_count
 
     template = dao_get_template_by_id(current_app.config["LETTERS_VOLUME_EMAIL_TEMPLATE_ID"])
     recipients = current_app.config["DVLA_EMAIL_ADDRESSES"]

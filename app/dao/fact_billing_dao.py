@@ -198,14 +198,12 @@ def fetch_usage_for_all_services_letter(start_date, end_date):
 
 def fetch_usage_for_all_services_letter_breakdown(start_date, end_date):
     formatted_postage = case(
-        [(FactBilling.postage.in_(INTERNATIONAL_POSTAGE_TYPES), "international")], else_=FactBilling.postage
+        [(FactBilling.postage.in_(INTERNATIONAL_POSTAGE_TYPES), "international")], else_="netherlands"
     ).label("postage")
 
     postage_order = case(
-        (formatted_postage == "economy", 1),
-        (formatted_postage == "second", 2),
-        (formatted_postage == "first", 3),
-        (formatted_postage == "international", 4),
+        (formatted_postage == "netherlands", 1),
+        (formatted_postage == "international", 2),
         else_=0,  # assumes never get 0 as a result
     )
 
@@ -639,7 +637,13 @@ def get_rates_for_billing():
 
 
 def get_rate(
-    non_letter_rates, letter_rates, notification_type, date, crown=None, letter_page_count=None, post_class="second"
+    non_letter_rates,
+    letter_rates,
+    notification_type,
+    date,
+    crown=None,
+    letter_page_count=None,
+    post_class="netherlands",
 ):
     start_of_day = get_london_midnight_in_utc(date)
 
