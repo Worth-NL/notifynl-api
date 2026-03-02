@@ -688,6 +688,8 @@ class ConfigNL(Config):
     # TODO: To be fixed with unit tests
     # SIMULATED_SMS_NUMBERS = ("+31612345678", "+31623456789", "+31634567890")
 
+    ASSET_PATH = "https://static.notifynl.nl/"
+
 
 class DevNL(ConfigNL):
     DEBUG = True
@@ -737,6 +739,7 @@ class DevNL(ConfigNL):
     REGISTER_FUNCTIONAL_TESTING_BLUEPRINT = True
 
     FROM_NUMBER = "development"
+    ASSET_PATH = "https://static.test.notifynl.nl/"
 
 
 class TestNL(ConfigNL):
@@ -753,6 +756,8 @@ class TestNL(ConfigNL):
     S3_BUCKET_TRANSIENT_UPLOADED_LETTERS = f"{NL_PREFIX}-{NOTIFY_ENVIRONMENT}-transient-uploaded-letters"
     S3_BUCKET_LETTER_SANITISE = f"{NL_PREFIX}-{NOTIFY_ENVIRONMENT}-letters-sanitise"
     S3_BUCKET_REPORT_REQUESTS_DOWNLOAD = f"{NL_PREFIX}-{NOTIFY_ENVIRONMENT}-report-requests-download"
+
+    ASSET_PATH = "https://static.test.notifynl.nl/"
 
 
 class AccNL(ConfigNL):
