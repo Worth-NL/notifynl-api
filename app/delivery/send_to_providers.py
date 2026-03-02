@@ -141,6 +141,7 @@ def send_email_to_provider(notification):
             template.__dict__,
             values=notification.personalisation,
             unsubscribe_link=unsubscribe_link_for_body,
+            asset_path=current_app.config["ASSET_PATH"],
             **get_html_email_options(service),
         )
 
