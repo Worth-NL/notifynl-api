@@ -598,6 +598,8 @@ class Test(Development):
 
     SEND_ZENDESK_ALERTS_ENABLED = True
 
+    ASSET_PATH = "https://static.test.notifynl.nl/"
+
 
 class CloudFoundryConfig(Config):
     pass
