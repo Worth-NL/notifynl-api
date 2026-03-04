@@ -9,8 +9,15 @@ from notifications_utils.timezones import convert_utc_to_bst
 
 from app import signing
 from app.celery.process_letter_client_response_tasks import process_letter_callback_data
+from app.celery.service_callback_tasks import (
+    create_delivery_status_callback_data,
+    send_delivery_status_to_service,
+)
 from app.config import QueueNames
 from app.constants import DVLA_NOTIFICATION_DISPATCHED, DVLA_NOTIFICATION_REJECTED
+from app.dao.service_callback_api_dao import (
+    get_delivery_status_callback_api_for_service,
+)
 from app.errors import InvalidRequest
 from app.models import LetterCostThreshold
 from app.schema_validation import validate
@@ -195,3 +202,13 @@ def _get_despatch_date(despatch_datetime: str) -> datetime.date:
     Both the despatch_date argument and date returned are in London local time.
     """
     return datetime.datetime.strptime(despatch_datetime, "%Y-%m-%d %H:%M:%S.%f").date()
+
+
+def check_and_queue_callback_task(notification):
+    # queue callback task only if the service_callback_api exists
+    service_callback_api = get_delivery_status_callback_api_for_service(service_id=notification.service_id)
+    if service_callback_api:
+        notification_data = create_delivery_status_callback_data(notification, service_callback_api)
+        send_delivery_status_to_service.apply_async(
+            [str(notification.id), notification_data], queue=QueueNames.CALLBACKS
+        )
