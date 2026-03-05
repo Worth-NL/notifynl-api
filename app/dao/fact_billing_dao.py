@@ -963,7 +963,7 @@ def fetch_usage_for_organisation(organisation_id, year) -> tuple[Any, str | None
     for letter_usage in letter_usages:
         service_with_usage[str(letter_usage.service_id)] |= {
             "letter_cost": float(letter_usage.letter_cost),
-            "letters_sent": letter_usage.letters_sent,
+            "letters_sent": int(letter_usage.letters_sent),
         }
     for email_usage in email_usages:
         service_with_usage[str(email_usage.service_id)]["emails_sent"] = email_usage.emails_sent
