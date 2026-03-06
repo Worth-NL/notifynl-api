@@ -23,7 +23,7 @@ template_update = text("""
     SET
         name = :name,
         content = :content,
-        subject = :subject,
+        subject = :subject
     WHERE id = :id""")
 
 template_history_update = text("""
@@ -31,7 +31,7 @@ template_history_update = text("""
     SET
         name = :name,
         content = :content,
-        subject = :subject,
+        subject = :subject
     WHERE id = :id""")
 
 template_redacted_update = text("""
