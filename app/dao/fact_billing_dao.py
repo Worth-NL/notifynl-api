@@ -864,6 +864,7 @@ def _fetch_usage_for_organisation_letter(organisation_id, start_date, end_date):
             Service.name.label("service_name"),
             Service.id.label("service_id"),
             func.sum(FactBilling.notifications_sent * FactBilling.rate).label("letter_cost"),
+            func.sum(FactBilling.notifications_sent).label("letters_sent"),
         )
         .select_from(Service)
         .join(
@@ -946,6 +947,7 @@ def fetch_usage_for_organisation(organisation_id, year) -> tuple[Any, str | None
             "letter_cost": 0.0,
             "emails_sent": 0,
             "active": service.active,
+            "letters_sent": 0,
         }
     sms_usages = _fetch_usage_for_organisation_sms(organisation_id, year)
     letter_usages = _fetch_usage_for_organisation_letter(organisation_id, year_start, year_end)
@@ -959,7 +961,10 @@ def fetch_usage_for_organisation(organisation_id, year) -> tuple[Any, str | None
             "sms_cost": float(usage.cost),
         }
     for letter_usage in letter_usages:
-        service_with_usage[str(letter_usage.service_id)]["letter_cost"] = float(letter_usage.letter_cost)
+        service_with_usage[str(letter_usage.service_id)] |= {
+            "letter_cost": float(letter_usage.letter_cost),
+            "letters_sent": int(letter_usage.letters_sent),
+        }
     for email_usage in email_usages:
         service_with_usage[str(email_usage.service_id)]["emails_sent"] = email_usage.emails_sent
 
