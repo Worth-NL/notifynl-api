@@ -19,7 +19,7 @@ depends_on = None
 
 
 POST_CLASS = 'netherlands'
-YESTERDAY = datetime.now(timezone.utc) - timedelta(days=1)
+YESTERDAY = datetime.now(timezone.utc) - timedelta(weeks=52)
 
 
 def upgrade():
