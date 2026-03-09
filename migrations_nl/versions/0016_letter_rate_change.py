@@ -7,7 +7,7 @@ Create Date: 2026-03-09 10:11:07.534511
 """
 from alembic import op
 from sqlalchemy import text
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from uuid import uuid4
 
 
@@ -19,7 +19,7 @@ depends_on = None
 
 
 POST_CLASS = 'netherlands'
-NOW = datetime.now(timezone.utc)
+YESTERDAY = datetime.now(timezone.utc) - timedelta(days=1)
 
 
 def upgrade():
@@ -29,11 +29,11 @@ def upgrade():
     VALUES
         (:id, :start_date, :end_date, :sheet_count, :rate, :crown, :post_class)""")
 
-    for sheet_count in range(1, 5):
+    for sheet_count in range(1, 6):
         op.execute(
             letter_rate_update.bindparams(
                 id = uuid4(),
-                start_date = NOW,
+                start_date = YESTERDAY,
                 end_date = None,
                 sheet_count = sheet_count,
                 rate = float(0),
