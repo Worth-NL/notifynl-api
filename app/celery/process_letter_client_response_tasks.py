@@ -16,6 +16,9 @@ from app.dao.notifications_dao import (
 )
 from app.exceptions import NotificationTechnicalFailureException
 from app.models import LetterCostThreshold
+from app.notifications.notifications_ses_callback import (
+    check_and_queue_callback_task,
+)
 
 
 @notify_celery.task(bind=True, name="process-letter-callback")
@@ -48,6 +51,8 @@ def process_letter_callback_data(
         )
 
     dao_record_letter_despatched_on_by_id(notification_id, despatch_date, cost_threshold)
+
+    check_and_queue_callback_task(notification)
 
 
 def validate_billable_units(notification, dvla_page_count):
