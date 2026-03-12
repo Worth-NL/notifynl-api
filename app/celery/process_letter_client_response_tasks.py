@@ -42,7 +42,9 @@ def process_letter_callback_data(
     notification.status = new_status
 
     dao_update_notification(notification)
-
+    current_app.logger.info(
+        "notification  %s status %s, new_status %s", notification.id, notification.status, new_status
+    )
     if new_status == NOTIFICATION_TECHNICAL_FAILURE:
         raise NotificationTechnicalFailureException(
             f"Letter status received as REJECTED for notification id: {notification.id}"
