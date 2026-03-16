@@ -85,6 +85,42 @@ class BaseSchema(ma.SQLAlchemyAutoSchema):
         return super().make_instance(data)
 
 
+class OrganisationSchema(BaseSchema, UUIDsAsStringsMixin):
+    domains = field_for(models.Organisation, "domains")
+
+    class Meta(BaseSchema.Meta):
+        model = models.Organisation
+        exclude = (
+            "id",
+            "name",
+            "active",
+            "created_at",
+            "updated_at",
+            "agreement_signed",
+            "agreement_signed_at",
+            "agreement_signed_by_id",
+            "agreement_signed_by",
+            "agreement_signed_on_behalf_of_name",
+            "agreement_signed_on_behalf_of_email_address",
+            "agreement_signed_version",
+            "crown",
+            "organisation_type",
+            "request_to_go_live_notes",
+            "can_approve_own_go_live_requests",
+            "email_branding",
+            "email_branding_id",
+            "email_branding_pool",
+            "letter_branding",
+            "letter_branding_id",
+            "letter_branding_pool",
+            "notes",
+            "purchase_order_number",
+            "billing_contact_names",
+            "billing_contact_email_addresses",
+            "billing_reference",
+        )
+
+
 class UserSchema(BaseSchema):
     permissions = fields.Method("user_permissions", dump_only=True)
     password_changed_at = field_for(models.User, "password_changed_at", format=DATETIME_FORMAT_NO_TIMEZONE)
@@ -732,3 +768,4 @@ event_schema = EventSchema()
 provider_details_schema = ProviderDetailsSchema()
 provider_details_history_schema = ProviderDetailsHistorySchema()
 unarchived_template_schema = UnarchivedTemplateSchema()
+organisation_schema = OrganisationSchema()
