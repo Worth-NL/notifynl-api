@@ -14,6 +14,7 @@ from werkzeug.utils import cached_property
 
 from app import db, redis_store
 from app.dao.api_key_dao import get_model_api_keys
+from app.dao.organisation_dao import dao_get_organisation_by_id
 from app.dao.services_dao import dao_fetch_service_by_id
 
 caches = defaultdict(partial(cachetools.TTLCache, maxsize=1024, ttl=2))
@@ -92,6 +93,7 @@ class SerialisedService(SerialisedModel):
     restricted: bool
     prefix_sms: bool
     email_branding: Any
+    organisation: Any
 
     @classmethod
     @memory_cache
@@ -134,3 +136,22 @@ class SerialisedAPIKeyCollection(SerialisedModelCollection):
         ]
         db.session.commit()
         return cls(keys)
+
+
+class SerialisedOrganisation(SerialisedModel):
+    domains: Any
+
+    @classmethod
+    @memory_cache
+    def from_id(cls, organisation_id):
+        return cls(cls.get_dict(organisation_id)["data"])
+
+    @staticmethod
+    @redis_cache.set("organisation-{organisation_id}")
+    def get_dict(organisation_id):
+        from app.schemas import organisation_schema
+
+        organisation_dict = organisation_schema.dump(dao_get_organisation_by_id(organisation_id))
+        db.session.commit()
+
+        return {"data": organisation_dict}
