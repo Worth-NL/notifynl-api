@@ -12,5 +12,3 @@ pytest-dotenv
 pytest-md
 pytest-emoji
 python-dotenv
-
-# -e ../notifynl-utils
