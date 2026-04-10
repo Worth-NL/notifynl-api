@@ -32,6 +32,7 @@ def test_deliver_letter(
         personalisation={"address_line_1": "Provided as PDF"},
         status=NOTIFICATION_CREATED,
         reference="ref1",
+        client_reference="client_ref1",
         created_at=datetime.now(),
     )
     sample_letter_template.service.organisation = sample_organisation
@@ -45,7 +46,7 @@ def test_deliver_letter(
 
     mock_send_letter.assert_called_once_with(
         notification_id=str(letter.id),
-        reference="ref1",
+        reference="client_ref1",
         address=PostalAddress("A. User\nMy Street\n1234AB city", True),
         postage="netherlands",
         service_id=str(letter.service_id),
