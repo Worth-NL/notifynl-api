@@ -58,8 +58,10 @@ certifi==2025.8.3
     #   -r requirements_nl.txt
     #   requests
     #   sentry-sdk
-cffi==1.17.1
-    # via cryptography
+cffi==2.0.0
+    # via
+    #   -r requirements_nl.txt
+    #   cryptography
 charset-normalizer==3.4.3
     # via
     #   -r requirements_nl.txt
@@ -91,8 +93,9 @@ coverage==7.10.5
     # via
     #   pytest-cov
     #   pytest-testmon
-cryptography==45.0.6
+cryptography==46.0.6
     # via
+    #   -r requirements_nl.txt
     #   moto
     #   trustme
 dnspython==2.7.0
@@ -159,6 +162,10 @@ idna==3.10
     #   -r requirements_nl.txt
     #   requests
     #   trustme
+importlib-metadata==8.7.1
+    # via
+    #   -r requirements_nl.txt
+    #   opentelemetry-api
 iniconfig==2.1.0
     # via pytest
 iso8601==2.1.0
@@ -219,8 +226,12 @@ moto==5.0.11
     # via -r requirements_nl_test.in
 notifications-python-client==10.0.1
     # via -r requirements_nl.txt
-notifications-utils @ git+https://github.com/Worth-NL/notifynl-utils.git@7f8ffc39e633ae8be78576f71750c142eabd2011
+notifications-utils @ git+https://github.com/Worth-NL/notifynl-utils.git@311ad2535e5aed4408cd4d6f12d354708de20f0d
     # via -r requirements_nl.txt
+opentelemetry-api==1.40.0
+    # via
+    #   -r requirements_nl.txt
+    #   notifications-utils
 ordered-set==4.1.0
     # via
     #   -r requirements_nl.txt
@@ -253,15 +264,17 @@ psutil==6.1.1
     # via -r requirements_nl.txt
 psycopg2-binary==2.9.10
     # via -r requirements_nl.txt
-pycparser==2.22
-    # via cffi
+pycparser==3.0
+    # via
+    #   -r requirements_nl.txt
+    #   cffi
 pycurl==7.45.6
     # via -r requirements_nl.txt
-pyjwt==2.10.1
+pyjwt==2.12.0
     # via
     #   -r requirements_nl.txt
     #   notifications-python-client
-pypdf==6.0.0
+pypdf==6.9.2
     # via
     #   -r requirements_nl.txt
     #   notifications-utils
@@ -329,7 +342,7 @@ referencing==0.36.2
     #   -r requirements_nl.txt
     #   jsonschema
     #   jsonschema-specifications
-requests==2.32.2
+requests==2.32.5
     # via
     #   -r requirements_nl.txt
     #   govuk-bank-holidays
@@ -396,6 +409,7 @@ typing-extensions==4.15.0
     # via
     #   -r requirements_nl.txt
     #   alembic
+    #   opentelemetry-api
     #   referencing
 tzdata==2025.2
     # via
@@ -404,10 +418,11 @@ tzdata==2025.2
     #   kombu
 uri-template==1.3.0
     # via -r requirements_nl.txt
-urllib3==2.5.0
+urllib3==2.6.3
     # via
     #   -r requirements_nl.txt
     #   botocore
+    #   notifications-utils
     #   requests
     #   responses
     #   sentry-sdk
@@ -431,3 +446,7 @@ werkzeug==3.1.3
     #   pytest-httpserver
 xmltodict==0.14.2
     # via moto
+zipp==3.23.0
+    # via
+    #   -r requirements_nl.txt
+    #   importlib-metadata
