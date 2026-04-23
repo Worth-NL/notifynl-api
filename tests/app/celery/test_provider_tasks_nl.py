@@ -46,7 +46,8 @@ def test_deliver_letter(
 
     mock_send_letter.assert_called_once_with(
         notification_id=str(letter.id),
-        reference="client_ref1",
+        reference="ref1",
+        client_reference="client_ref1",
         address=PostalAddress("A. User\nMy Street\n1234AB city", True),
         postage="netherlands",
         service_id=str(letter.service_id),
