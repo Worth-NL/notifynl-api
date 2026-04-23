@@ -226,7 +226,7 @@ moto==5.0.11
     # via -r requirements_nl_test.in
 notifications-python-client==10.0.1
     # via -r requirements_nl.txt
-notifications-utils @ git+https://github.com/Worth-NL/notifynl-utils.git@311ad2535e5aed4408cd4d6f12d354708de20f0d
+notifications-utils @ git+https://github.com/Worth-NL/notifynl-utils.git@86a47518899c0c61610532cd30b50fc3adbb18c7
     # via -r requirements_nl.txt
 opentelemetry-api==1.40.0
     # via
