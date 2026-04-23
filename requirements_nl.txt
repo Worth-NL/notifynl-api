@@ -156,7 +156,7 @@ mistune==0.8.4
     # via notifications-utils
 notifications-python-client==10.0.1
     # via -r requirements_nl.in
-notifications-utils @ git+https://github.com/Worth-NL/notifynl-utils.git@ba1b3b36da648aaa40f29de4489e7b04847165e6
+notifications-utils @ git+https://github.com/Worth-NL/notifynl-utils.git@1bdadf229fcb5ac6cf7c5d7e73e5b80474e2760e
     # via -r requirements_nl.in
 opentelemetry-api==1.40.0
     # via notifications-utils
