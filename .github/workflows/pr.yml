@@ -1,19 +1,22 @@
-name: Test
+name: PR
 
 on:
   pull_request:
     branches:
-      - "develop"
+      - develop
 
 concurrency:
   group: ${{ github.workflow }}.${{ github.ref }}
   cancel-in-progress: true
 
+permissions:
+  contents: read
+
 env:
   IMAGE: ghcr.io/worth-nl/notifynl-api
 
 jobs:
-  test:
+  unit-test:
     runs-on: ubuntu-latest
 
     strategy:
@@ -72,8 +75,7 @@ jobs:
           activate-environment: true
           enable-cache: true
           cache-dependency-glob: |
-            requirements_for_test.in
-            requirements_for_test.txt
+            requirements_nl.txt
             requirements_nl_test.txt
 
       - name: Install application requirements (pip)
@@ -104,11 +106,58 @@ jobs:
           use-actions-summary: false
           badge-title: PYTEST
 
+  docker-test:
+    runs-on: ubuntu-latest
+
+    needs: unit-test
+
+    strategy:
+      matrix:
+        python-version: ["3.11"]
+        dockerfile-target: ["test", "concourse_tests"]
+
+    steps:
+      - uses: szenius/set-timezone@v2.0
+        with:
+          timezoneLinux: "Europe/Amsterdam"
+
+      - uses: actions/checkout@v4
+
+      - uses: gerlero/apt-install@v1
+        with:
+          packages: build-essential git libcurl4-openssl-dev curl libssl-dev
+          install-recommends: false
+
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: ${{ matrix.python-version }}
+          activate-environment: true
+          enable-cache: true
+          cache-dependency-glob: |
+            requirements_nl.txt
+            requirements_nl_test.txt
+
+      - name: Install application requirements (pip)
+        run: uv pip install -r requirements_nl_test.txt
+
+      - uses: docker/setup-qemu-action@v3
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/build-push-action@v6
+        with:
+          file: docker/Dockerfile
+          load: true
+          tags: ${{ env.IMAGE }}:test-${{ matrix.dockerfile-target }}
+          platforms: linux/amd64
+          provenance: false
+          target: ${{ matrix.dockerfile-target }}
+
   build:
     if: github.event.pull_request.draft == false
     runs-on: ubuntu-latest
 
-    needs: test
+    needs: docker-test
 
     permissions:
       contents: read
@@ -118,7 +167,7 @@ jobs:
       - name: Set tag
         id: set-tag
         run: |
-          TAG=$(date +%Y%m%d).${{ github.run_number }}-dev
+          TAG=$(date +%Y%m%d).${{ github.run_number }}-pr
           echo "tag=$TAG" >> $GITHUB_OUTPUT
 
       - uses: docker/login-action@v3

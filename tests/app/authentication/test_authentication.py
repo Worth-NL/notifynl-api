@@ -233,15 +233,25 @@ def test_decode_jwt_token_returns_error_with_no_secrets(client):
 
 @pytest.mark.parametrize("service_id", ["not-a-valid-id", 1234])
 def test_requires_auth_should_not_allow_service_id_with_the_wrong_data_type(client, service_jwt_secret, service_id):
-    token = create_jwt_token(
-        client_id=service_id,
-        secret=service_jwt_secret,
-    )
+    if isinstance(service_id, int):
+        # Expect a TypeError when service_id is an integer due to PyJWT 2.12.0's requirement for the iss claim
+        with pytest.raises(TypeError) as exc:
+            create_jwt_token(
+                client_id=service_id,
+                secret=service_jwt_secret,
+            )
+        assert "Issuer (iss) must be a string" in str(exc.value)
+    else:
+        # For non-integer service_id, proceed with the original test logic
+        token = create_jwt_token(
+            client_id=service_id,
+            secret=service_jwt_secret,
+        )
 
-    request.headers = {"Authorization": f"Bearer {token}"}
-    with pytest.raises(AuthError) as exc:
-        requires_auth()
-    assert exc.value.short_message == "Invalid token: service id is not the right data type"
+        request.headers = {"Authorization": f"Bearer {token}"}
+        with pytest.raises(AuthError) as exc:
+            requires_auth()
+        assert exc.value.short_message == "Invalid token: service id is not the right data type"
 
 
 def test_requires_auth_returns_error_when_service_doesnt_exist(client, sample_api_key):
