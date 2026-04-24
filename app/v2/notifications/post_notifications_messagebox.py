@@ -35,6 +35,7 @@ POST_NOTIFICATION_JSON_PARSE_DURATION_SECONDS = Histogram(
 @v2_notification_blueprint.route(f"/{MESSAGEBOX_TYPE}", methods=["POST"])
 def post_notification_messagebox():
     check_rate_limiting(authenticated_service, api_user, notification_type=MESSAGEBOX_TYPE)
+
     with POST_NOTIFICATION_JSON_PARSE_DURATION_SECONDS.time():
         request_json = get_valid_json()
         form = validate(request_json, post_messagebox_request)
@@ -46,21 +47,12 @@ def post_notification_messagebox():
 
     check_service_has_permission(authenticated_service, MESSAGEBOX_TYPE)
 
-    # TODO: template validation
-    # template, template_with_content = validate_template(
-    #         form["template_id"],
-    #         form.get("personalisation", {}),
-    #         authenticated_service,
-    #         notification_type,
-    #         check_char_count=False,
-    #     )
-
     return jsonify(notification), 201
 
 
 def process_messagebox_notification(*, messagebox_data, api_key, service):
     if api_key.key_type == KEY_TYPE_TEAM:
-       raise BadRequestError(message="Cannot send messagebox messages with a team api key", status_code=403)
+        raise BadRequestError(message="Cannot send messagebox messages with a team api key", status_code=403)
 
     if service.restricted and api_key.key_type != KEY_TYPE_TEST:
         raise BadRequestError(message="Cannot send messagebox messages when service is in trial mode", status_code=403)
@@ -93,19 +85,15 @@ def process_messagebox_notification(*, messagebox_data, api_key, service):
     )
 
     resp = create_response_for_post_notification(
-        notification_id=notification_id,
-        organisation_id=template.service.organisation_id
+        notification_id=notification_id, organisation_id=template.service.organisation_id
     )
 
     return resp
 
 
-def create_response_for_post_notification(
-    notification_id,
-    organisation_id
-):
+def create_response_for_post_notification(notification_id, organisation_id):
     return {
         "id": notification_id,
         "organisation_id": organisation_id,
-        "uri": f"{request.url_root}v2/notifications/{str(notification_id)}"
+        "uri": f"{request.url_root}v2/notifications/{str(notification_id)}",
     }

@@ -259,6 +259,7 @@ class DVLAClient:
         *,
         notification_id: str,
         reference: str,
+        client_reference: str,
         address: PostalAddress,
         postage: Literal["netherlands", "rest-of-world", "europe"],
         service_id: str,
@@ -288,6 +289,7 @@ class DVLAClient:
                 json=self._format_create_print_job_json(
                     notification_id=notification_id,
                     reference=reference,
+                    client_reference=client_reference,
                     address=address,
                     postage=postage,
                     service_id=service_id,
@@ -300,7 +302,17 @@ class DVLAClient:
             return response.json()
 
     def _format_create_print_job_json(
-        self, *, notification_id, reference, address, postage, service_id, organisation_id, pdf_file, callback_url
+        self,
+        *,
+        notification_id,
+        reference,
+        client_reference,
+        address,
+        postage,
+        service_id,
+        organisation_id,
+        pdf_file,
+        callback_url,
     ):
         # We shouldn't need to pass the postage in, as the address has a postage field. However, at this point we've
         # recorded the postage on the notification so we should respect that rather than introduce any possible
@@ -316,6 +328,7 @@ class DVLAClient:
                 "jobType": "NOTIFY",
                 "templateReference": "NOTIFY",
                 "businessIdentifier": reference,
+                "clientReference": client_reference,
                 "recipientName": recipient,
                 "address": address_data,
             },
