@@ -1,3 +1,7 @@
+from datetime import UTC, datetime
+from unittest.mock import call
+from uuid import uuid4
+
 import pytest
 from flask import current_app
 from freezegun import freeze_time
@@ -34,6 +38,7 @@ from app.notifications.validators import (
     check_service_sms_sender_id,
     check_template_is_active,
     check_template_is_for_notification_type,
+    get_daily_rate_limit_value,
     service_can_send_to_recipient,
     validate_address,
     validate_and_format_recipient,
@@ -75,7 +80,7 @@ def enable_redis(notify_api):
 
 
 class TestCheckServiceMessageLimit:
-    @pytest.mark.parametrize("key_type", ["team", "normal"])
+    @pytest.mark.parametrize("key_type", ["team", "normal", "test"])
     @pytest.mark.parametrize("notification_type", NOTIFICATION_TYPES_INT)
     def test_check_service_message_limit_in_cache_under_message_limit_passes(
         self, sample_service, mocker, notification_type, key_type
@@ -85,21 +90,24 @@ class TestCheckServiceMessageLimit:
         mock_set = mocker.patch("app.notifications.validators.redis_store.set")
         check_service_over_daily_message_limit(serialised_service, key_type, notification_type=notification_type)
         assert mock_get.call_args_list == [
-            mocker.call(daily_limit_cache_key(sample_service.id, notification_type=notification_type)),
+            mocker.call(
+                daily_limit_cache_key(sample_service.id, notification_type=notification_type, key_type=key_type)
+            ),
         ]
         assert mock_set.call_args_list == []
 
     @pytest.mark.parametrize("notification_type", NOTIFICATION_TYPES_INT)
-    def test_check_service_over_daily_message_limit_should_not_interact_with_cache_for_test_key(
+    def test_check_service_over_daily_message_limit_interacts_with_cache_for_test_key(
         self, sample_service, mocker, notification_type
     ):
+        yyyy_mm_dd = datetime.now(UTC).strftime("%Y-%m-%d")
         mocker.patch("app.notifications.validators.redis_store")
         mock_get = mocker.patch("app.notifications.validators.redis_store.get", side_effect=[None])
         serialised_service = SerialisedService.from_id(sample_service.id)
         check_service_over_daily_message_limit(serialised_service, "test", notification_type=notification_type)
-        assert mock_get.call_args_list == []
+        assert mock_get.call_args_list == [call(f"{sample_service.id}-test-{notification_type}-{yyyy_mm_dd}-count")]
 
-    @pytest.mark.parametrize("key_type", ["team", "normal"])
+    @pytest.mark.parametrize("key_type", ["team", "normal", "test"])
     @pytest.mark.parametrize("notification_type", NOTIFICATION_TYPES_INT)
     def test_check_service_over_daily_message_limit_should_set_cache_value_as_zero_if_cache_not_set(
         self, sample_service, mocker, notification_type, key_type
@@ -110,24 +118,29 @@ class TestCheckServiceMessageLimit:
             check_service_over_daily_message_limit(serialised_service, key_type, notification_type=notification_type)
 
             assert mock_set.call_args_list == [
-                mocker.call(daily_limit_cache_key(sample_service.id, notification_type=notification_type), 0, ex=86400),
+                mocker.call(
+                    daily_limit_cache_key(sample_service.id, notification_type=notification_type, key_type=key_type),
+                    0,
+                    ex=86400,
+                ),
             ]
 
+    @pytest.mark.parametrize("key_type", ["team", "normal", "test"])
     @pytest.mark.parametrize("notification_type", NOTIFICATION_TYPES_INT)
     def test_check_service_over_daily_message_limit_does_nothing_if_redis_disabled(
-        self, notify_api, sample_service, mocker, notification_type
+        self, notify_api, sample_service, mocker, notification_type, key_type
     ):
         serialised_service = SerialisedService.from_id(sample_service.id)
         with set_config(notify_api, "REDIS_ENABLED", False):
             mock_cache_key = mocker.patch("notifications_utils.clients.redis.daily_limit_cache_key")
-            check_service_over_daily_message_limit(serialised_service, "normal", notification_type=notification_type)
+            check_service_over_daily_message_limit(serialised_service, key_type, notification_type=notification_type)
             assert mock_cache_key.method_calls == []
 
-    @pytest.mark.parametrize("key_type", ["team", "normal"])
+    @pytest.mark.parametrize("key_type", ["team", "normal", "test"])
     @pytest.mark.parametrize("notification_type", NOTIFICATION_TYPES_INT)
     def test_check_service_message_limit_over_message_limit_fails_with_cold_ie_missing_cache_value(
         self, mocker, notify_db_session, notification_type, key_type
-    ):
+    ) -> None:
         service = create_service(
             email_message_limit=4,
             letter_message_limit=4,
@@ -148,11 +161,11 @@ class TestCheckServiceMessageLimit:
         assert tmr_error.message == f"Exceeded send limits ({notification_type}: 4) for today"
         assert tmr_error.fields == []
 
-    @pytest.mark.parametrize("key_type", ["team", "normal"])
+    @pytest.mark.parametrize("key_type", ["team", "normal", "test"])
     @pytest.mark.parametrize("notification_type", NOTIFICATION_TYPES_INT)
     def test_check_service_message_limit_over_message_limit_fails(
         self, mocker, notify_db_session, notification_type, key_type
-    ):
+    ) -> None:
         service = create_service(
             email_message_limit=4,
             letter_message_limit=4,
@@ -171,11 +184,11 @@ class TestCheckServiceMessageLimit:
         assert tmr_error.message == f"Exceeded send limits ({notification_type}: 4) for today"
         assert tmr_error.fields == []
 
-    @pytest.mark.parametrize("key_type", ["team", "normal"])
+    @pytest.mark.parametrize("key_type", ["team", "normal", "test"])
     @pytest.mark.parametrize("notification_type", NOTIFICATION_TYPES_INT)
     def test_check_service_message_limit_check_with_multiple_notifications_for_jobs(
         self, mocker, notify_db_session, notification_type, key_type
-    ):
+    ) -> None:
         service = create_service(
             email_message_limit=10,
             letter_message_limit=10,
@@ -203,6 +216,31 @@ def test_check_template_is_for_notification_type_pass(template_type, notificatio
         check_template_is_for_notification_type(notification_type=notification_type, template_type=template_type)
         is None
     )
+
+
+@pytest.mark.parametrize(
+    "notification_type, expected_value",
+    [(SMS_TYPE, 200), (LETTER_TYPE, 300), (EMAIL_TYPE, 100), (INTERNATIONAL_SMS_TYPE, 400)],
+)
+def test_get_daily_rate_limit_value_for_test_keys_for_live_services(sample_service, notification_type, expected_value):
+    sample_service.email_message_limit = 100
+    sample_service.sms_message_limit = 200
+    sample_service.letter_message_limit = 300
+    sample_service.international_sms_message_limit = 400
+    result = get_daily_rate_limit_value(sample_service, "test", notification_type)
+    assert result == expected_value
+
+
+@pytest.mark.parametrize(
+    "notification_type, expected_value",
+    [(SMS_TYPE, 250_000), (LETTER_TYPE, 20_000), (EMAIL_TYPE, 250_000), (INTERNATIONAL_SMS_TYPE, 100)],
+)
+def test_get_daily_rate_limit_value_for_test_keys_for_trial_services(sample_service, notification_type, expected_value):
+    # This test checks that the default live service limit rates are returned for a test API key for a service in
+    # trial services.
+    sample_service.restricted = True
+    result = get_daily_rate_limit_value(sample_service, "test", notification_type)
+    assert result == expected_value
 
 
 @pytest.mark.parametrize("template_type, notification_type", [(SMS_TYPE, EMAIL_TYPE), (EMAIL_TYPE, SMS_TYPE)])
@@ -233,7 +271,7 @@ def test_check_template_is_active_fails(sample_template):
     assert e.value.fields == [{"template": "Template has been deleted"}]
 
 
-@pytest.mark.parametrize("key_type", ["test", "normal"])
+@pytest.mark.parametrize("key_type", ["test", "normal", "test"])
 def test_service_can_send_to_recipient_passes(key_type, notify_db_session):
     trial_mode_service = create_service(service_name="trial mode", restricted=True)
     serialised_service = SerialisedService.from_id(trial_mode_service.id)
@@ -275,7 +313,7 @@ def test_service_can_send_to_recipient_passes_with_non_normalised_email(sample_s
     assert service_can_send_to_recipient(recipient_email, "team", serialised_service) is None
 
 
-@pytest.mark.parametrize("key_type", ["test", "normal"])
+@pytest.mark.parametrize("key_type", ["test", "normal", "test"])
 def test_service_can_send_to_recipient_passes_for_live_service_non_team_member(key_type, sample_service):
     serialised_service = SerialisedService.from_id(sample_service.id)
     assert service_can_send_to_recipient("some_other_email@test.com", key_type, serialised_service) is None
@@ -397,7 +435,9 @@ def test_check_is_message_too_long_passes_for_long_email(sample_service):
 def test_check_notification_content_is_not_empty_passes(notify_api, mocker, sample_service):
     template_id = create_template(sample_service, content="Content is not empty").id
     template = SerialisedTemplate.from_id_and_service_id(template_id=template_id, service_id=sample_service.id)
-    template_with_content = create_content_for_notification(template, {})
+    template_with_content = create_content_for_notification(
+        template=template, personalisation={}, recipient="07900111222"
+    )
     assert check_notification_content_is_not_empty(template_with_content) is None
 
 
@@ -407,7 +447,9 @@ def test_check_notification_content_is_not_empty_fails(
 ):
     template_id = create_template(sample_service, content=template_content).id
     template = SerialisedTemplate.from_id_and_service_id(template_id=template_id, service_id=sample_service.id)
-    template_with_content = create_content_for_notification(template, notification_values)
+    template_with_content = create_content_for_notification(
+        template=template, personalisation=notification_values, recipient="07900111222"
+    )
     with pytest.raises(BadRequestError) as e:
         check_notification_content_is_not_empty(template_with_content)
     assert e.value.status_code == 400
@@ -417,7 +459,7 @@ def test_check_notification_content_is_not_empty_fails(
 
 def test_validate_template(sample_service):
     template = create_template(sample_service, template_type="email")
-    validate_template(template.id, {}, sample_service, "email")
+    validate_template(template_id=template.id, personalisation={}, service=sample_service, notification_type="email")
 
 
 @pytest.mark.parametrize("check_char_count", [True, False])
@@ -431,12 +473,16 @@ def test_validate_template_calls_all_validators(mocker, fake_uuid, sample_servic
     mock_check_not_empty = mocker.patch("app.notifications.validators.check_notification_content_is_not_empty")
     mock_check_message_is_too_long = mocker.patch("app.notifications.validators.check_is_message_too_long")
     template, template_with_content = validate_template(
-        template.id, {}, sample_service, "email", check_char_count=check_char_count
+        template_id=template.id,
+        personalisation={},
+        service=sample_service,
+        notification_type="email",
+        check_char_count=check_char_count,
     )
 
     mock_check_type.assert_called_once_with("email", "email")
     mock_check_if_active.assert_called_once_with(template)
-    mock_create_conent.assert_called_once_with(template, {})
+    mock_create_conent.assert_called_once_with(template, {}, None)
     mock_check_not_empty.assert_called_once_with("content")
     if check_char_count:
         mock_check_message_is_too_long.assert_called_once_with("content")
@@ -454,75 +500,106 @@ def test_validate_template_calls_all_validators_exception_message_too_long(mocke
     mock_check_not_empty = mocker.patch("app.notifications.validators.check_notification_content_is_not_empty")
     mock_check_message_is_too_long = mocker.patch("app.notifications.validators.check_is_message_too_long")
     template, template_with_content = validate_template(
-        template.id, {}, sample_service, "email", check_char_count=False
+        template_id=template.id,
+        personalisation={},
+        service=sample_service,
+        notification_type="email",
+        check_char_count=False,
     )
 
     mock_check_type.assert_called_once_with("email", "email")
     mock_check_if_active.assert_called_once_with(template)
-    mock_create_conent.assert_called_once_with(template, {})
+    mock_create_conent.assert_called_once_with(template, {}, None)
     mock_check_not_empty.assert_called_once_with("content")
     assert not mock_check_message_is_too_long.called
 
 
 @pytest.mark.parametrize("key_type", ["team", "live", "test"])
-def test_check_service_over_api_rate_limit_when_exceed_rate_limit_request_fails_raises_error(
-    key_type, sample_service, mocker
+@pytest.mark.parametrize("remaining_tokens", (0, -1))
+def test_check_token_bucket_service_over_api_rate_limit_when_exceed_rate_limit_request_fails_raises_error(
+    key_type, mocker, remaining_tokens
 ):
+    service = create_service(service_name=str(uuid4()), restricted=True)
     with freeze_time("2016-01-01 12:00:00.000000"):
         if key_type == "live":
             api_key_type = "normal"
         else:
             api_key_type = key_type
 
-        mocker.patch("app.redis_store.exceeded_rate_limit", return_value=True)
-
-        sample_service.restricted = True
-        api_key = create_api_key(sample_service, key_type=api_key_type)
-        serialised_service = SerialisedService.from_id(sample_service.id)
+        mocker.patch("app.redis_store.get_remaining_bucket_tokens", return_value=remaining_tokens)
+        api_key = create_api_key(service, key_type=api_key_type)
+        serialised_service = SerialisedService.from_id(service.id)
         serialised_api_key = SerialisedAPIKeyCollection.from_service_id(serialised_service.id)[0]
 
         with pytest.raises(RateLimitError) as e:
             check_service_over_api_rate_limit(serialised_service, serialised_api_key.key_type)
 
-        assert app.redis_store.exceeded_rate_limit.call_args_list == [
-            mocker.call(f"{str(sample_service.id)}-{api_key.key_type}", sample_service.rate_limit, 60)
+        assert app.redis_store.get_remaining_bucket_tokens.call_args_list == [
+            mocker.call(
+                key=f"{str(service.id)}-tokens-{api_key.key_type}", replenish_per_sec=50, bucket_max=1_000, bucket_min=0
+            )
         ]
         assert e.value.status_code == 429
         assert e.value.message == (
-            f"Exceeded rate limit for key type {key_type.upper()} of {sample_service.rate_limit} "
-            f"requests per {60} seconds"
+            f"Exceeded rate limit for key type {key_type.upper()} of 3000 requests per 60 seconds"
         )
         assert e.value.fields == []
 
 
-def test_check_service_over_api_rate_limit_when_rate_limit_has_not_exceeded_limit_succeeds(sample_service, mocker):
+@pytest.mark.parametrize(
+    "extra_create_service_args, expected_replenish_per_sec, expected_bucket_max",
+    (
+        ({}, 50, 1_000),
+        ({"rate_limit": 24_000}, 400, 1_000),
+        ({"rate_limit": 10}, 0.16666666666666666, 5),
+        ({"rate_limit": 1}, 0.016666666666666666, 2),
+        ({"rate_limit": 0}, 0, 1),
+    ),
+)
+@pytest.mark.parametrize("remaining_tokens", (1, 999, None))
+def test_check_token_bucket_service_over_api_rate_limit_when_rate_limit_has_not_exceeded_limit_succeeds(
+    mocker,
+    remaining_tokens,
+    extra_create_service_args,
+    expected_replenish_per_sec,
+    expected_bucket_max,
+):
+    service = create_service(
+        service_name=str(uuid4()),
+        restricted=True,
+        **extra_create_service_args,
+    )
     with freeze_time("2016-01-01 12:00:00.000000"):
-        mocker.patch("app.redis_store.exceeded_rate_limit", return_value=False)
+        mocker.patch("app.redis_store.get_remaining_bucket_tokens", return_value=remaining_tokens)
 
-        sample_service.restricted = True
-        api_key = create_api_key(sample_service)
-        serialised_service = SerialisedService.from_id(sample_service.id)
-        serialised_api_key = SerialisedAPIKeyCollection.from_service_id(serialised_service.id)[0]
+        api_key = create_api_key(service)
+        serialised_service = SerialisedService.from_id(service.id)
+        serialised_api_key = SerialisedAPIKeyCollection.from_service_id(service.id)[0]
 
         check_service_over_api_rate_limit(serialised_service, serialised_api_key.key_type)
-        assert app.redis_store.exceeded_rate_limit.call_args_list == [
-            mocker.call(f"{str(sample_service.id)}-{api_key.key_type}", 3000, 60)
+        assert app.redis_store.get_remaining_bucket_tokens.call_args_list == [
+            mocker.call(
+                key=f"{str(service.id)}-tokens-{api_key.key_type}",
+                replenish_per_sec=expected_replenish_per_sec,
+                bucket_max=expected_bucket_max,
+                bucket_min=0,
+            )
         ]
 
 
-def test_check_service_over_api_rate_limit_should_do_nothing_if_limiting_is_disabled(sample_service, mocker):
+def test_check_service_over_api_rate_limit_should_do_nothing_if_limiting_is_disabled(mocker):
+    service = create_service(service_name=str(uuid4()))
     with freeze_time("2016-01-01 12:00:00.000000"):
         current_app.config["API_RATE_LIMIT_ENABLED"] = False
 
-        mocker.patch("app.redis_store.exceeded_rate_limit", return_value=False)
+        mock_get_remaining_bucket_tokens = mocker.patch("app.redis_store.get_remaining_bucket_tokens")
 
-        sample_service.restricted = True
-        create_api_key(sample_service)
-        serialised_service = SerialisedService.from_id(sample_service.id)
+        create_api_key(service)
+        serialised_service = SerialisedService.from_id(service.id)
         serialised_api_key = SerialisedAPIKeyCollection.from_service_id(serialised_service.id)[0]
 
         check_service_over_api_rate_limit(serialised_service, serialised_api_key.key_type)
-        assert app.redis_store.exceeded_rate_limit.call_args_list == []
+        assert mock_get_remaining_bucket_tokens.call_args_list == []
 
 
 @pytest.mark.parametrize("notification_type", NOTIFICATION_TYPES)
@@ -572,7 +649,7 @@ def test_validate_and_format_recipient_succeeds_with_international_numbers_if_se
 
 def test_validate_and_format_recipient_raises_when_service_over_daily_limit_for_international_sms(
     sample_service_full_permissions, mocker
-):
+) -> None:
     service = create_service(international_sms_message_limit=4, service_permissions=["sms", "international_sms"])
     mocker.patch("app.redis_store.get", return_value="5")
 

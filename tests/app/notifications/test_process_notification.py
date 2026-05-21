@@ -1,6 +1,8 @@
+import base64
 import datetime
 import uuid
 from collections import namedtuple
+from unittest.mock import call
 
 import pytest
 from boto3.exceptions import Boto3Error
@@ -18,6 +20,7 @@ from app.constants import (
 )
 from app.models import Notification, NotificationHistory
 from app.notifications.process_notifications import (
+    add_email_file_links_to_personalisation,
     create_content_for_notification,
     persist_notification,
     send_notification_to_queue,
@@ -26,13 +29,13 @@ from app.notifications.process_notifications import (
 from app.serialised_models import SerialisedTemplate
 from app.utils import parse_and_format_phone_number
 from app.v2.errors import BadRequestError, QrCodeTooLongError
-from tests.app.db import create_api_key, create_job, create_service, create_template
+from tests.app.db import create_api_key, create_job, create_service, create_template, create_template_email_file
 from tests.conftest import set_config
 
 
 def test_create_content_for_notification_passes(sample_email_template):
     template = SerialisedTemplate.from_id_and_service_id(sample_email_template.id, sample_email_template.service_id)
-    content = create_content_for_notification(template, None)
+    content = create_content_for_notification(template=template, personalisation=None, recipient="amanda@example.com")
     assert str(content) == template.content + "\n"
 
 
@@ -43,9 +46,33 @@ def test_create_content_for_notification_with_placeholders_passes(
         sample_template_with_placeholders.id,
         sample_template_with_placeholders.service_id,
     )
-    content = create_content_for_notification(template, {"name": "Bobby"})
+    content = create_content_for_notification(
+        template=template, personalisation={"name": "Bobby"}, recipient="amanda@example.com"
+    )
     assert content.content == template.content
     assert "Bobby" in str(content)
+
+
+def test_create_content_for_notification_with_email_file_placeholder_passes(
+    sample_service,
+    mocker,
+    mock_utils_s3_download,
+    mock_document_download_client_upload,
+    sample_email_template_with_template_email_files,
+):
+    template_id = sample_email_template_with_template_email_files.id
+    template = SerialisedTemplate.from_id_and_service_id(template_id=template_id, service_id=sample_service.id)
+
+    content = create_content_for_notification(
+        template=template,
+        personalisation={"name": "Bobby"},
+        recipient="amanda@example.com",
+    )
+    assert content.content == template.content
+    assert "Bobby" in str(content)
+    # assert secure links to files made it to notification content:
+    assert "documents.gov.uk/invitation.pdf" in str(content)
+    assert "documents.gov.uk/form.pdf" in str(content)
 
 
 def test_create_content_for_notification_fails_with_missing_personalisation(
@@ -56,7 +83,7 @@ def test_create_content_for_notification_fails_with_missing_personalisation(
         sample_template_with_placeholders.service_id,
     )
     with pytest.raises(BadRequestError):
-        create_content_for_notification(template, None)
+        create_content_for_notification(template=template, personalisation=None, recipient="07900111222")
 
 
 def test_create_content_for_notification_allows_additional_personalisation(
@@ -66,7 +93,11 @@ def test_create_content_for_notification_allows_additional_personalisation(
         sample_template_with_placeholders.id,
         sample_template_with_placeholders.service_id,
     )
-    create_content_for_notification(template, {"name": "Bobby", "Additional placeholder": "Data"})
+    create_content_for_notification(
+        template=template,
+        personalisation={"name": "Bobby", "Additional placeholder": "Data"},
+        recipient="07900111222",
+    )
 
 
 def test_create_content_for_notification_raises_error_on_qr_code_too_long(
@@ -76,12 +107,115 @@ def test_create_content_for_notification_raises_error_on_qr_code_too_long(
     template = SerialisedTemplate.from_id_and_service_id(db_template.id, db_template.service_id)
 
     with pytest.raises(QrCodeTooLongError) as e:
-        create_content_for_notification(template, {"code": "too much data " * 50})
+        create_content_for_notification(
+            template=template, personalisation={"code": "too much data " * 50}, recipient=None
+        )
 
     assert e.value.message == "Cannot create a usable QR code - the link is too long"
     assert e.value.num_bytes == 700
     assert e.value.max_bytes == 504
     assert e.value.data == "too much data " * 50
+
+
+def test_create_content_for_notification_should_raise_if_email_files_not_found(
+    notify_api, mocker, sample_service, sample_email_template_with_email_file_placeholders
+):
+    template = SerialisedTemplate.from_id_and_service_id(
+        template_id=sample_email_template_with_email_file_placeholders.id, service_id=sample_service.id
+    )
+
+    mock_upload = mocker.patch("app.notifications.process_notifications.document_download_client.upload_document")
+
+    with pytest.raises(BadRequestError) as e:
+        create_content_for_notification(template, {"name": "Anne"}, recipient="anne@example.com")
+
+    assert e.value.status_code == 400
+    assert e.value.message == "Missing personalisation: invitation.pdf, form.pdf"
+    mock_upload.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "template_email_files, expected_personalisation",
+    [
+        (
+            [
+                {"filename": "invitation.pdf", "validate_users_email": True, "retention_period": 26, "link_text": ""},
+                {"filename": "form.pdf", "validate_users_email": True, "retention_period": 26, "link_text": ""},
+            ],
+            {
+                "name": "Anne",
+                "invitation.pdf": "documents.gov.uk/invitation.pdf",
+                "form.pdf": "documents.gov.uk/form.pdf",
+            },
+        ),
+        (
+            [
+                {
+                    "filename": "invitation.pdf",
+                    "validate_users_email": True,
+                    "retention_period": 26,
+                    "link_text": "click this first link",
+                },
+                {
+                    "filename": "form.pdf",
+                    "validate_users_email": True,
+                    "retention_period": 26,
+                    "link_text": "click this second link",
+                },
+            ],
+            {
+                "name": "Anne",
+                "invitation.pdf": "[click this first link](documents.gov.uk/invitation.pdf)",
+                "form.pdf": "[click this second link](documents.gov.uk/form.pdf)",
+            },
+        ),
+    ],
+)
+def test_add_email_file_links_to_personalisation(
+    notify_api,
+    mocker,
+    sample_service,
+    sample_email_template_with_email_file_placeholders,
+    mock_utils_s3_download,
+    mock_document_download_client_upload,
+    template_email_files,
+    expected_personalisation,
+):
+    for file_data in template_email_files:
+        create_template_email_file(
+            template_id=sample_email_template_with_email_file_placeholders.id,
+            created_by_id=sample_service.users[0].id,
+            **file_data,
+        )
+
+    template = SerialisedTemplate.from_id_and_service_id(
+        template_id=sample_email_template_with_email_file_placeholders.id, service_id=sample_service.id
+    )
+
+    personalisation = add_email_file_links_to_personalisation(template, {"name": "Anne"}, recipient="anne@example.com")
+
+    assert personalisation == expected_personalisation
+    assert len(mock_document_download_client_upload.mock_calls) == 2
+    assert (
+        call(
+            str(sample_service.id),
+            base64.b64encode(b"downloaded-from-s3-form.pdf").decode("utf-8"),
+            confirmation_email="anne@example.com",
+            retention_period="26 weeks",
+            filename="form.pdf",
+        )
+        in mock_document_download_client_upload.mock_calls
+    )
+    assert (
+        call(
+            str(sample_service.id),
+            base64.b64encode(b"downloaded-from-s3-invitation.pdf").decode("utf-8"),
+            confirmation_email="anne@example.com",
+            retention_period="26 weeks",
+            filename="invitation.pdf",
+        )
+        in mock_document_download_client_upload.mock_calls
+    )
 
 
 @freeze_time("2016-01-01 11:09:00.061258")
@@ -536,17 +670,19 @@ def test_send_notification_to_queue(
     mocker,
 ):
     mocked = mocker.patch(f"app.celery.{expected_task}.apply_async")
-    Notification = namedtuple("Notification", ["id", "key_type", "notification_type", "created_at"])
+    Notification = namedtuple("Notification", ["id", "key_type", "notification_type", "created_at", "service_id"])
+    service_id = uuid.uuid4()
     notification = Notification(
         id=uuid.uuid4(),
         key_type=key_type,
         notification_type=notification_type,
         created_at=datetime.datetime(2016, 11, 11, 16, 8, 18),
+        service_id=service_id,
     )
 
     send_notification_to_queue(notification=notification, queue=requested_queue)
 
-    mocked.assert_called_once_with([str(notification.id)], queue=expected_queue)
+    mocked.assert_called_once_with([str(notification.id)], queue=expected_queue, MessageGroupId=str(service_id))
 
 
 def test_send_notification_to_queue_throws_exception_deletes_notification(sample_notification, mocker):
@@ -556,7 +692,11 @@ def test_send_notification_to_queue_throws_exception_deletes_notification(sample
     )
     with pytest.raises(Boto3Error):
         send_notification_to_queue(sample_notification)
-    mocked.assert_called_once_with([str(sample_notification.id)], queue="send-sms-tasks")
+    mocked.assert_called_once_with(
+        [str(sample_notification.id)],
+        queue="send-sms-tasks",
+        MessageGroupId=str(sample_notification.service_id),
+    )
 
     assert Notification.query.count() == 0
     assert NotificationHistory.query.count() == 0

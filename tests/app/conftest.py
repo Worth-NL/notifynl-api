@@ -4,12 +4,12 @@ import inspect
 import json
 import textwrap
 import uuid
+from collections import namedtuple
 from datetime import UTC, datetime, timedelta
 from unittest.mock import MagicMock
 
 import celery
 import pytest
-import pytz
 import requests_mock
 from flask import current_app, url_for
 from kombu.serialization import dumps
@@ -78,6 +78,7 @@ from tests.app.db import (
     create_rate,
     create_service,
     create_template,
+    create_template_email_file,
     create_user,
 )
 
@@ -170,6 +171,30 @@ def sample_service(sample_user):
 
 
 @pytest.fixture(scope="function")
+def sample_restricted_service(sample_user):
+    service_name = "Trial service"
+
+    data = {
+        "name": service_name,
+        "email_message_limit": 1000,
+        "sms_message_limit": 1000,
+        "letter_message_limit": 1000,
+        "restricted": True,
+        "created_by": sample_user,
+        "crown": True,
+    }
+    service = Service.query.filter_by(name=service_name).first()
+    if not service:
+        service = Service(**data)
+        dao_create_service(service, sample_user, service_permissions=None)
+    else:
+        if sample_user not in service.users:
+            dao_add_user_to_service(service, sample_user)
+
+    return service
+
+
+@pytest.fixture(scope="function")
 def sample_service_with_email_branding(sample_service):
     sample_service.email_branding = create_email_branding(id=uuid.uuid4())
     return sample_service
@@ -226,8 +251,10 @@ def sample_sms_template_with_html(sample_service):
 
 @pytest.fixture(scope="function")
 def sample_email_template(sample_user):
+    template_id = "c8348bc6-e43c-465c-8468-1cd693366f4e"
     service = create_service(user=sample_user, service_permissions=[EMAIL_TYPE, SMS_TYPE], check_if_service_exists=True)
     data = {
+        "id": template_id,
         "name": "Email Template Name",
         "template_type": EMAIL_TYPE,
         "has_unsubscribe_link": False,
@@ -236,8 +263,10 @@ def sample_email_template(sample_user):
         "created_by": sample_user,
         "subject": "Email Subject",
     }
-    template = Template(**data)
-    dao_create_template(template)
+    template = Template.query.get(template_id)
+    if not template:
+        template = Template(**data)
+        dao_create_template(template)
     return template
 
 
@@ -263,6 +292,35 @@ def sample_email_template_with_placeholders(sample_service):
 
 
 @pytest.fixture(scope="function")
+def sample_email_template_with_distinct_placeholders(sample_service):
+    return create_template(
+        sample_service,
+        template_type=EMAIL_TYPE,
+        subject="Please confirm your registration",
+        content="Hello ((First_Name))\nPlease confirm your registration on [Pigeons' Affair Bureau website](((link)))",
+    )
+
+
+@pytest.fixture(scope="function")
+def sample_email_template_with_email_file_placeholders(sample_service):
+    content = """
+    Dear ((name)),
+
+    Here is your invitation:
+    ((invitation.pdf))
+
+    And here is the form to bring to the appointment:
+    ((form.pdf))
+    """
+    return create_template(
+        sample_service,
+        template_type=EMAIL_TYPE,
+        subject="Your appointment invitation",
+        content=content,
+    )
+
+
+@pytest.fixture(scope="function")
 def sample_email_template_with_html(sample_service):
     return create_template(
         sample_service,
@@ -270,6 +328,44 @@ def sample_email_template_with_html(sample_service):
         subject="((name)) <em>some HTML</em>",
         content="Hello ((name))\nThis is an email from GOV.UK with <em>some HTML</em>",
     )
+
+
+@pytest.fixture(scope="function")
+def sample_template_email_file_not_pending(sample_email_template):
+    return create_template_email_file(
+        template_id=sample_email_template.id, created_by_id=sample_email_template.created_by_id
+    )
+
+
+@pytest.fixture(scope="function")
+def sample_template_email_file_pending(sample_email_template):
+    return create_template_email_file(
+        template_id=sample_email_template.id, created_by_id=sample_email_template.created_by_id, pending=True
+    )
+
+
+@pytest.fixture(scope="function")
+def sample_email_template_with_template_email_files(sample_email_template_with_email_file_placeholders):
+    template = sample_email_template_with_email_file_placeholders
+    create_template_email_file(
+        template_id=template.id,
+        created_by_id=template.created_by_id,
+        filename="invitation.pdf",
+        validate_users_email=True,
+        retention_period=26,
+        pending=False,
+    )
+
+    create_template_email_file(
+        template_id=template.id,
+        created_by_id=template.created_by_id,
+        filename="form.pdf",
+        validate_users_email=True,
+        retention_period=26,
+        pending=False,
+    )
+
+    return template
 
 
 @pytest.fixture(scope="function")
@@ -1287,7 +1383,7 @@ def mock_onwards_request_headers(mocker):
 
 
 def datetime_in_past(days=0, seconds=0):
-    return datetime.now(tz=pytz.utc) - timedelta(days=days, seconds=seconds)
+    return datetime.now(UTC) - timedelta(days=days, seconds=seconds)
 
 
 def merge_fields(dct, merge_dct):
@@ -1362,10 +1458,10 @@ def mock_celery_task(mocker):
             Checks all the args/kwargs provided match type hints if necessary by using the inspect module to introspect
             the params and extract annotations. Handles partial args and kwargs, parameters without type hints, etc
             """
-            args = args or []
+            args = list(args or [])
             kwargs = kwargs or {}
             # get an iterator so we can loop through args in step with inspect
-            args = iter(args)
+            args_iter = iter(args)
 
             # try and check types are correct
             for parameter_signature in inspect.signature(celery_task).parameters.values():
@@ -1376,7 +1472,7 @@ def mock_celery_task(mocker):
                 # try and match with a provided arg - if there are no more args, then we must be calling with a kwarg
                 # instead. if there's no kwarg, then we're just falling back on a provided default
                 try:
-                    param_value = next(args)
+                    param_value = next(args_iter)
                 except StopIteration:
                     if parameter_signature.name in kwargs:
                         param_value = kwargs[parameter_signature.name]
@@ -1426,3 +1522,32 @@ def sample_report_request(sample_user, sample_service):
     dao_create_report_request(report_request)
 
     return report_request
+
+
+@pytest.fixture(scope="function")
+def mock_utils_s3_download(mocker):
+    EmailFileFromS3 = namedtuple("EmailFileFromS3", ["read"])
+
+    def utils_s3download(bucket_name, filename):
+        from app.models import TemplateEmailFile
+
+        if template_email_file := TemplateEmailFile.query.get(str(filename.split("/")[1])):
+            return EmailFileFromS3(read=lambda: bytes(f"downloaded-from-s3-{template_email_file.filename}", "utf-8"))
+        return EmailFileFromS3(read=lambda: bytes("sample_s3_file", "utf-8"))
+
+    return mocker.patch(
+        "app.utils.utils_s3download",
+        side_effect=utils_s3download,
+    )
+
+
+@pytest.fixture(scope="function")
+def mock_document_download_client_upload(mocker):
+    def mock_link(*args, **kwargs):
+        filename = kwargs["filename"]
+        return f"documents.gov.uk/{filename}"
+
+    return mocker.patch(
+        "app.document_download_client.upload_document",
+        side_effect=mock_link,
+    )

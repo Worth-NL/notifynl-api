@@ -17,6 +17,7 @@ from app.notifications.notifications_ses_callback import (
     remove_emails_from_bounce,
     remove_emails_from_complaint,
 )
+from app.otel_metrics.notification import _callback_duration, _deliver_duration
 from tests.app.db import (
     create_notification,
     create_service_callback_api,
@@ -62,8 +63,12 @@ def test_remove_email_from_bounce():
     assert "bounce@simulator.amazonses.com" not in json.dumps(test_json)
 
 
-def test_ses_callback_should_update_notification_status(client, notify_db_session, sample_email_template, mocker):
-    with freeze_time("2001-01-01T12:00:00"):
+def test_ses_callback_should_update_notification_status(
+    client, notify_db_session, sample_email_template, caplog, mocker
+):
+    with freeze_time("2001-01-01T12:00:00") as frozen_time:
+        record_deliver_duration_mock = mocker.patch.object(_deliver_duration, "record")
+        record_callback_duration_mock = mocker.patch.object(_callback_duration, "record")
         mocker.patch("app.statsd_client.incr")
         mocker.patch("app.statsd_client.timing_with_dates")
         send_mock = mocker.patch("app.celery.process_ses_receipts_tasks.check_and_queue_callback_task")
@@ -74,14 +79,48 @@ def test_ses_callback_should_update_notification_status(client, notify_db_sessio
         )
         assert get_notification_by_id(notification.id).status == "sending"
 
-        assert process_ses_results(ses_notification_callback(reference="ref"))
+        frozen_time.tick(1)
+
+        payload = ses_notification_callback(reference="ref")
+
+        frozen_time.tick(1)
+
+        receipt_iso_timestamp = datetime.utcnow().isoformat()
+
+        frozen_time.tick(1)
+
+        assert process_ses_results(payload, receipt_iso_timestamp)
         assert get_notification_by_id(notification.id).status == "delivered"
         statsd_client.timing_with_dates.assert_any_call(
             "callback.ses.delivered.elapsed-time", datetime.utcnow(), notification.sent_at
         )
         statsd_client.incr.assert_any_call("callback.ses.delivered")
+        record_deliver_duration_mock.assert_called_once_with(
+            1.0,
+            {
+                "key.type": "normal",
+                "notification.status": "delivered",
+                "notification.type": "email",
+                "provider.name": "ses",
+            },
+        )
+        record_callback_duration_mock.assert_called_once_with(
+            2.0,
+            {
+                "key.type": "normal",
+                "notification.status": "delivered",
+                "notification.type": "email",
+                "provider.name": "ses",
+            },
+        )
         updated_notification = Notification.query.get(notification.id)
         send_mock.assert_called_once_with(updated_notification)
+
+        record = next(r for r in caplog.records if "SES successful delivery" in r.msg)
+        assert record.delivered_at == datetime(2001, 1, 1, 12, 0, 1)
+        assert record.delivered_ago == 2
+        assert record.receipt_received_at == datetime(2001, 1, 1, 12, 0, 2)
+        assert record.receipt_received_ago == 1
 
 
 def test_ses_callback_should_not_update_notification_status_if_already_delivered(sample_email_template, mocker):
@@ -111,8 +150,10 @@ def test_ses_callback_should_retry_if_notification_is_new(client, notify_db_sess
 def test_ses_callback_should_log_if_notification_is_missing(client, notify_db_session, mocker, caplog):
     mock_retry = mocker.patch("app.celery.process_ses_receipts_tasks.process_ses_results.retry")
 
-    with freeze_time("2017-11-17T12:34:03.646Z"), caplog.at_level("WARNING"):
-        assert process_ses_results(ses_notification_callback(reference="ref")) is None
+    with freeze_time("2017-11-17T12:34:03.646Z") as frozen_time, caplog.at_level("WARNING"):
+        payload = ses_notification_callback(reference="ref")
+        frozen_time.tick(400)
+        assert process_ses_results(payload) is None
 
     assert "notification not found for reference: ref (update to delivered)" in caplog.messages
     assert mock_retry.call_count == 0
@@ -121,8 +162,10 @@ def test_ses_callback_should_log_if_notification_is_missing(client, notify_db_se
 def test_ses_callback_should_not_retry_if_notification_is_old(client, notify_db_session, mocker, caplog):
     mock_retry = mocker.patch("app.celery.process_ses_receipts_tasks.process_ses_results.retry")
 
-    with freeze_time("2017-11-21T12:14:03.646Z"), caplog.at_level("ERROR"):
-        assert process_ses_results(ses_notification_callback(reference="ref")) is None
+    with freeze_time("2017-11-21T12:14:03.646Z") as frozen_time, caplog.at_level("ERROR"):
+        payload = ses_notification_callback(reference="ref")
+        frozen_time.tick(400)
+        assert process_ses_results(payload) is None
 
     assert caplog.messages == []
     assert mock_retry.call_count == 0
@@ -158,18 +201,32 @@ def test_ses_callback_should_set_status_to_temporary_failure(
 ):
     send_mock = mocker.patch("app.celery.process_ses_receipts_tasks.check_and_queue_callback_task")
 
-    with caplog.at_level("INFO"):
+    with freeze_time("2001-01-01T12:00:00") as frozen_time, caplog.at_level("INFO"):
         notification = create_notification(
             template=sample_email_template,
             status="sending",
             reference="ref",
         )
         assert get_notification_by_id(notification.id).status == "sending"
-        assert process_ses_results(ses_soft_bounce_callback(reference="ref"))
+        payload = ses_soft_bounce_callback(reference="ref")
+
+        frozen_time.tick(1)
+
+        receipt_iso_timestamp = datetime.utcnow().isoformat()
+
+        frozen_time.tick(1)
+
+        assert process_ses_results(payload, receipt_iso_timestamp)
         assert get_notification_by_id(notification.id).status == "temporary-failure"
 
     assert send_mock.called
-    assert f"SES bounce for notification ID {notification.id}" in caplog.messages
+
+    bounce_record = next(r for r in caplog.records if r.message == f"SES bounce for notification ID {notification.id}")
+    assert hasattr(bounce_record, "bounce_message")
+    assert bounce_record.bounced_at == datetime(2001, 1, 1, 12, 0)
+    assert bounce_record.bounced_ago == 2
+    assert bounce_record.receipt_received_at == datetime(2001, 1, 1, 12, 0, 1)
+    assert bounce_record.receipt_received_ago == 1
 
 
 def test_ses_callback_should_set_status_to_permanent_failure(
@@ -177,23 +234,32 @@ def test_ses_callback_should_set_status_to_permanent_failure(
 ):
     send_mock = mocker.patch("app.celery.process_ses_receipts_tasks.check_and_queue_callback_task")
 
-    with caplog.at_level("INFO"):
+    with freeze_time("2001-01-01T12:00:00") as frozen_time, caplog.at_level("INFO"):
         notification = create_notification(
             template=sample_email_template,
             status="sending",
             reference="ref",
         )
         assert get_notification_by_id(notification.id).status == "sending"
-        assert process_ses_results(ses_hard_bounce_callback(reference="ref"))
+        payload = ses_hard_bounce_callback(reference="ref")
+
+        frozen_time.tick(1)
+
+        receipt_iso_timestamp = datetime.utcnow().isoformat()
+
+        frozen_time.tick(1)
+
+        assert process_ses_results(payload, receipt_iso_timestamp)
         assert get_notification_by_id(notification.id).status == "permanent-failure"
 
     assert send_mock.called
 
-    bounce_record = next(
-        filter(lambda r: r.message == f"SES bounce for notification ID {notification.id}", caplog.records), None
-    )
-    assert bounce_record is not None
+    bounce_record = next(r for r in caplog.records if r.message == f"SES bounce for notification ID {notification.id}")
     assert hasattr(bounce_record, "bounce_message")
+    assert bounce_record.bounced_at == datetime(2001, 1, 1, 12, 0)
+    assert bounce_record.bounced_ago == 2
+    assert bounce_record.receipt_received_at == datetime(2001, 1, 1, 12, 0, 1)
+    assert bounce_record.receipt_received_ago == 1
 
 
 def test_ses_callback_should_send_on_complaint_to_user_callback_api(sample_email_template, mock_celery_task):

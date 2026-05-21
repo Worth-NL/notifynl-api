@@ -1,10 +1,9 @@
+from math import ceil
+
 from flask import current_app
 from gds_metrics.metrics import Histogram
 from notifications_utils import SMS_CHAR_COUNT_LIMIT
-from notifications_utils.clients.redis import (
-    daily_limit_cache_key,
-    rate_limit_cache_key,
-)
+from notifications_utils.clients.redis import daily_limit_cache_key
 from notifications_utils.recipient_validation.email_address import validate_and_format_email_address
 from notifications_utils.recipient_validation.errors import InvalidPhoneError
 from notifications_utils.recipient_validation.notifynl.phone_number import (
@@ -22,13 +21,15 @@ from app.constants import (
     KEY_TYPE_TEST,
     LETTER_TYPE,
     MESSAGEBOX_TYPE,
+    SECONDS_IN_1_MINUTE,
     SMS_TO_UK_LANDLINES,
     SMS_TYPE,
+    TOKEN_BUCKET_MAX,
+    TOKEN_BUCKET_MIN,
 )
 from app.dao.service_email_reply_to_dao import dao_get_reply_to_by_id
 from app.dao.service_letter_contact_dao import dao_get_letter_contact_by_id
 from app.dao.service_sms_sender_dao import dao_get_service_sms_senders_by_id
-from app.models import Service
 from app.notifications.process_notifications import (
     create_content_for_notification,
 )
@@ -45,36 +46,59 @@ from app.v2.errors import (
 REDIS_EXCEEDED_RATE_LIMIT_DURATION_SECONDS = Histogram(
     "redis_exceeded_rate_limit_duration_seconds",
     "Time taken to check rate limit",
+    ["algorithm"],
 )
 
 
 def check_service_over_api_rate_limit(service, key_type):
-    if current_app.config["API_RATE_LIMIT_ENABLED"] and current_app.config["REDIS_ENABLED"]:
-        cache_key = rate_limit_cache_key(service.id, key_type)
-        rate_limit = service.rate_limit
-        interval = 60
-        with REDIS_EXCEEDED_RATE_LIMIT_DURATION_SECONDS.time():
-            if redis_store.exceeded_rate_limit(cache_key, rate_limit, interval):
-                current_app.logger.info("service %s has been rate limited for throughput", service.id)
-                raise RateLimitError(rate_limit, interval, key_type)
+    if not current_app.config["API_RATE_LIMIT_ENABLED"]:
+        return
+    if not current_app.config["REDIS_ENABLED"]:
+        return
+    if token_bucket_rate_limit_exceeded(service, key_type):
+        current_app.logger.info("service %s has been rate limited for token bucket", service.id)
+        raise RateLimitError(service.rate_limit, SECONDS_IN_1_MINUTE, key_type)
 
 
-def check_service_over_daily_message_limit(service: Service, key_type, notification_type, num_notifications=1):
-    if key_type == KEY_TYPE_TEST or not current_app.config["REDIS_ENABLED"]:
+def token_bucket_rate_limit_exceeded(service, key_type):
+    with REDIS_EXCEEDED_RATE_LIMIT_DURATION_SECONDS.labels(algorithm="token_bucket").time():
+        remaining = redis_store.get_remaining_bucket_tokens(
+            key=f"{service.id}-tokens-{key_type}",
+            replenish_per_sec=service.rate_limit / SECONDS_IN_1_MINUTE,
+            bucket_max=min(ceil(service.rate_limit / 3) + 1, TOKEN_BUCKET_MAX),
+            bucket_min=TOKEN_BUCKET_MIN,
+        )
+
+        if remaining is None:
+            # we have troubles reaching redis and should allow this
+            return False
+
+        return remaining < 1
+
+
+def get_daily_rate_limit_value(service, key_type, notification_type):
+    if key_type == KEY_TYPE_TEST and service.restricted:
+        rate_limits = current_app.config["DEFAULT_LIVE_SERVICE_RATE_LIMITS"]
+    else:
+        rate_limits = {
+            EMAIL_TYPE: service.email_message_limit,
+            SMS_TYPE: service.sms_message_limit,
+            INTERNATIONAL_SMS_TYPE: service.international_sms_message_limit,
+            LETTER_TYPE: service.letter_message_limit,
+            MESSAGEBOX_TYPE: service.messagebox_message_limit,
+        }
+
+    return rate_limits[notification_type]
+
+
+def check_service_over_daily_message_limit(service, key_type, notification_type, num_notifications=1):
+    if not current_app.config["REDIS_ENABLED"]:
         return
 
-    rate_limits = {
-        EMAIL_TYPE: service.email_message_limit,
-        SMS_TYPE: service.sms_message_limit,
-        INTERNATIONAL_SMS_TYPE: service.international_sms_message_limit,
-        LETTER_TYPE: service.letter_message_limit,
-        MESSAGEBOX_TYPE: service.messagebox_message_limit,
-    }
-
     limit_name = notification_type
-    limit_value = rate_limits[notification_type]
+    limit_value = get_daily_rate_limit_value(service, key_type, notification_type)
 
-    cache_key = daily_limit_cache_key(service.id, notification_type=notification_type)
+    cache_key = daily_limit_cache_key(service.id, notification_type=notification_type, key_type=key_type)
     if (service_stats := redis_store.get(cache_key)) is None:
         # first message of the day, set the cache to 0 and the expiry to 24 hours
         redis_store.set(cache_key, 0, ex=86400)
@@ -82,12 +106,17 @@ def check_service_over_daily_message_limit(service: Service, key_type, notificat
         service_stats = 0
 
     if int(service_stats) + num_notifications > limit_value:
+        extra = {
+            "service_id": service.id,
+            "sent_count": int(service_stats),
+            "notification_type": limit_name,
+            "limit": limit_value,
+        }
         current_app.logger.info(
-            "service %s has been rate limited for %s daily use sent %s limit %s",
-            service.id,
-            int(service_stats),
-            limit_name,
-            limit_value,
+            "Service %(service_id)s has been rate limited for %(sent_count)s daily use "
+            "sent %(notification_type)s limit %(limit)s",
+            extra,
+            extra=extra,
         )
         raise TooManyRequestsError(limit_name, limit_value)
 
@@ -217,7 +246,9 @@ def check_notification_content_is_not_empty(template_with_content):
         raise BadRequestError(message=message)
 
 
-def validate_template(template_id, personalisation, service, notification_type, check_char_count=True):
+def validate_template(
+    *, template_id, personalisation, service, notification_type, check_char_count=True, recipient=None
+):
     try:
         template = SerialisedTemplate.from_id_and_service_id(template_id, service.id)
     except NoResultFound as e:
@@ -227,7 +258,7 @@ def validate_template(template_id, personalisation, service, notification_type, 
     check_template_is_for_notification_type(notification_type, template.template_type)
     check_template_is_active(template)
 
-    template_with_content = create_content_for_notification(template, personalisation)
+    template_with_content = create_content_for_notification(template, personalisation, recipient)
 
     check_notification_content_is_not_empty(template_with_content)
 
@@ -269,35 +300,67 @@ def check_service_letter_contact_id(service_id, letter_contact_id, notification_
             raise BadRequestError(message=message) from e
 
 
-def validate_address(service, letter_data):
-    address = PostalAddress.from_personalisation(
-        letter_data,
-        allow_international_letters=(INTERNATIONAL_LETTERS in str(service.permissions)),
-    )
-
+def _validate_address_line_counts(address):
+    """Validate address has correct number of lines."""
     if not address.has_enough_lines:
         raise ValidationError(message=f"Address must be at least {PostalAddress.MIN_LINES} lines")
 
     if address.has_too_many_lines:
         raise ValidationError(message=f"Address must be no more than {PostalAddress.MAX_LINES} lines")
 
-    if address.has_invalid_characters:
+
+def _validate_address_content(address):
+    """Validate address content requirements."""
+    if not address.has_alphanumeric_character_in_address_lines_1_and_2:
         raise ValidationError(
-            message="Address lines must not start with any of the following characters: @ ( ) = [ ] ” \\ / , < >"
+            message="The first 2 lines of the address must both include at least one alphanumeric character"
         )
 
-    if not address.international:
-        if not address.postcode:
-            raise ValidationError(
-                message="Cant detect a dutch postcode, postcode must be in the same line together with a city"
-            )
-        if not address.city:
-            raise ValidationError(message="cant detect a dutch city, city name must be in the same line as postcode")
+    if address.has_invalid_country_for_bfpo_address:
+        raise ValidationError(message="The last line of a BFPO address must not be a country.")
 
-    if address.international:
-        return address.postage
-    else:
-        return None
+
+def _validate_address_last_line(address):
+    """Validate the last line of the address."""
+    if not address.has_valid_last_line:
+        if address.allow_international_letters:
+            raise ValidationError(message="Last line of address must be a real UK postcode or another country")
+        raise ValidationError(message="Must be a real UK postcode")
+
+
+def _validate_address_characters(address):
+    """Validate address does not contain invalid characters."""
+    if address.has_invalid_characters:
+        raise ValidationError(
+            message='Address lines must not start with any of the following characters: @ ( ) = [ ] " \\ / , < >'
+        )
+
+
+def _validate_dutch_postal_address(address):
+    """Validate Dutch postal address requirements."""
+    if not address.postcode:
+        raise ValidationError(
+            message="Cant detect a dutch postcode, postcode must be in the same line together with a city"
+        )
+    if not address.city:
+        raise ValidationError(message="cant detect a dutch city, city name must be in the same line as postcode")
+
+
+def validate_address(service, letter_data):
+    address = PostalAddress.from_personalisation(
+        letter_data,
+        allow_international_letters=(INTERNATIONAL_LETTERS in str(service.permissions)),
+    )
+
+    _validate_address_line_counts(address)
+    _validate_address_content(address)
+    _validate_address_last_line(address)
+    _validate_address_characters(address)
+
+    if not address.international:
+        _validate_dutch_postal_address(address)
+
+    return address.postage if address.international else None
     # TODO: do we want to keep using validate address to get the postage ???
 
 

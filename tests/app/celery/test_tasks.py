@@ -1,3 +1,5 @@
+import base64
+import logging
 import uuid
 from datetime import datetime, timedelta
 from itertools import count
@@ -13,7 +15,7 @@ from notifications_utils.template import (
     PlainTextEmailTemplate,
     SMSMessageTemplate,
 )
-from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.exc import NoResultFound, SQLAlchemyError
 
 from app import signing
 from app.celery import provider_tasks, tasks
@@ -29,6 +31,7 @@ from app.celery.tasks import (
     process_incomplete_job,
     process_incomplete_jobs,
     process_job,
+    process_job_row,
     process_report_request,
     process_returned_letters_list,
     s3,
@@ -68,8 +71,10 @@ from tests.app.db import (
     create_service,
     create_service_with_defined_sms_sender,
     create_template,
+    create_template_email_file,
     create_user,
 )
+from tests.conftest import _with_message_group_id
 
 
 class AnyStringWith(str):
@@ -108,7 +113,16 @@ def email_job_with_placeholders(notify_db_session, sample_email_template_with_pl
     return create_job(template=sample_email_template_with_placeholders)
 
 
+@pytest.fixture
+def email_job_with_file_placeholders(notify_db_session, sample_email_template_with_template_email_files):
+    return create_job(template=sample_email_template_with_template_email_files)
+
+
 # -------------- process_job tests -------------- #
+#
+# Most tests simulate the broker by setting message_group_id on the task (via _with_message_group_id)
+# so we assert the real MessageGroupId is passed. One test (test_should_process_sms_job_passes_none_...)
+# does not simulate and asserts MessageGroupId=None when not set by broker.
 
 
 def test_should_process_sms_job(sample_job, mocker, mock_celery_task):
@@ -120,7 +134,8 @@ def test_should_process_sms_job(sample_job, mocker, mock_celery_task):
     mock_encode = mocker.patch("app.signing.encode", return_value="something_encoded")
     mocker.patch("app.celery.tasks.create_uuid", return_value="uuid")
 
-    process_job(sample_job.id)
+    with _with_message_group_id(process_job, str(sample_job.service_id)):
+        process_job(sample_job.id)
 
     s3.get_job_and_metadata_from_s3.assert_called_once_with(
         service_id=str(sample_job.service.id), job_id=str(sample_job.id)
@@ -135,7 +150,7 @@ def test_should_process_sms_job(sample_job, mocker, mock_celery_task):
                 "row_number": 0,
                 "personalisation": {"phonenumber": "+441234123123"},
                 "client_reference": None,
-            }
+            },
         )
     ]
 
@@ -150,8 +165,45 @@ def test_should_process_sms_job(sample_job, mocker, mock_celery_task):
                         {},
                     )
                 ],
+                False,
             ),
             queue="job-tasks",
+            MessageGroupId=str(sample_job.service_id),
+        )
+    ]
+    assert job.job_status == "finished"
+
+
+def test_should_process_sms_job_passes_none_message_group_id_when_not_set_by_broker(
+    sample_job, mocker, mock_celery_task
+):
+    # When the task is run with message_group_id=None (e.g. broker did not set it), None is passed.
+    mocker.patch(
+        "app.celery.tasks.s3.get_job_and_metadata_from_s3",
+        return_value=(load_example_csv("sms"), {"sender_id": None}),
+    )
+    mock_task = mock_celery_task(shatter_job_rows)
+    mocker.patch("app.signing.encode", return_value="something_encoded")
+    mocker.patch("app.celery.tasks.create_uuid", return_value="uuid")
+
+    with _with_message_group_id(process_job, None):
+        process_job(sample_job.id)
+
+    job = jobs_dao.dao_get_job_by_id(sample_job.id)
+    assert mock_task.mock_calls == [
+        call(
+            (
+                job.template.template_type,
+                [
+                    (
+                        (str(sample_job.service_id), "uuid", "something_encoded"),
+                        {},
+                    )
+                ],
+                False,
+            ),
+            queue="job-tasks",
+            MessageGroupId=None,
         )
     ]
     assert job.job_status == "finished"
@@ -166,7 +218,8 @@ def test_should_process_sms_job_with_sender_id(sample_job, mocker, mock_celery_t
     mock_encode = mocker.patch("app.signing.encode", return_value="something_encoded")
     mocker.patch("app.celery.tasks.create_uuid", return_value="uuid")
 
-    process_job(sample_job.id, sender_id=fake_uuid)
+    with _with_message_group_id(process_job, str(sample_job.service_id)):
+        process_job(sample_job.id, sender_id=fake_uuid)
 
     s3.get_job_and_metadata_from_s3.assert_called_once_with(
         service_id=str(sample_job.service.id), job_id=str(sample_job.id)
@@ -196,8 +249,10 @@ def test_should_process_sms_job_with_sender_id(sample_job, mocker, mock_celery_t
                         {"sender_id": fake_uuid},
                     )
                 ],
+                False,
             ),
             queue="job-tasks",
+            MessageGroupId=str(sample_job.service_id),
         )
     ]
     assert job.job_status == "finished"
@@ -281,7 +336,8 @@ def test_should_process_job_if_send_limits_are_not_exceeded(notify_api, notify_d
         "app.celery.tasks.check_service_over_daily_message_limit", return_value=None
     )
 
-    process_job(job.id, shatter_batch_size=3)
+    with _with_message_group_id(process_job, str(job.service_id)):
+        process_job(job.id, shatter_batch_size=3)
 
     s3.get_job_and_metadata_from_s3.assert_called_once_with(service_id=str(job.service.id), job_id=str(job.id))
     job = jobs_dao.dao_get_job_by_id(job.id)
@@ -294,8 +350,10 @@ def test_should_process_job_if_send_limits_are_not_exceeded(notify_api, notify_d
                     ((str(job.service_id), "uuid-1", "something-encoded-1"), {}),
                     ((str(job.service_id), "uuid-2", "something-encoded-2"), {}),
                 ],
+                False,
             ),
             queue="job-tasks",
+            MessageGroupId=str(job.service_id),
         ),
         call(
             (
@@ -305,8 +363,10 @@ def test_should_process_job_if_send_limits_are_not_exceeded(notify_api, notify_d
                     ((str(job.service_id), "uuid-4", "something-encoded-4"), {}),
                     ((str(job.service_id), "uuid-5", "something-encoded-5"), {}),
                 ],
+                False,
             ),
             queue="job-tasks",
+            MessageGroupId=str(job.service_id),
         ),
         call(
             (
@@ -316,8 +376,10 @@ def test_should_process_job_if_send_limits_are_not_exceeded(notify_api, notify_d
                     ((str(job.service_id), "uuid-7", "something-encoded-7"), {}),
                     ((str(job.service_id), "uuid-8", "something-encoded-8"), {}),
                 ],
+                False,
             ),
             queue="job-tasks",
+            MessageGroupId=str(job.service_id),
         ),
         call(
             (
@@ -325,8 +387,10 @@ def test_should_process_job_if_send_limits_are_not_exceeded(notify_api, notify_d
                 [
                     ((str(job.service_id), "uuid-9", "something-encoded-9"), {}),
                 ],
+                False,
             ),
             queue="job-tasks",
+            MessageGroupId=str(job.service_id),
         ),
     ]
     assert mock_check_message_limit.mock_calls == [
@@ -353,7 +417,68 @@ def test_should_not_create_shatter_task_for_empty_file(sample_job, mocker, mock_
     assert mock_shatter_job_rows.called is False
 
 
-def test_should_process_email_job(email_job_with_placeholders, mocker, mock_celery_task):
+def test_job_with_files_creates_save_email_task_on_correct_queue(
+    email_job_with_file_placeholders, mocker, mock_celery_task, fake_uuid
+):
+    email_csv = """email_address,name
+    test@test.com,foo
+    """
+    mock_save_email = mock_celery_task(save_email)
+    mock_shatter_job_rows = mock_celery_task(shatter_job_rows)
+    service_id = uuid.uuid4()
+    notification_id = uuid.uuid4()
+    encoded_notification = base64.b64encode(b"my notification")
+
+    mocker.patch(
+        "app.celery.tasks.s3.get_job_and_metadata_from_s3",
+        return_value=(email_csv, {"sender_id": fake_uuid}),
+    )
+    mocker.patch("app.signing.encode", return_value="something_encoded")
+    mocker.patch("app.celery.tasks.create_uuid", return_value="some_uuid")
+    with _with_message_group_id(process_job, str(email_job_with_file_placeholders.service_id)):
+        process_job(email_job_with_file_placeholders.id, sender_id=fake_uuid)
+    assert mock_shatter_job_rows.mock_calls == [
+        call(
+            (
+                EMAIL_TYPE,
+                [
+                    (
+                        (str(email_job_with_file_placeholders.service_id), "some_uuid", "something_encoded"),
+                        {"sender_id": fake_uuid},
+                    )
+                ],
+                True,
+            ),
+            queue="job-tasks",
+            MessageGroupId=str(email_job_with_file_placeholders.service_id),
+        )
+    ]
+    process_job_row(
+        EMAIL_TYPE,
+        [
+            [
+                service_id,
+                notification_id,
+                encoded_notification,
+            ],
+            {},
+        ],
+        True,
+    )
+    assert mock_save_email.mock_calls == [
+        call(
+            [service_id, notification_id, encoded_notification],
+            {},
+            queue="database-tasks-documents",
+            MessageGroupId=None,
+        )
+    ]
+
+
+@pytest.mark.parametrize("send_file", [True, False])
+def test_should_process_email_job(
+    email_job_with_placeholders, email_job_with_file_placeholders, mocker, mock_celery_task, send_file
+):
     email_csv = """email_address,name
     test@test.com,foo
     """
@@ -365,51 +490,59 @@ def test_should_process_email_job(email_job_with_placeholders, mocker, mock_cele
     mock_encode = mocker.patch("app.signing.encode", return_value="something_encoded")
     mocker.patch("app.celery.tasks.create_uuid", return_value="some_uuid")
 
-    process_job(email_job_with_placeholders.id)
+    email_job = email_job_with_file_placeholders if send_file else email_job_with_placeholders
 
-    s3.get_job_and_metadata_from_s3.assert_called_once_with(
-        service_id=str(email_job_with_placeholders.service.id),
-        job_id=str(email_job_with_placeholders.id),
-    )
+    with _with_message_group_id(process_job, str(email_job_with_placeholders.service_id)):
+        process_job(email_job.id)
+
+        s3.get_job_and_metadata_from_s3.assert_called_once_with(
+            service_id=str(email_job.service.id),
+            job_id=str(email_job.id),
+        )
 
     assert mock_encode.mock_calls == [
         call(
             {
-                "template": str(email_job_with_placeholders.template.id),
-                "template_version": email_job_with_placeholders.template.version,
-                "job": str(email_job_with_placeholders.id),
+                "template": str(email_job.template.id),
+                "template_version": email_job.template.version,
+                "job": str(email_job.id),
                 "to": "test@test.com",
                 "row_number": 0,
                 "personalisation": {"emailaddress": "test@test.com", "name": "foo"},
                 "client_reference": None,
-            }
+            },
         )
     ]
 
     assert mock_shatter_job_rows.mock_calls == [
         call(
             (
-                email_job_with_placeholders.template.template_type,
+                email_job.template.template_type,
                 [
                     (
                         (
-                            str(email_job_with_placeholders.service_id),
+                            str(email_job.service_id),
                             "some_uuid",
                             "something_encoded",
                         ),
                         {},
                     )
                 ],
+                send_file,
             ),
             queue="job-tasks",
+            MessageGroupId=str(email_job.service_id),
         )
     ]
 
-    job = jobs_dao.dao_get_job_by_id(email_job_with_placeholders.id)
+    job = jobs_dao.dao_get_job_by_id(email_job.id)
     assert job.job_status == "finished"
 
 
-def test_should_process_email_job_with_sender_id(email_job_with_placeholders, mocker, mock_celery_task, fake_uuid):
+@pytest.mark.parametrize("send_file", [True, False])
+def test_should_process_email_job_with_sender_id(
+    email_job_with_placeholders, email_job_with_file_placeholders, mocker, mock_celery_task, fake_uuid, send_file
+):
     email_csv = """email_address,name
     test@test.com,foo
     """
@@ -420,20 +553,22 @@ def test_should_process_email_job_with_sender_id(email_job_with_placeholders, mo
     mock_shatter_job_rows = mock_celery_task(shatter_job_rows)
     mock_encode = mocker.patch("app.signing.encode", return_value="something_encoded")
     mocker.patch("app.celery.tasks.create_uuid", return_value="some_uuid")
+    email_job = email_job_with_file_placeholders if send_file else email_job_with_placeholders
 
-    process_job(email_job_with_placeholders.id, sender_id=fake_uuid)
+    with _with_message_group_id(process_job, str(email_job.service_id)):
+        process_job(email_job.id, sender_id=fake_uuid)
 
     s3.get_job_and_metadata_from_s3.assert_called_once_with(
-        service_id=str(email_job_with_placeholders.service.id),
-        job_id=str(email_job_with_placeholders.id),
+        service_id=str(email_job.service.id),
+        job_id=str(email_job.id),
     )
 
     assert mock_encode.mock_calls == [
         call(
             {
-                "template": str(email_job_with_placeholders.template.id),
-                "template_version": email_job_with_placeholders.template.version,
-                "job": str(email_job_with_placeholders.id),
+                "template": str(email_job.template.id),
+                "template_version": email_job.template.version,
+                "job": str(email_job.id),
                 "to": "test@test.com",
                 "row_number": 0,
                 "personalisation": {"emailaddress": "test@test.com", "name": "foo"},
@@ -445,23 +580,25 @@ def test_should_process_email_job_with_sender_id(email_job_with_placeholders, mo
     assert mock_shatter_job_rows.mock_calls == [
         call(
             (
-                email_job_with_placeholders.template.template_type,
+                email_job.template.template_type,
                 [
                     (
                         (
-                            str(email_job_with_placeholders.service_id),
+                            str(email_job.service_id),
                             "some_uuid",
                             "something_encoded",
                         ),
                         {"sender_id": fake_uuid},
                     )
                 ],
+                send_file,
             ),
             queue="job-tasks",
+            MessageGroupId=str(email_job.service_id),
         )
     ]
 
-    job = jobs_dao.dao_get_job_by_id(email_job_with_placeholders.id)
+    job = jobs_dao.dao_get_job_by_id(email_job.id)
     assert job.job_status == "finished"
 
 
@@ -479,7 +616,8 @@ def test_should_process_letter_job(sample_letter_job, mocker, mock_celery_task):
     mock_shatter_job_rows = mock_celery_task(shatter_job_rows)
     mocker.patch("app.celery.tasks.create_uuid", return_value="uuid")
 
-    process_job(sample_letter_job.id)
+    with _with_message_group_id(process_job, str(sample_letter_job.service_id)):
+        process_job(sample_letter_job.id)
 
     s3_mock.assert_called_once_with(service_id=str(sample_letter_job.service.id), job_id=str(sample_letter_job.id))
 
@@ -499,7 +637,7 @@ def test_should_process_letter_job(sample_letter_job, mocker, mock_celery_task):
                     "postcode": "A_POST",
                 },
                 "client_reference": None,
-            }
+            },
         )
     ]
 
@@ -517,8 +655,10 @@ def test_should_process_letter_job(sample_letter_job, mocker, mock_celery_task):
                         {},
                     )
                 ],
+                False,
             ),
             queue="job-tasks",
+            MessageGroupId=str(sample_letter_job.service_id),
         )
     ]
 
@@ -535,7 +675,8 @@ def test_should_process_all_sms_job(sample_job_with_placeholdered_template, mock
     mock_encode = mocker.patch("app.signing.encode", side_effect=(f"something-encoded-{i}" for i in count()))
     mocker.patch("app.celery.tasks.create_uuid", side_effect=(f"uuid-{i}" for i in count()))
 
-    process_job(sample_job_with_placeholdered_template.id, shatter_batch_size=5)
+    with _with_message_group_id(process_job, str(sample_job_with_placeholdered_template.service_id)):
+        process_job(sample_job_with_placeholdered_template.id, shatter_batch_size=5)
 
     s3.get_job_and_metadata_from_s3.assert_called_once_with(
         service_id=str(sample_job_with_placeholdered_template.service.id),
@@ -556,7 +697,7 @@ def test_should_process_all_sms_job(sample_job_with_placeholdered_template, mock
                 "row_number": 0,
                 "personalisation": {"phonenumber": "+441234123121", "name": "chris"},
                 "client_reference": None,
-            }
+            },
         ),
         call(
             {
@@ -567,7 +708,7 @@ def test_should_process_all_sms_job(sample_job_with_placeholdered_template, mock
                 "row_number": 1,
                 "personalisation": {"phonenumber": "+441234123122", "name": "chris"},
                 "client_reference": None,
-            }
+            },
         ),
         ANY,
         ANY,
@@ -603,8 +744,10 @@ def test_should_process_all_sms_job(sample_job_with_placeholdered_template, mock
                     ((str(service_id), "uuid-3", "something-encoded-3"), {}),
                     ((str(service_id), "uuid-4", "something-encoded-4"), {}),
                 ],
+                False,
             ),
             queue="job-tasks",
+            MessageGroupId=str(service_id),
         ),
         call(
             (
@@ -616,8 +759,10 @@ def test_should_process_all_sms_job(sample_job_with_placeholdered_template, mock
                     ((str(service_id), "uuid-8", "something-encoded-8"), {}),
                     ((str(service_id), "uuid-9", "something-encoded-9"), {}),
                 ],
+                False,
             ),
             queue="job-tasks",
+            MessageGroupId=str(service_id),
         ),
     ]
 
@@ -642,8 +787,9 @@ def test_should_raise_exception_if_job_row_too_big(sample_job_with_placeholdered
     mock_encode = mocker.patch("app.signing.encode", side_effect=(f"something-encoded-{i}" for i in count()))
     mocker.patch("app.celery.tasks.create_uuid", side_effect=(f"uuid-{i}" for i in count()))
 
-    with pytest.raises(UnprocessableJobRow):
-        process_job(sample_job_with_placeholdered_template.id, shatter_batch_size=5)
+    with _with_message_group_id(process_job, str(sample_job_with_placeholdered_template.service_id)):
+        with pytest.raises(UnprocessableJobRow):
+            process_job(sample_job_with_placeholdered_template.id, shatter_batch_size=5)
 
     s3.get_job_and_metadata_from_s3.assert_called_once_with(
         service_id=str(sample_job_with_placeholdered_template.service.id),
@@ -706,8 +852,10 @@ def test_should_raise_exception_if_job_row_too_big(sample_job_with_placeholdered
                     ((str(service_id), "uuid-3", "something-encoded-3"), {}),
                     ((str(service_id), "uuid-4", "something-encoded-4"), {}),
                 ],
+                False,
             ),
             queue="job-tasks",
+            MessageGroupId=str(service_id),
         ),
         # fails - splits & retries first half
         call(
@@ -717,8 +865,10 @@ def test_should_raise_exception_if_job_row_too_big(sample_job_with_placeholdered
                     ((str(service_id), "uuid-0", "something-encoded-0"), {}),
                     ((str(service_id), "uuid-1", "something-encoded-1"), {}),
                 ],
+                False,
             ),
             queue="job-tasks",
+            MessageGroupId=str(service_id),
         ),
         # succeeds - retries second half
         call(
@@ -729,8 +879,10 @@ def test_should_raise_exception_if_job_row_too_big(sample_job_with_placeholdered
                     ((str(service_id), "uuid-3", "something-encoded-3"), {}),
                     ((str(service_id), "uuid-4", "something-encoded-4"), {}),
                 ],
+                False,
             ),
             queue="job-tasks",
+            MessageGroupId=str(service_id),
         ),
         # fails - splits & retries first half
         call(
@@ -739,8 +891,10 @@ def test_should_raise_exception_if_job_row_too_big(sample_job_with_placeholdered
                 [
                     ((str(service_id), "uuid-2", "something-encoded-2"), {}),
                 ],
+                False,
             ),
             queue="job-tasks",
+            MessageGroupId=str(service_id),
         ),
         # succeeds - retries second half
         call(
@@ -750,8 +904,10 @@ def test_should_raise_exception_if_job_row_too_big(sample_job_with_placeholdered
                     ((str(service_id), "uuid-3", "something-encoded-3"), {}),
                     ((str(service_id), "uuid-4", "something-encoded-4"), {}),
                 ],
+                False,
             ),
             queue="job-tasks",
+            MessageGroupId=str(service_id),
         ),
         # fails - splits & retries first half
         call(
@@ -760,8 +916,10 @@ def test_should_raise_exception_if_job_row_too_big(sample_job_with_placeholdered
                 [
                     ((str(service_id), "uuid-3", "something-encoded-3"), {}),
                 ],
+                False,
             ),
             queue="job-tasks",
+            MessageGroupId=str(service_id),
         ),
         # fails & gives up because we can't split any further.
         # doesn't proceed to second top-level batch.
@@ -794,7 +952,8 @@ def test_should_split_shatter_tasks_if_too_big_together(
     mock_encode = mocker.patch("app.signing.encode", side_effect=(f"something-encoded-{i}" for i in count()))
     mocker.patch("app.celery.tasks.create_uuid", side_effect=(f"uuid-{i}" for i in count()))
 
-    process_job(sample_job_with_placeholdered_template.id, shatter_batch_size=5)
+    with _with_message_group_id(process_job, str(sample_job_with_placeholdered_template.service_id)):
+        process_job(sample_job_with_placeholdered_template.id, shatter_batch_size=5)
 
     s3.get_job_and_metadata_from_s3.assert_called_once_with(
         service_id=str(sample_job_with_placeholdered_template.service.id),
@@ -862,8 +1021,10 @@ def test_should_split_shatter_tasks_if_too_big_together(
                     ((str(service_id), "uuid-3", "something-encoded-3"), {}),
                     ((str(service_id), "uuid-4", "something-encoded-4"), {}),
                 ],
+                False,
             ),
             queue="job-tasks",
+            MessageGroupId=str(service_id),
         ),
         # fails - splits & retries first half
         call(
@@ -873,8 +1034,10 @@ def test_should_split_shatter_tasks_if_too_big_together(
                     ((str(service_id), "uuid-0", "something-encoded-0"), {}),
                     ((str(service_id), "uuid-1", "something-encoded-1"), {}),
                 ],
+                False,
             ),
             queue="job-tasks",
+            MessageGroupId=str(service_id),
         ),
         # fails - splits & retries first half
         call(
@@ -883,8 +1046,10 @@ def test_should_split_shatter_tasks_if_too_big_together(
                 [
                     ((str(service_id), "uuid-0", "something-encoded-0"), {}),
                 ],
+                False,
             ),
             queue="job-tasks",
+            MessageGroupId=str(service_id),
         ),
         # succeeds - retries second half
         call(
@@ -893,8 +1058,10 @@ def test_should_split_shatter_tasks_if_too_big_together(
                 [
                     ((str(service_id), "uuid-1", "something-encoded-1"), {}),
                 ],
+                False,
             ),
             queue="job-tasks",
+            MessageGroupId=str(service_id),
         ),
         # succeeds - unwinds and retries second half
         call(
@@ -905,8 +1072,10 @@ def test_should_split_shatter_tasks_if_too_big_together(
                     ((str(service_id), "uuid-3", "something-encoded-3"), {}),
                     ((str(service_id), "uuid-4", "something-encoded-4"), {}),
                 ],
+                False,
             ),
             queue="job-tasks",
+            MessageGroupId=str(service_id),
         ),
         # succeeds, proceeds to second top-level batch
         call(
@@ -919,8 +1088,10 @@ def test_should_split_shatter_tasks_if_too_big_together(
                     ((str(service_id), "uuid-8", "something-encoded-8"), {}),
                     ((str(service_id), "uuid-9", "something-encoded-9"), {}),
                 ],
+                False,
             ),
             queue="job-tasks",
+            MessageGroupId=str(service_id),
         ),
         # succeeds
     ]
@@ -1073,41 +1244,67 @@ def test_get_id_task_args_kwargs_for_job_row_when_reference_is_provided(mocker, 
 )
 def test_shatter_job_rows(template_type, send_fn, mock_celery_task, mocker):
     mock_send_fn = mock_celery_task(send_fn)
+    expected_group_id = "service-id-0"
 
-    shatter_job_rows(
-        template_type,
-        [
-            (
-                ("service-id-0", "notification-id-0", "encoded-0"),
-                {} if template_type == LETTER_TYPE else {"sender_id": "0"},
-            ),
-            (
-                ("service-id-1", "notification-id-1", "encoded-1"),
-                {} if template_type == LETTER_TYPE else {"sender_id": "1"},
-            ),
-            (
-                ("service-id-2", "notification-id-2", "encoded-2"),
-                {} if template_type == LETTER_TYPE else {"sender_id": "2"},
-            ),
-        ],
-    )
+    with _with_message_group_id(shatter_job_rows, expected_group_id):
+        shatter_job_rows(
+            template_type,
+            [
+                (
+                    ("service-id-0", "notification-id-0", "encoded-0"),
+                    {} if template_type == LETTER_TYPE else {"sender_id": "0"},
+                ),
+                (
+                    ("service-id-1", "notification-id-1", "encoded-1"),
+                    {} if template_type == LETTER_TYPE else {"sender_id": "1"},
+                ),
+                (
+                    ("service-id-2", "notification-id-2", "encoded-2"),
+                    {} if template_type == LETTER_TYPE else {"sender_id": "2"},
+                ),
+            ],
+            False,
+        )
     assert mock_send_fn.mock_calls == [
         call(
             ("service-id-0", "notification-id-0", "encoded-0"),
             {} if template_type == LETTER_TYPE else {"sender_id": "0"},
             queue="database-tasks",
+            MessageGroupId=expected_group_id,
         ),
         call(
             ("service-id-1", "notification-id-1", "encoded-1"),
             {} if template_type == LETTER_TYPE else {"sender_id": "1"},
             queue="database-tasks",
+            MessageGroupId=expected_group_id,
         ),
         call(
             ("service-id-2", "notification-id-2", "encoded-2"),
             {} if template_type == LETTER_TYPE else {"sender_id": "2"},
             queue="database-tasks",
+            MessageGroupId=expected_group_id,
         ),
     ]
+
+
+def test_shatter_job_rows_passes_none_message_group_id_when_not_set_by_broker(mock_celery_task):
+    ## When shatter_job_rows runs with message_group_id=None, None is passed to send_fn.
+    mock_save_sms = mock_celery_task(save_sms)
+
+    with _with_message_group_id(shatter_job_rows, None):
+        shatter_job_rows(
+            SMS_TYPE,
+            [
+                (("service-id-0", "notification-id-0", "encoded-0"), {}),
+            ],
+        )
+
+    mock_save_sms.assert_called_once_with(
+        ("service-id-0", "notification-id-0", "encoded-0"),
+        {},
+        queue="database-tasks",
+        MessageGroupId=None,
+    )
 
 
 # -------- save_sms and save_email tests -------- #
@@ -1126,11 +1323,12 @@ def test_should_send_template_to_correct_sms_task_and_persist(
 
     mocked_task = mock_celery_task(provider_tasks.deliver_sms)
 
-    save_sms(
-        sample_template_with_placeholders.service_id,
-        uuid.uuid4(),
-        signing.encode(notification),
-    )
+    with _with_message_group_id(save_sms, str(sample_template_with_placeholders.service_id)):
+        save_sms(
+            sample_template_with_placeholders.service_id,
+            uuid.uuid4(),
+            signing.encode(notification),
+        )
 
     persisted_notification = Notification.query.one()
     assert persisted_notification.to == "+447234123123"
@@ -1145,7 +1343,11 @@ def test_should_send_template_to_correct_sms_task_and_persist(
     assert persisted_notification._personalisation == signing.encode({"name": "Jo"})
     assert persisted_notification.notification_type == "sms"
     assert persisted_notification.client_reference == client_reference
-    mocked_task.assert_called_once_with([str(persisted_notification.id)], queue="send-sms-tasks")
+    mocked_task.assert_called_once_with(
+        [str(persisted_notification.id)],
+        queue="send-sms-tasks",
+        MessageGroupId=str(persisted_notification.service_id),
+    )
 
 
 @pytest.mark.parametrize("client_reference", [None, "ab1234"])
@@ -1162,7 +1364,8 @@ def test_notification_belonging_to_a_job_with_incorrect_number_saved_as_validati
 
     mock_deliver_sms_task = mock_celery_task(provider_tasks.deliver_sms)
 
-    save_sms(sample_template_with_placeholders.service_id, uuid.uuid4(), signing.encode(notification))
+    with _with_message_group_id(save_sms, str(sample_template_with_placeholders.service_id)):
+        save_sms(sample_template_with_placeholders.service_id, uuid.uuid4(), signing.encode(notification))
 
     persisted_notification = Notification.query.one()
     assert persisted_notification.to == "+447234123122343253243425324233"
@@ -1184,11 +1387,12 @@ def test_should_save_sms_if_restricted_service_and_valid_number(notify_db_sessio
 
     notification_id = uuid.uuid4()
     encode_notification = signing.encode(notification)
-    save_sms(
-        service.id,
-        notification_id,
-        encode_notification,
-    )
+    with _with_message_group_id(save_sms, str(service.id)):
+        save_sms(
+            service.id,
+            notification_id,
+            encode_notification,
+        )
 
     persisted_notification = Notification.query.one()
     assert persisted_notification.to == "+447700900890"
@@ -1202,7 +1406,9 @@ def test_should_save_sms_if_restricted_service_and_valid_number(notify_db_sessio
     assert not persisted_notification.personalisation
     assert persisted_notification.notification_type == "sms"
     provider_tasks.deliver_sms.apply_async.assert_called_once_with(
-        [str(persisted_notification.id)], queue="send-sms-tasks"
+        [str(persisted_notification.id)],
+        queue="send-sms-tasks",
+        MessageGroupId=str(persisted_notification.service_id),
     )
 
 
@@ -1215,11 +1421,12 @@ def test_save_email_should_save_default_email_reply_to_text_on_notification(noti
     mock_celery_task(provider_tasks.deliver_email)
 
     notification_id = uuid.uuid4()
-    save_email(
-        service.id,
-        notification_id,
-        signing.encode(notification),
-    )
+    with _with_message_group_id(save_email, str(service.id)):
+        save_email(
+            service.id,
+            notification_id,
+            signing.encode(notification),
+        )
 
     persisted_notification = Notification.query.one()
     assert persisted_notification.reply_to_text == "reply_to@digital.gov.uk"
@@ -1233,11 +1440,12 @@ def test_save_sms_should_save_default_smm_sender_notification_reply_to_text_on(n
     mock_celery_task(provider_tasks.deliver_sms)
 
     notification_id = uuid.uuid4()
-    save_sms(
-        service.id,
-        notification_id,
-        signing.encode(notification),
-    )
+    with _with_message_group_id(save_sms, str(service.id)):
+        save_sms(
+            service.id,
+            notification_id,
+            signing.encode(notification),
+        )
 
     persisted_notification = Notification.query.one()
     assert persisted_notification.reply_to_text == "12345"
@@ -1252,11 +1460,12 @@ def test_should_not_save_sms_if_restricted_service_and_invalid_number(notify_db_
     mock_celery_task(provider_tasks.deliver_sms)
 
     notification_id = uuid.uuid4()
-    save_sms(
-        service.id,
-        notification_id,
-        signing.encode(notification),
-    )
+    with _with_message_group_id(save_sms, str(service.id)):
+        save_sms(
+            service.id,
+            notification_id,
+            signing.encode(notification),
+        )
     assert provider_tasks.deliver_sms.apply_async.called is False
     assert Notification.query.count() == 0
 
@@ -1268,11 +1477,12 @@ def test_should_not_save_email_if_restricted_service_and_invalid_email_address(n
     notification = _notification_json(template, to="test@example.com")
 
     notification_id = uuid.uuid4()
-    save_email(
-        service.id,
-        notification_id,
-        signing.encode(notification),
-    )
+    with _with_message_group_id(save_email, str(service.id)):
+        save_email(
+            service.id,
+            notification_id,
+            signing.encode(notification),
+        )
 
     assert Notification.query.count() == 0
 
@@ -1283,11 +1493,12 @@ def test_should_save_sms_template_to_and_persist_with_job_id(sample_job, mock_ce
 
     notification_id = uuid.uuid4()
     now = datetime.utcnow()
-    save_sms(
-        sample_job.service.id,
-        notification_id,
-        signing.encode(notification),
-    )
+    with _with_message_group_id(save_sms, str(sample_job.service_id)):
+        save_sms(
+            sample_job.service.id,
+            notification_id,
+            signing.encode(notification),
+        )
     persisted_notification = Notification.query.one()
     assert persisted_notification.to == "+447234123123"
     assert persisted_notification.job_id == sample_job.id
@@ -1302,7 +1513,9 @@ def test_should_save_sms_template_to_and_persist_with_job_id(sample_job, mock_ce
     assert persisted_notification.notification_type == "sms"
 
     provider_tasks.deliver_sms.apply_async.assert_called_once_with(
-        [str(persisted_notification.id)], queue="send-sms-tasks"
+        [str(persisted_notification.id)],
+        queue="send-sms-tasks",
+        MessageGroupId=str(persisted_notification.service_id),
     )
 
 
@@ -1350,11 +1563,12 @@ def test_should_use_email_template_and_persist(
         )
 
     with freeze_time("2016-01-01 11:10:00.00000"):
-        save_email(
-            sample_email_template_with_placeholders.service_id,
-            notification_id,
-            signing.encode(notification),
-        )
+        with _with_message_group_id(save_email, str(sample_email_template_with_placeholders.service_id)):
+            save_email(
+                sample_email_template_with_placeholders.service_id,
+                notification_id,
+                signing.encode(notification),
+            )
 
     persisted_notification = Notification.query.one()
     assert persisted_notification.to == "my_email@my_email.com"
@@ -1373,7 +1587,9 @@ def test_should_use_email_template_and_persist(
     assert persisted_notification.client_reference == client_reference
 
     provider_tasks.deliver_email.apply_async.assert_called_once_with(
-        [str(persisted_notification.id)], queue="send-email-tasks"
+        [str(persisted_notification.id)],
+        queue="send-email-tasks",
+        MessageGroupId=str(persisted_notification.service_id),
     )
 
 
@@ -1392,11 +1608,12 @@ def test_save_email_should_use_template_version_from_job_not_latest(sample_email
     t = dao_get_template_by_id(sample_email_template.id)
     assert t.version > version_on_notification
     now = datetime.utcnow()
-    save_email(
-        sample_email_template.service_id,
-        uuid.uuid4(),
-        signing.encode(notification),
-    )
+    with _with_message_group_id(save_email, str(sample_email_template.service_id)):
+        save_email(
+            sample_email_template.service_id,
+            uuid.uuid4(),
+            signing.encode(notification),
+        )
 
     persisted_notification = Notification.query.one()
     assert persisted_notification.to == "my_email@my_email.com"
@@ -1408,7 +1625,9 @@ def test_save_email_should_use_template_version_from_job_not_latest(sample_email
     assert not persisted_notification.sent_by
     assert persisted_notification.notification_type == "email"
     provider_tasks.deliver_email.apply_async.assert_called_once_with(
-        [str(persisted_notification.id)], queue="send-email-tasks"
+        [str(persisted_notification.id)],
+        queue="send-email-tasks",
+        MessageGroupId=str(persisted_notification.service_id),
     )
 
 
@@ -1418,11 +1637,12 @@ def test_should_use_email_template_subject_placeholders(sample_email_template_wi
 
     notification_id = uuid.uuid4()
     now = datetime.utcnow()
-    save_email(
-        sample_email_template_with_placeholders.service_id,
-        notification_id,
-        signing.encode(notification),
-    )
+    with _with_message_group_id(save_email, str(sample_email_template_with_placeholders.service_id)):
+        save_email(
+            sample_email_template_with_placeholders.service_id,
+            notification_id,
+            signing.encode(notification),
+        )
     persisted_notification = Notification.query.one()
     assert persisted_notification.to == "my_email@my_email.com"
     assert persisted_notification.template_id == sample_email_template_with_placeholders.id
@@ -1433,7 +1653,9 @@ def test_should_use_email_template_subject_placeholders(sample_email_template_wi
     assert not persisted_notification.reference
     assert persisted_notification.notification_type == "email"
     provider_tasks.deliver_email.apply_async.assert_called_once_with(
-        [str(persisted_notification.id)], queue="send-email-tasks"
+        [str(persisted_notification.id)],
+        queue="send-email-tasks",
+        MessageGroupId=str(persisted_notification.service_id),
     )
 
 
@@ -1448,12 +1670,13 @@ def test_save_email_uses_the_reply_to_text_when_provided(sample_email_template, 
         service.id, "other@example.com", False
     )
 
-    save_email(
-        sample_email_template.service_id,
-        notification_id,
-        signing.encode(notification),
-        sender_id=other_email_reply_to.id,
-    )
+    with _with_message_group_id(save_email, str(sample_email_template.service_id)):
+        save_email(
+            sample_email_template.service_id,
+            notification_id,
+            signing.encode(notification),
+            sender_id=other_email_reply_to.id,
+        )
     persisted_notification = Notification.query.one()
     assert persisted_notification.notification_type == "email"
     assert persisted_notification.reply_to_text == "other@example.com"
@@ -1467,12 +1690,13 @@ def test_save_email_uses_the_default_reply_to_text_if_sender_id_is_none(sample_e
     notification_id = uuid.uuid4()
     service_email_reply_to_dao.add_reply_to_email_address_for_service(service.id, "default@example.com", True)
 
-    save_email(
-        sample_email_template.service_id,
-        notification_id,
-        signing.encode(notification),
-        sender_id=None,
-    )
+    with _with_message_group_id(save_email, str(sample_email_template.service_id)):
+        save_email(
+            sample_email_template.service_id,
+            notification_id,
+            signing.encode(notification),
+            sender_id=None,
+        )
     persisted_notification = Notification.query.one()
     assert persisted_notification.notification_type == "email"
     assert persisted_notification.reply_to_text == "default@example.com"
@@ -1485,11 +1709,12 @@ def test_should_use_email_template_and_persist_without_personalisation(sample_em
     notification_id = uuid.uuid4()
 
     now = datetime.utcnow()
-    save_email(
-        sample_email_template.service_id,
-        notification_id,
-        signing.encode(notification),
-    )
+    with _with_message_group_id(save_email, str(sample_email_template.service_id)):
+        save_email(
+            sample_email_template.service_id,
+            notification_id,
+            signing.encode(notification),
+        )
     persisted_notification = Notification.query.one()
     assert persisted_notification.to == "my_email@my_email.com"
     assert persisted_notification.template_id == sample_email_template.id
@@ -1501,7 +1726,147 @@ def test_should_use_email_template_and_persist_without_personalisation(sample_em
     assert not persisted_notification.reference
     assert persisted_notification.notification_type == "email"
     provider_tasks.deliver_email.apply_async.assert_called_once_with(
-        [str(persisted_notification.id)], queue="send-email-tasks"
+        [str(persisted_notification.id)],
+        queue="send-email-tasks",
+        MessageGroupId=str(persisted_notification.service_id),
+    )
+
+
+@pytest.mark.parametrize(
+    "template_email_files, expected_personalisation",
+    [
+        (
+            [
+                {"filename": "invitation.pdf", "validate_users_email": True, "retention_period": 26, "link_text": ""},
+                {"filename": "form.pdf", "validate_users_email": True, "retention_period": 26, "link_text": ""},
+            ],
+            {
+                "name": "Anne",
+                "invitation.pdf": "documents.gov.uk/invitation.pdf",
+                "form.pdf": "documents.gov.uk/form.pdf",
+            },
+        ),
+        (
+            [
+                {
+                    "filename": "invitation.pdf",
+                    "validate_users_email": True,
+                    "retention_period": 26,
+                    "link_text": "click this first link",
+                },
+                {
+                    "filename": "form.pdf",
+                    "validate_users_email": True,
+                    "retention_period": 26,
+                    "link_text": "click this second link",
+                },
+            ],
+            {
+                "name": "Anne",
+                "invitation.pdf": "[click this first link](documents.gov.uk/invitation.pdf)",
+                "form.pdf": "[click this second link](documents.gov.uk/form.pdf)",
+            },
+        ),
+    ],
+)
+def test_send_email_with_template_email_files(
+    sample_service,
+    mocker,
+    mock_celery_task,
+    mock_utils_s3_download,
+    mock_document_download_client_upload,
+    template_email_files,
+    expected_personalisation,
+    sample_email_template_with_email_file_placeholders,
+):
+    template = sample_email_template_with_email_file_placeholders
+    for file_data in template_email_files:
+        create_template_email_file(template_id=template.id, created_by_id=template.created_by_id, **file_data)
+    notification = _notification_json(template, "anne@example.com", personalisation={"name": "Anne"})
+    notification_id = uuid.uuid4()
+
+    mock_celery_task(provider_tasks.deliver_email)
+    with _with_message_group_id(save_email, str(sample_service.id)):
+        save_email(
+            sample_service.id,
+            notification_id,
+            signing.encode(notification),
+            sender_id=None,
+        )
+    persisted_notification = Notification.query.one()
+
+    assert persisted_notification.template_id == template.id
+    assert persisted_notification.status == "created"
+    assert persisted_notification.personalisation == expected_personalisation
+    assert signing.decode(persisted_notification._personalisation) == expected_personalisation
+
+
+def test_send_email_with_template_email_files_from_old_template_version(
+    sample_service,
+    mocker,
+    mock_celery_task,
+    mock_utils_s3_download,
+    mock_document_download_client_upload,
+    sample_email_template_with_template_email_files,
+):
+    from app.dao.template_email_files_dao import (
+        dao_get_template_email_files_by_template_id,
+        dao_update_template_email_file,
+    )
+
+    template = sample_email_template_with_template_email_files
+    one_of_email_files = dao_get_template_email_files_by_template_id(template.id)[0]
+    notification = _notification_json(template, "anne@example.com")
+    version_on_notification = template.version
+
+    # Start sending
+    mock_celery_task(provider_tasks.deliver_email)
+
+    # Update the template, including updating the email files
+    one_of_email_files.retention_period = 5
+    dao_update_template_email_file(one_of_email_files)
+
+    assert one_of_email_files.template_version > version_on_notification
+    assert one_of_email_files.retention_period == 5
+
+    with _with_message_group_id(save_email, str(template.service_id)):
+        save_email(
+            template.service_id,
+            uuid.uuid4(),
+            signing.encode(notification),
+        )
+
+    persisted_notification = Notification.query.one()
+    assert persisted_notification.to == "anne@example.com"
+    assert persisted_notification.template_id == template.id
+
+    # notification created with old template version
+    assert persisted_notification.template_version == version_on_notification
+    assert persisted_notification.status == "created"
+
+    # files were uploaded using historical versions
+    for mock_call in mock_document_download_client_upload.call_args_list:
+        assert mock_call in [
+            call(
+                mocker.ANY,
+                base64.b64encode(b"downloaded-from-s3-form.pdf").decode("utf-8"),
+                confirmation_email="anne@example.com",
+                retention_period="26 weeks",
+                filename="form.pdf",
+            ),
+            call(
+                mocker.ANY,
+                base64.b64encode(b"downloaded-from-s3-invitation.pdf").decode("utf-8"),
+                confirmation_email="anne@example.com",
+                retention_period="26 weeks",
+                filename="invitation.pdf",
+            ),
+        ]
+
+    provider_tasks.deliver_email.apply_async.assert_called_once_with(
+        [str(persisted_notification.id)],
+        queue="send-email-tasks",
+        MessageGroupId=str(persisted_notification.service_id),
     )
 
 
@@ -1520,13 +1885,14 @@ def test_save_sms_should_go_to_retry_queue_if_database_errors(sample_template, m
     notification_id = uuid.uuid4()
 
     with pytest.raises(Retry):
-        save_sms(
-            sample_template.service_id,
-            notification_id,
-            signing.encode(notification),
-        )
+        with _with_message_group_id(save_sms, None):
+            save_sms(
+                sample_template.service_id,
+                notification_id,
+                signing.encode(notification),
+            )
     assert provider_tasks.deliver_sms.apply_async.called is False
-    tasks.save_sms.retry.assert_called_with(exc=expected_exception, queue="retry-tasks")
+    tasks.save_sms.retry.assert_called_with(exc=expected_exception, queue="retry-tasks", MessageGroupId=None)
 
     assert Notification.query.count() == 0
 
@@ -1546,36 +1912,60 @@ def test_save_email_should_go_to_retry_queue_if_database_errors(sample_email_tem
     notification_id = uuid.uuid4()
 
     with pytest.raises(Retry):
-        save_email(
-            sample_email_template.service_id,
-            notification_id,
-            signing.encode(notification),
-        )
+        with _with_message_group_id(save_email, None):
+            save_email(
+                sample_email_template.service_id,
+                notification_id,
+                signing.encode(notification),
+            )
     assert not provider_tasks.deliver_email.apply_async.called
-    tasks.save_email.retry.assert_called_with(exc=expected_exception, queue="retry-tasks")
+    tasks.save_email.retry.assert_called_with(exc=expected_exception, queue="retry-tasks", MessageGroupId=None)
 
     assert Notification.query.count() == 0
 
 
 def test_save_email_does_not_send_duplicate_and_does_not_put_in_retry_queue(
-    sample_notification, mocker, mock_celery_task
+    sample_email_notification, mocker, mock_celery_task
 ):
     json = _notification_json(
-        sample_notification.template,
-        sample_notification.to,
+        sample_email_notification.template,
+        sample_email_notification.to,
         job_id=uuid.uuid4(),
         row_number=1,
     )
     mock_task = mock_celery_task(provider_tasks.deliver_email)
     retry = mocker.patch("app.celery.tasks.save_email.retry", side_effect=Exception())
 
-    notification_id = sample_notification.id
+    notification_id = sample_email_notification.id
 
     save_email(
-        sample_notification.service_id,
+        sample_email_notification.service_id,
         notification_id,
         signing.encode(json),
     )
+    assert Notification.query.count() == 1
+    assert not mock_task.called
+    assert not retry.called
+
+
+def test_save_email_does_not_send_duplicate_and_does_not_put_in_retry_queue_based_on_job_info(
+    sample_email_notification, mocker, mock_celery_task
+):
+    json = _notification_json(
+        sample_email_notification.template,
+        sample_email_notification.to,
+        job_id=sample_email_notification.job_id,
+        row_number=sample_email_notification.job_row_number,
+    )
+    mock_task = mock_celery_task(provider_tasks.deliver_email)
+    retry = mocker.patch("app.celery.tasks.save_email.retry", side_effect=Exception())
+
+    save_email(
+        sample_email_notification.service_id,
+        uuid.uuid4(),
+        signing.encode(json),
+    )
+
     assert Notification.query.count() == 1
     assert not mock_task.called
     assert not retry.called
@@ -1669,11 +2059,12 @@ def test_save_letter_saves_letter_to_database(
     notification_id = uuid.uuid4()
     created_at = datetime.utcnow()
 
-    save_letter(
-        job.service_id,
-        notification_id,
-        signing.encode(notification_json),
-    )
+    with _with_message_group_id(save_letter, str(job.service_id)):
+        save_letter(
+            job.service_id,
+            notification_id,
+            signing.encode(notification_json),
+        )
 
     notification_db = Notification.query.one()
     assert notification_db.id == notification_id
@@ -1730,11 +2121,12 @@ def test_save_letter_saves_letter_to_database_with_correct_postage(
         row_number=1,
     )
     notification_id = uuid.uuid4()
-    save_letter(
-        letter_job.service_id,
-        notification_id,
-        signing.encode(notification_json),
-    )
+    with _with_message_group_id(save_letter, str(letter_job.service_id)):
+        save_letter(
+            letter_job.service_id,
+            notification_id,
+            signing.encode(notification_json),
+        )
 
     notification_db = Notification.query.one()
     assert notification_db.id == notification_id
@@ -1761,11 +2153,12 @@ def test_save_letter_saves_letter_to_database_with_formatted_postcode(mocker, mo
         row_number=1,
     )
     notification_id = uuid.uuid4()
-    save_letter(
-        letter_job.service_id,
-        notification_id,
-        signing.encode(notification_json),
-    )
+    with _with_message_group_id(save_letter, str(letter_job.service_id)):
+        save_letter(
+            letter_job.service_id,
+            notification_id,
+            signing.encode(notification_json),
+        )
 
     notification_db = Notification.query.one()
     assert notification_db.id == notification_id
@@ -1804,11 +2197,12 @@ def test_save_letter_saves_letter_to_database_right_reply_to(mocker, mock_celery
     notification_id = uuid.uuid4()
     created_at = datetime.utcnow()
 
-    save_letter(
-        job.service_id,
-        notification_id,
-        signing.encode(notification_json),
-    )
+    with _with_message_group_id(save_letter, str(job.service_id)):
+        save_letter(
+            job.service_id,
+            notification_id,
+            signing.encode(notification_json),
+        )
 
     notification_db = Notification.query.one()
     assert notification_db.id == notification_id
@@ -1855,11 +2249,12 @@ def test_save_letter_uses_template_reply_to_text(mocker, mock_celery_task, notif
         row_number=1,
     )
 
-    save_letter(
-        job.service_id,
-        uuid.uuid4(),
-        signing.encode(notification_json),
-    )
+    with _with_message_group_id(save_letter, str(job.service_id)):
+        save_letter(
+            job.service_id,
+            uuid.uuid4(),
+            signing.encode(notification_json),
+        )
 
     notification_db = Notification.query.one()
     assert notification_db.reply_to_text == "Template address contact"
@@ -1874,11 +2269,12 @@ def test_save_sms_uses_sms_sender_reply_to_text(mocker, mock_celery_task, notify
     mock_celery_task(provider_tasks.deliver_sms)
 
     notification_id = uuid.uuid4()
-    save_sms(
-        service.id,
-        notification_id,
-        signing.encode(notification),
-    )
+    with _with_message_group_id(save_sms, str(service.id)):
+        save_sms(
+            service.id,
+            notification_id,
+            signing.encode(notification),
+        )
 
     persisted_notification = Notification.query.one()
     assert persisted_notification.reply_to_text == "447123123123"
@@ -1893,12 +2289,13 @@ def test_save_sms_uses_non_default_sms_sender_reply_to_text_if_provided(mocker, 
     mock_celery_task(provider_tasks.deliver_sms)
 
     notification_id = uuid.uuid4()
-    save_sms(
-        service.id,
-        notification_id,
-        signing.encode(notification),
-        sender_id=new_sender.id,
-    )
+    with _with_message_group_id(save_sms, str(service.id)):
+        save_sms(
+            service.id,
+            notification_id,
+            signing.encode(notification),
+            sender_id=new_sender.id,
+        )
 
     persisted_notification = Notification.query.one()
     assert persisted_notification.reply_to_text == "new-sender"
@@ -1921,11 +2318,12 @@ def test_save_sms_doesnt_check_international_sms_limit(
     from tests.conftest import set_config
 
     with set_config(notify_api, "REDIS_ENABLED", True):
-        save_sms(
-            service.id,
-            notification_id,
-            signing.encode(notification),
-        )
+        with _with_message_group_id(save_sms, str(service.id)):
+            save_sms(
+                service.id,
+                notification_id,
+                signing.encode(notification),
+            )
 
     persisted_notification = Notification.query.one()
     assert persisted_notification.normalised_to == "48697894044"
@@ -1950,14 +2348,19 @@ def test_save_letter_calls_get_pdf_for_templated_letter_task(
     )
     notification_id = uuid.uuid4()
 
-    save_letter(
-        sample_letter_job.service_id,
-        notification_id,
-        signing.encode(notification_json),
-    )
+    with _with_message_group_id(save_letter, str(sample_letter_job.service_id)):
+        save_letter(
+            sample_letter_job.service_id,
+            notification_id,
+            signing.encode(notification_json),
+        )
 
     assert mock_create_letters_pdf.called
-    mock_create_letters_pdf.assert_called_once_with([str(notification_id)], queue=QueueNames.CREATE_LETTERS_PDF)
+    mock_create_letters_pdf.assert_called_once_with(
+        [str(notification_id)],
+        queue=QueueNames.CREATE_LETTERS_PDF,
+        MessageGroupId=str(sample_letter_job.service_id),
+    )
 
 
 def test_should_cancel_job_if_service_is_inactive(sample_service, sample_job, mocker, mock_celery_task):
@@ -2118,8 +2521,10 @@ def test_process_incomplete_job_sms(mocker, mock_celery_task, sample_template):
                     ((str(job.service_id), "uuid-1", "something-encoded-1"), {}),
                     ((str(job.service_id), "uuid-2", "something-encoded-2"), {}),
                 ],
+                False,
             ),
             queue="job-tasks",
+            MessageGroupId=str(job.service_id),
         ),
         call(
             (
@@ -2129,8 +2534,10 @@ def test_process_incomplete_job_sms(mocker, mock_celery_task, sample_template):
                     ((str(job.service_id), "uuid-4", "something-encoded-4"), {}),
                     ((str(job.service_id), "uuid-5", "something-encoded-5"), {}),
                 ],
+                False,
             ),
             queue="job-tasks",
+            MessageGroupId=str(job.service_id),
         ),
         call(
             (
@@ -2139,8 +2546,10 @@ def test_process_incomplete_job_sms(mocker, mock_celery_task, sample_template):
                     ((str(job.service_id), "uuid-6", "something-encoded-6"), {}),
                     ((str(job.service_id), "uuid-7", "something-encoded-7"), {}),
                 ],
+                False,
             ),
             queue="job-tasks",
+            MessageGroupId=str(job.service_id),
         ),
     ]
 
@@ -2272,8 +2681,10 @@ def test_process_incomplete_jobs_sms(mocker, mock_celery_task, sample_template):
                         {},
                     ),
                 ],
+                False,
             ),
             queue="job-tasks",
+            MessageGroupId=str(job.service_id),
         ),
         call(
             (
@@ -2304,8 +2715,10 @@ def test_process_incomplete_jobs_sms(mocker, mock_celery_task, sample_template):
                         {},
                     ),
                 ],
+                False,
             ),
             queue="job-tasks",
+            MessageGroupId=str(job.service_id),
         ),
         call(
             (
@@ -2344,8 +2757,10 @@ def test_process_incomplete_jobs_sms(mocker, mock_celery_task, sample_template):
                         {},
                     ),
                 ],
+                False,
             ),
             queue="job-tasks",
+            MessageGroupId=str(job.service_id),
         ),
         call(
             (
@@ -2360,8 +2775,10 @@ def test_process_incomplete_jobs_sms(mocker, mock_celery_task, sample_template):
                         {},
                     )
                 ],
+                False,
             ),
             queue="job-tasks",
+            MessageGroupId=str(job2.service_id),
         ),
     ]
 
@@ -2457,8 +2874,10 @@ def test_process_incomplete_jobs_raises_exception_if_row_too_big(mocker, mock_ce
                         {},
                     ),
                 ],
+                False,
             ),
             queue="job-tasks",
+            MessageGroupId=str(job.service_id),
         ),
         # fails - splits & retries first half
         call(
@@ -2474,8 +2893,10 @@ def test_process_incomplete_jobs_raises_exception_if_row_too_big(mocker, mock_ce
                         {},
                     ),
                 ],
+                False,
             ),
             queue="job-tasks",
+            MessageGroupId=str(job.service_id),
         ),
         # succeeds - retries second half
         call(
@@ -2499,8 +2920,10 @@ def test_process_incomplete_jobs_raises_exception_if_row_too_big(mocker, mock_ce
                         {},
                     ),
                 ],
+                False,
             ),
             queue="job-tasks",
+            MessageGroupId=str(job.service_id),
         ),
         # fails - splits & retries first half
         call(
@@ -2516,8 +2939,10 @@ def test_process_incomplete_jobs_raises_exception_if_row_too_big(mocker, mock_ce
                         {},
                     ),
                 ],
+                False,
             ),
             queue="job-tasks",
+            MessageGroupId=str(job.service_id),
         ),
         # fails - gives up on this job & proceeds to next
         call(
@@ -2549,8 +2974,10 @@ def test_process_incomplete_jobs_raises_exception_if_row_too_big(mocker, mock_ce
                         {},
                     ),
                 ],
+                False,
             ),
             queue="job-tasks",
+            MessageGroupId=str(job2.service_id),
         ),
         call(
             (
@@ -2573,8 +3000,10 @@ def test_process_incomplete_jobs_raises_exception_if_row_too_big(mocker, mock_ce
                         {},
                     ),
                 ],
+                False,
             ),
             queue="job-tasks",
+            MessageGroupId=str(job2.service_id),
         ),
     ]
 
@@ -2613,7 +3042,7 @@ def test_process_incomplete_jobs_no_notifications_added(mocker, mock_celery_task
     assert mock_shatter_job_rows.call_count == 2
 
     assert (
-        sum(len(task_args_kwargs) for _, ((_, task_args_kwargs),), *_ in mock_shatter_job_rows.mock_calls) == 10
+        sum(len(task_args_kwargs) for _, ((_, task_args_kwargs, _),), *_ in mock_shatter_job_rows.mock_calls) == 10
     )  # There are 10 in the csv file
 
 
@@ -2637,7 +3066,7 @@ def test_process_incomplete_job_no_job_in_database(mocker, mock_celery_task, fak
     )
     mock_shatter_job_rows = mock_celery_task(shatter_job_rows)
 
-    with pytest.raises(expected_exception=Exception):
+    with pytest.raises(expected_exception=NoResultFound):
         process_incomplete_job(fake_uuid)
 
     assert mock_shatter_job_rows.call_count == 0  # There is no job in the db it will not have been called
@@ -2729,7 +3158,7 @@ def test_process_incomplete_jobs_sets_status_to_in_progress_and_resets_processin
     ]
 
 
-def test_process_returned_letters_list(sample_letter_template):
+def test_process_returned_letters_list(caplog, sample_letter_template):
     create_notification(sample_letter_template, reference="ref1")
     create_notification(sample_letter_template, reference="ref2")
 
@@ -2740,22 +3169,52 @@ def test_process_returned_letters_list(sample_letter_template):
     assert [n.status for n in notifications] == ["returned-letter", "returned-letter"]
     assert all(n.updated_at for n in notifications)
 
+    assert (
+        "test",
+        logging.INFO,
+        "Updated 2 letter notifications (0 history notifications, from 3 references) to returned-letter",
+    ) in caplog.record_tuples
+
+    assert (
+        "test",
+        logging.WARNING,
+        "Notification with reference unknown-ref not found in notifications or notifications history",
+    ) in caplog.record_tuples
+
 
 def test_process_returned_letters_list_updates_history_if_notification_is_already_purged(
+    caplog,
     sample_letter_template,
 ):
     create_notification_history(sample_letter_template, reference="ref1")
     create_notification_history(sample_letter_template, reference="ref2")
 
-    process_returned_letters_list(["ref1", "ref2", "unknown-ref"])
+    process_returned_letters_list(["really-unknown-ref", "ref1", "ref2", "unknown-ref"])
 
     notifications = NotificationHistory.query.all()
 
     assert [n.status for n in notifications] == ["returned-letter", "returned-letter"]
     assert all(n.updated_at for n in notifications)
 
+    assert (
+        "test",
+        logging.INFO,
+        "Updated 0 letter notifications (2 history notifications, from 4 references) to returned-letter",
+    ) in caplog.record_tuples
 
-def test_process_returned_letters_list_processes_returned_letters_callback(sample_letter_template, mocker):
+    assert (
+        "test",
+        logging.WARNING,
+        "Notification with reference unknown-ref not found in notifications or notifications history",
+    ) in caplog.record_tuples
+    assert (
+        "test",
+        logging.WARNING,
+        "Notification with reference really-unknown-ref not found in notifications or notifications history",
+    ) in caplog.record_tuples
+
+
+def test_process_returned_letters_list_processes_returned_letters_callback(caplog, sample_letter_template, mocker):
     history_1 = create_notification_history(sample_letter_template, reference="ref1")
     history_2 = create_notification_history(sample_letter_template, reference="ref2")
 
@@ -2765,8 +3224,15 @@ def test_process_returned_letters_list_processes_returned_letters_callback(sampl
 
     letter_callback_mock.assert_called_with([history_1.reference, history_2.reference])
 
+    assert (
+        "test",
+        logging.INFO,
+        "Updated 0 letter notifications (2 history notifications, from 2 references) to returned-letter",
+    ) in caplog.record_tuples
+
 
 def test_process_returned_letters_populates_returned_letters_table(
+    caplog,
     sample_letter_template,
 ):
     create_notification_history(sample_letter_template, reference="ref1")
@@ -2776,6 +3242,18 @@ def test_process_returned_letters_populates_returned_letters_table(
 
     returned_letters = ReturnedLetter.query.all()
     assert len(returned_letters) == 2
+
+    assert (
+        "test",
+        logging.INFO,
+        "Updated 0 letter notifications (2 history notifications, from 3 references) to returned-letter",
+    ) in caplog.record_tuples
+
+    assert (
+        "test",
+        logging.WARNING,
+        "Notification with reference unknown-ref not found in notifications or notifications history",
+    ) in caplog.record_tuples
 
 
 @pytest.mark.parametrize(
@@ -2824,12 +3302,13 @@ def test_save_tasks_use_cached_service_and_template(
         wraps=SerialisedTemplate.get_dict,
     )
 
-    for _ in range(3):
-        task_function(
-            service.id,
-            uuid.uuid4(),
-            signing.encode(notification),
-        )
+    with _with_message_group_id(task_function, str(service.id)):
+        for _ in range(3):
+            task_function(
+                service.id,
+                uuid.uuid4(),
+                signing.encode(notification),
+            )
 
     # We talk to the database once for the service and once for the
     # template; subsequent calls are caught by the in memory cache

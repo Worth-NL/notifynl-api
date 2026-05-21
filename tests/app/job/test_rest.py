@@ -7,6 +7,7 @@ import pytest
 from freezegun import freeze_time
 
 import app.celery.tasks
+from app import db
 from app.celery.tasks import process_job
 from app.constants import JOB_STATUS_PENDING, JOB_STATUS_TYPES
 from app.dao.templates_dao import dao_update_template
@@ -152,7 +153,10 @@ def test_create_unscheduled_job(client, sample_template, mocker, mock_celery_tas
     assert response.status_code == 201
 
     app.celery.tasks.process_job.apply_async.assert_called_once_with(
-        ([str(fake_uuid)]), {"sender_id": None}, queue="job-tasks"
+        [str(fake_uuid)],
+        {"sender_id": None},
+        queue="job-tasks",
+        MessageGroupId=str(sample_template.service_id),
     )
 
     resp_json = json.loads(response.get_data(as_text=True))
@@ -193,7 +197,10 @@ def test_create_unscheduled_job_with_sender_id_in_metadata(
     assert response.status_code == 201
 
     app.celery.tasks.process_job.apply_async.assert_called_once_with(
-        ([str(fake_uuid)]), {"sender_id": fake_uuid}, queue="job-tasks"
+        [str(fake_uuid)],
+        {"sender_id": fake_uuid},
+        queue="job-tasks",
+        MessageGroupId=str(sample_template.service_id),
     )
 
 
@@ -981,6 +988,18 @@ def test_get_jobs_should_retrieve_from_ft_notification_status_for_old_jobs(admin
         mocker.call(f"job-{resp_json['data'][1]['id']}-notification-outcomes"),
         mocker.call(f"job-{resp_json['data'][2]['id']}-notification-outcomes"),
     ]
+
+
+@freeze_time("2017-07-17 07:17")
+def test_get_scheduled_job_stats_uses_session_bulk(admin_request, sample_template, mocker):
+    mock_get_stats = mocker.patch(
+        "app.job.rest.dao_get_scheduled_job_stats",
+        return_value=(0, None),
+    )
+
+    admin_request.get("job.get_scheduled_job_stats", service_id=sample_template.service.id)
+
+    mock_get_stats.assert_called_once_with(sample_template.service.id, session=db.session_bulk, retry_attempts=2)
 
 
 @freeze_time("2017-07-17 07:17")

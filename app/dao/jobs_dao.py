@@ -8,6 +8,7 @@ from notifications_utils.letter_timings import (
     letter_can_be_cancelled,
 )
 from sqlalchemy import and_, asc, desc, func
+from sqlalchemy.orm import Session, scoped_session
 
 from app import db, redis_store
 from app.constants import (
@@ -31,7 +32,7 @@ from app.models import (
     ServiceDataRetention,
     Template,
 )
-from app.utils import midnight_n_days_ago
+from app.utils import midnight_n_days_ago, retryable_query
 
 
 def dao_get_notification_outcomes_for_job(job_id):
@@ -85,11 +86,13 @@ def dao_get_jobs_by_service_id(
     )
 
 
+@retryable_query()
 def dao_get_scheduled_job_stats(
     service_id,
+    session: Session | scoped_session = db.session,
 ):
     return (
-        db.session.query(
+        session.query(
             func.count(Job.id),
             func.min(Job.scheduled_for),
         )
@@ -219,7 +222,7 @@ def can_letter_job_be_cancelled(job):
         return False, "Only letter jobs can be cancelled through this endpoint. This is not a letter job."
 
     if job.job_status != JOB_STATUS_FINISHED_ALL_NOTIFICATIONS_CREATED:
-        return False, "We are still processing these letters, please try again in a minute."
+        return False, "We are still processing these letters, please try again in 5 minutes."
 
     if (not letter_can_be_cancelled(NOTIFICATION_CREATED, job.created_at)) or db.session.query(
         Notification.query.filter(
@@ -231,20 +234,20 @@ def can_letter_job_be_cancelled(job):
     return True, None
 
 
-def find_jobs_with_missing_rows() -> (list[Job], list[Job]):
+def find_jobs_with_missing_rows() -> tuple[list[Job], list[Job]]:
     """
     Returns a tuple of two lists of "finished" jobs, the first with missing rows, the
     second with all rows created
     """
     # Jobs can be a maximum of 100,000 rows. It typically takes 10 minutes to create all those notifications.
     # Using 20 minutes as a condition seems reasonable.
-    ten_minutes_ago = datetime.utcnow() - timedelta(minutes=20)
+    twenty_minutes_ago = datetime.utcnow() - timedelta(minutes=20)
     yesterday = datetime.utcnow() - timedelta(days=1)
     jobs_has_all_notifications = (
         db.session.query(Job, (func.count(Notification.id) == Job.notification_count).label("has_all_notifications"))
         .filter(
             Job.job_status == JOB_STATUS_FINISHED,
-            Job.processing_finished < ten_minutes_ago,
+            Job.processing_finished < twenty_minutes_ago,
             Job.processing_finished > yesterday,
             Job.id == Notification.job_id,
         )
@@ -255,6 +258,30 @@ def find_jobs_with_missing_rows() -> (list[Job], list[Job]):
     return [job for job, has_all in jobs_has_all_notifications if not has_all], [
         job for job, has_all in jobs_has_all_notifications if has_all
     ]
+
+
+def find_jobs_that_completed_processing() -> list[Job]:
+    """
+    Returns a list of jobs with all rows created
+    """
+    one_minute_ago = datetime.utcnow() - timedelta(minutes=1)
+    twenty_minutes_ago = datetime.utcnow() - timedelta(minutes=20)
+    jobs_has_all_notifications = (
+        db.session.query(
+            Job,
+            (func.count(Notification.id) == Job.notification_count).label("has_all_notifications"),
+        )
+        .filter(
+            Job.job_status == JOB_STATUS_FINISHED,
+            Job.processing_finished < one_minute_ago,
+            Job.processing_finished > twenty_minutes_ago,
+            Job.id == Notification.job_id,
+        )
+        .group_by(Job)
+        .all()
+    )
+
+    return [job for job, has_all in jobs_has_all_notifications if has_all]
 
 
 def find_missing_row_for_job(job_id, job_size):

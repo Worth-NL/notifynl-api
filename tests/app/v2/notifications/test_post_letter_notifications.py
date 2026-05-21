@@ -72,7 +72,11 @@ def test_post_letter_notification_returns_201(api_client_request, sample_letter_
     )
     assert not resp_json["scheduled_for"]
     assert not notification.reply_to_text
-    mock.assert_called_once_with([str(notification.id)], queue=QueueNames.CREATE_LETTERS_PDF)
+    mock.assert_called_once_with(
+        [str(notification.id)],
+        queue=QueueNames.CREATE_LETTERS_PDF,
+        MessageGroupId=str(sample_letter_template.service_id),
+    )
 
 
 @pytest.mark.skip(reason="[NOTIFYNL] PostalAddress issue")
@@ -225,6 +229,26 @@ def test_post_letter_notification_international_sets_rest_of_world(api_client_re
             },
             "Must be a real address",
         ),
+        (
+            [LETTER_TYPE],
+            {
+                "address_line_1": "--",
+                "address_line_2": "Buckingham Palace",
+                "postcode": "SW1A 1AA",
+                "name": "Unknown",
+            },
+            "The first 2 lines of the address must both include at least one alphanumeric character",
+        ),
+        (
+            [LETTER_TYPE],
+            {
+                "address_line_1": "Mr Recipient",
+                "address_line_2": "..",
+                "postcode": "SW1A 1AA",
+                "name": "Unknown",
+            },
+            "The first 2 lines of the address must both include at least one alphanumeric character",
+        ),
     ),
 )
 def test_post_letter_notification_throws_error_for_bad_address(
@@ -273,7 +297,11 @@ def test_post_letter_notification_with_test_key_creates_pdf_and_sets_status_to_d
 
     notification = Notification.query.one()
 
-    fake_create_letter_task.assert_called_once_with([str(notification.id)], queue="research-mode-tasks")
+    fake_create_letter_task.assert_called_once_with(
+        [str(notification.id)],
+        queue="research-mode-tasks",
+        MessageGroupId=str(sample_letter_template.service_id),
+    )
     assert not fake_create_dvla_response_task.called
     assert notification.status == NOTIFICATION_DELIVERED
     assert notification.updated_at is not None
@@ -308,7 +336,11 @@ def test_post_letter_notification_with_test_key_creates_pdf_and_sets_status_to_s
 
     notification = Notification.query.one()
 
-    fake_create_letter_task.assert_called_once_with([str(notification.id)], queue="research-mode-tasks")
+    fake_create_letter_task.assert_called_once_with(
+        [str(notification.id)],
+        queue="research-mode-tasks",
+        MessageGroupId=str(sample_letter_template.service_id),
+    )
     assert fake_create_dvla_response_task.called
     assert notification.status == NOTIFICATION_SENDING
 
@@ -550,7 +582,11 @@ def test_post_letter_notification_is_delivered_but_still_creates_pdf_if_in_trial
 
     notification = Notification.query.one()
     assert notification.status == NOTIFICATION_DELIVERED
-    fake_create_letter_task.assert_called_once_with([str(notification.id)], queue="research-mode-tasks")
+    fake_create_letter_task.assert_called_once_with(
+        [str(notification.id)],
+        queue="research-mode-tasks",
+        MessageGroupId=str(sample_trial_letter_template.service_id),
+    )
 
 
 @pytest.mark.skip(reason="[NOTIFYNL] PostalAddress issue")
@@ -671,19 +707,25 @@ def test_post_precompiled_letter_notification_returns_201(
 def test_post_precompiled_letter_notification_if_s3_upload_fails_notification_is_not_persisted(
     api_client_request, mocker
 ):
+    class UploadLetterException(Exception):
+        pass
+
     sample_service = create_service(service_permissions=["letter"])
     persist_letter_mock = mocker.patch(
         "app.v2.notifications.post_notifications.create_letter_notification", side_effect=create_letter_notification
     )
-    s3mock = mocker.patch("app.v2.notifications.post_notifications.upload_letter_pdf", side_effect=Exception())
+    s3mock = mocker.patch(
+        "app.v2.notifications.post_notifications.upload_letter_pdf",
+        side_effect=UploadLetterException,
+    )
     mocker.patch("app.celery.letters_pdf_tasks.notify_celery.send_task")
     data = {"reference": "letter-reference", "content": "bGV0dGVyLWNvbnRlbnQ="}
 
-    with pytest.raises(expected_exception=Exception):
+    with pytest.raises(expected_exception=UploadLetterException):
         api_client_request.post(sample_service.id, "v2_notifications.post_precompiled_letter_notification", _data=data)
 
-    assert s3mock.called
-    assert persist_letter_mock.called
+    assert s3mock.called is True
+    assert persist_letter_mock.called is True
     assert Notification.query.count() == 0
 
 

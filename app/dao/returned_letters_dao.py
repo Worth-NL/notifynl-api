@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from sqlalchemy import desc, func
+from sqlalchemy import desc, func, not_, select
 from sqlalchemy.dialects.postgresql import insert
 
 from app import db
@@ -126,9 +126,25 @@ def fetch_returned_letters(service_id, report_date):
     return results
 
 
+def count_orphaned_returned_letters(service_id, report_date):
+    return (
+        db.session.query(
+            func.count(ReturnedLetter.id),
+        )
+        .filter(
+            ReturnedLetter.service_id == service_id,
+            ReturnedLetter.reported_at == report_date,
+            not_(select(1).where(Notification.id == ReturnedLetter.notification_id).exists()),
+            not_(select(1).where(NotificationHistory.id == ReturnedLetter.notification_id).exists()),
+        )
+        .scalar()
+        or 0
+    )
+
+
 def fetch_returned_letter_callback_data_dao(notification_id, service_id):
     for table in [Notification, NotificationHistory]:
-        result = (
+        query = (
             db.session.query(
                 ReturnedLetter.notification_id,
                 table.client_reference,
@@ -154,7 +170,8 @@ def fetch_returned_letter_callback_data_dao(notification_id, service_id):
                 ReturnedLetter.notification_id == table.id,
                 table.template_id == Template.id,
             )
-            .one_or_none()
+            .with_labels()
         )
-        if result:
-            return result
+        result_dict = db.session.execute(query.statement).mappings().one_or_none()
+        if result_dict:
+            return result_dict

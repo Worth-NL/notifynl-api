@@ -7,6 +7,7 @@ from freezegun import freeze_time
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm.exc import NoResultFound
 
+from app import db
 from app.constants import (
     JOB_STATUS_IN_PROGRESS,
     KEY_TYPE_NORMAL,
@@ -32,14 +33,17 @@ from app.dao.notifications_dao import (
     dao_get_notification_or_history_by_id,
     dao_get_notification_or_history_by_reference,
     dao_get_notifications_by_recipient_or_reference,
+    dao_get_notifications_processing_time_stats,
     dao_record_letter_despatched_on_by_id,
     dao_timeout_notifications,
     dao_update_notification,
     dao_update_notifications_by_reference,
     get_notification_by_id,
+    get_notification_by_job_and_job_row_number,
     get_notification_with_personalisation,
     get_notifications_for_job,
     get_notifications_for_service,
+    get_service_ids_with_notifications_before,
     get_service_ids_with_notifications_on_date,
     is_delivery_slow_for_providers,
     notifications_not_yet_sent,
@@ -54,6 +58,7 @@ from tests.app.db import (
     create_service,
     create_template,
 )
+from tests.utils import QueryRecorder
 
 
 def test_should_by_able_to_update_status_by_id(sample_template, sample_job, mmg_provider):
@@ -401,6 +406,20 @@ def test_get_notification_by_id_when_notification_does_not_exist(notify_db_sessi
     assert notification_from_db is None
 
 
+def test_get_notification_by_job_and_row_number_when_notification_exists(sample_email_notification):
+    notification_from_db = get_notification_by_job_and_job_row_number(
+        sample_email_notification.job_id, sample_email_notification.job_row_number
+    )
+
+    assert sample_email_notification == notification_from_db
+
+
+def test_get_notification_by_job_and_row_number_when_job_id_notification_does_not_exist(notify_db_session, fake_uuid):
+    notification_from_db = get_notification_by_job_and_job_row_number(fake_uuid, 1)
+
+    assert notification_from_db is None
+
+
 def test_get_notification_by_id_when_notification_exists_for_different_service(sample_notification):
     another_service = create_service(service_name="Another service")
 
@@ -438,24 +457,54 @@ def test_save_notification_no_job_id(sample_template):
     assert data.get("job_id") is None
 
 
-def test_get_all_notifications_for_job(sample_job):
+@pytest.mark.parametrize(
+    "session,expected_bind_key",
+    (
+        (db.session, None),
+        (db.session_bulk, "bulk"),
+    ),
+    ids=("default", "bulk"),
+)
+def test_get_all_notifications_for_job(sample_job, session, expected_bind_key):
+    service_id = sample_job.service.id
+    job_id = sample_job.id
+
     for _ in range(5):
         try:
             create_notification(template=sample_job.template, job=sample_job)
         except IntegrityError:
             pass
 
-    notifications_from_db = get_notifications_for_job(sample_job.service.id, sample_job.id).items
+    notifications_from_db = []
+
+    with QueryRecorder() as query_recorder:
+        notifications_from_db = get_notifications_for_job(service_id, job_id, session=session).items
+
+    assert {query_info.bind_key for query_info in query_recorder.queries} == {expected_bind_key}
+
     assert len(notifications_from_db) == 5
 
 
-def test_get_all_notifications_for_job_by_status(sample_job):
-    notifications = partial(get_notifications_for_job, sample_job.service.id, sample_job.id)
+@pytest.mark.parametrize(
+    "session,expected_bind_key",
+    (
+        (db.session, None),
+        (db.session_bulk, "bulk"),
+    ),
+    ids=("default", "bulk"),
+)
+def test_get_all_notifications_for_job_by_status(sample_job, session, expected_bind_key):
+    notifications = partial(get_notifications_for_job, sample_job.service.id, sample_job.id, session=session)
 
     for status in NOTIFICATION_STATUS_TYPES:
         create_notification(template=sample_job.template, job=sample_job, status=status)
 
-    assert len(notifications().items) == len(NOTIFICATION_STATUS_TYPES)
+    with QueryRecorder() as query_recorder:
+        all_for_job = notifications().items
+
+    assert {query_info.bind_key for query_info in query_recorder.queries} == {expected_bind_key}
+
+    assert len(all_for_job) == len(NOTIFICATION_STATUS_TYPES)
 
     for status in NOTIFICATION_STATUS_TYPES:
         if status == "failed":
@@ -826,6 +875,26 @@ def test_get_notifications_by_status(sample_job):
     )
 
 
+@pytest.mark.parametrize(
+    "session,expected_bind_key",
+    (
+        (db.session, None),
+        (db.session_bulk, "bulk"),
+    ),
+    ids=("default", "bulk"),
+)
+def test_get_notifications_for_service_uses_session(sample_template, session, expected_bind_key):
+    create_notification(sample_template)
+    create_notification(sample_template)
+
+    service_id = sample_template.service_id  # deliberately outside QueryRecorder
+    with QueryRecorder() as query_recorder:
+        results = get_notifications_for_service(service_id, session=session)
+
+    assert {query_info.bind_key for query_info in query_recorder.queries} == {expected_bind_key}
+    assert len(results.items) == 2
+
+
 @pytest.mark.parametrize("with_personalisation", (False, True))
 @pytest.mark.parametrize("with_template", (False, True))
 def test_get_notifications_for_service_optional_loading(
@@ -1017,7 +1086,15 @@ def test_delivery_is_delivery_slow_for_providers_filters_out_notifications_it_sh
     assert result["spryng"] == expected_result
 
 
-def test_dao_get_notifications_by_recipient(sample_template):
+@pytest.mark.parametrize(
+    "session,expected_bind_key",
+    (
+        (db.session, None),
+        (db.session_bulk, "bulk"),
+    ),
+    ids=("default", "bulk"),
+)
+def test_dao_get_notifications_by_recipient(sample_template, session, expected_bind_key):
     recipient_to_search_for = {"to_field": "+447700900855", "normalised_to": "447700900855"}
 
     notification1 = create_notification(template=sample_template, **recipient_to_search_for)
@@ -1025,15 +1102,26 @@ def test_dao_get_notifications_by_recipient(sample_template):
     create_notification(template=sample_template, to_field="jack@gmail.com", normalised_to="jack@gmail.com")
     create_notification(template=sample_template, to_field="jane@gmail.com", normalised_to="jane@gmail.com")
 
-    results = dao_get_notifications_by_recipient_or_reference(
-        notification1.service_id, recipient_to_search_for["to_field"], notification_type="sms"
-    )
+    service_id = notification1.service_id  # deliberately outside QueryRecorder
+    with QueryRecorder() as query_recorder:
+        results = dao_get_notifications_by_recipient_or_reference(
+            service_id, recipient_to_search_for["to_field"], notification_type="sms", session=session
+        )
 
+    assert {query_info.bind_key for query_info in query_recorder.queries} == {expected_bind_key}
     assert len(results.items) == 1
     assert notification1.id == results.items[0].id
 
 
-def test_dao_get_notifications_by_recipient_is_limited_to_50_results(sample_template):
+@pytest.mark.parametrize(
+    "session,expected_bind_key",
+    (
+        (db.session, None),
+        (db.session_bulk, "bulk"),
+    ),
+    ids=("default", "bulk"),
+)
+def test_dao_get_notifications_by_recipient_is_limited_to_50_results(sample_template, session, expected_bind_key):
     for _ in range(100):
         create_notification(
             template=sample_template,
@@ -1041,47 +1129,83 @@ def test_dao_get_notifications_by_recipient_is_limited_to_50_results(sample_temp
             normalised_to="447700900855",
         )
 
-    results = dao_get_notifications_by_recipient_or_reference(
-        sample_template.service_id,
-        "447700900855",
-        notification_type="sms",
-        page_size=50,
-    )
+    service_id = sample_template.service_id  # deliberately outside QueryRecorder
+    with QueryRecorder() as query_recorder:
+        results = dao_get_notifications_by_recipient_or_reference(
+            service_id,
+            "447700900855",
+            notification_type="sms",
+            page_size=50,
+            session=session,
+        )
 
+    assert {query_info.bind_key for query_info in query_recorder.queries} == {expected_bind_key}
     assert len(results.items) == 50
 
 
+@pytest.mark.parametrize(
+    "session,expected_bind_key",
+    (
+        (db.session, None),
+        (db.session_bulk, "bulk"),
+    ),
+    ids=("default", "bulk"),
+)
 @pytest.mark.parametrize("search_term", ["JACK", "JACK@gmail.com", "jack@gmail.com"])
-def test_dao_get_notifications_by_recipient_is_not_case_sensitive(sample_email_template, search_term):
+def test_dao_get_notifications_by_recipient_is_not_case_sensitive(
+    sample_email_template, search_term, session, expected_bind_key
+):
     notification = create_notification(
         template=sample_email_template, to_field="jack@gmail.com", normalised_to="jack@gmail.com"
     )
-    results = dao_get_notifications_by_recipient_or_reference(
-        notification.service_id, search_term, notification_type="email"
-    )
+    service_id = notification.service_id  # deliberately outside QueryRecorder
+    with QueryRecorder() as query_recorder:
+        results = dao_get_notifications_by_recipient_or_reference(
+            service_id, search_term, notification_type="email", session=session
+        )
     notification_ids = [notification.id for notification in results.items]
 
+    assert {query_info.bind_key for query_info in query_recorder.queries} == {expected_bind_key}
     assert len(results.items) == 1
     assert notification.id in notification_ids
 
 
-def test_dao_get_notifications_by_recipient_matches_partial_emails(sample_email_template):
+@pytest.mark.parametrize(
+    "session,expected_bind_key",
+    (
+        (db.session, None),
+        (db.session_bulk, "bulk"),
+    ),
+    ids=("default", "bulk"),
+)
+def test_dao_get_notifications_by_recipient_matches_partial_emails(sample_email_template, session, expected_bind_key):
     notification_1 = create_notification(
         template=sample_email_template, to_field="jack@gmail.com", normalised_to="jack@gmail.com"
     )
     notification_2 = create_notification(
         template=sample_email_template, to_field="jacque@gmail.com", normalised_to="jacque@gmail.com"
     )
-    results = dao_get_notifications_by_recipient_or_reference(
-        notification_1.service_id, "ack", notification_type="email"
-    )
+    service_id = notification_1.service_id  # deliberately outside QueryRecorder
+    with QueryRecorder() as query_recorder:
+        results = dao_get_notifications_by_recipient_or_reference(
+            service_id, "ack", notification_type="email", session=session
+        )
     notification_ids = [notification.id for notification in results.items]
 
+    assert {query_info.bind_key for query_info in query_recorder.queries} == {expected_bind_key}
     assert len(results.items) == 1
     assert notification_1.id in notification_ids
     assert notification_2.id not in notification_ids
 
 
+@pytest.mark.parametrize(
+    "session,expected_bind_key",
+    (
+        (db.session, None),
+        (db.session_bulk, "bulk"),
+    ),
+    ids=("default", "bulk"),
+)
 @pytest.mark.parametrize(
     "search_term, expected_result_count",
     [
@@ -1105,6 +1229,8 @@ def test_dao_get_notifications_by_recipient_escapes(
     sample_email_template,
     search_term,
     expected_result_count,
+    session,
+    expected_bind_key,
 ):
     for email_address in {
         "foo%_@example.com",
@@ -1119,18 +1245,31 @@ def test_dao_get_notifications_by_recipient_escapes(
             normalised_to=email_address,
         )
 
-    assert (
-        len(
-            dao_get_notifications_by_recipient_or_reference(
-                sample_email_template.service_id,
-                search_term,
-                notification_type="email",
-            ).items
+    service_id = sample_email_template.service_id  # deliberately outside QueryRecorder
+    with QueryRecorder() as query_recorder:
+        assert (
+            len(
+                dao_get_notifications_by_recipient_or_reference(
+                    service_id,
+                    search_term,
+                    notification_type="email",
+                    session=session,
+                ).items
+            )
+            == expected_result_count
         )
-        == expected_result_count
-    )
+
+    assert {query_info.bind_key for query_info in query_recorder.queries} == {expected_bind_key}
 
 
+@pytest.mark.parametrize(
+    "session,expected_bind_key",
+    (
+        (db.session, None),
+        (db.session_bulk, "bulk"),
+    ),
+    ids=("default", "bulk"),
+)
 @pytest.mark.parametrize(
     "search_term, expected_result_count",
     [
@@ -1154,6 +1293,8 @@ def test_dao_get_notifications_by_reference_escapes_special_character(
     sample_email_template,
     search_term,
     expected_result_count,
+    session,
+    expected_bind_key,
 ):
     for reference in {
         "foo%_",
@@ -1169,18 +1310,31 @@ def test_dao_get_notifications_by_reference_escapes_special_character(
             client_reference=reference,
         )
 
-    assert (
-        len(
-            dao_get_notifications_by_recipient_or_reference(
-                sample_email_template.service_id,
-                search_term,
-                notification_type="email",
-            ).items
+    service_id = sample_email_template.service_id  # deliberately outside QueryRecorder
+    with QueryRecorder() as query_recorder:
+        assert (
+            len(
+                dao_get_notifications_by_recipient_or_reference(
+                    service_id,
+                    search_term,
+                    notification_type="email",
+                    session=session,
+                ).items
+            )
+            == expected_result_count
         )
-        == expected_result_count
-    )
+
+    assert {query_info.bind_key for query_info in query_recorder.queries} == {expected_bind_key}
 
 
+@pytest.mark.parametrize(
+    "session,expected_bind_key",
+    (
+        (db.session, None),
+        (db.session_bulk, "bulk"),
+    ),
+    ids=("default", "bulk"),
+)
 @pytest.mark.parametrize(
     "search_term",
     [
@@ -1199,6 +1353,8 @@ def test_dao_get_notifications_by_reference_escapes_special_character(
 def test_dao_get_notifications_by_recipient_matches_partial_phone_numbers(
     sample_template,
     search_term,
+    session,
+    expected_bind_key,
 ):
     notification_1 = create_notification(
         template=sample_template,
@@ -1210,29 +1366,60 @@ def test_dao_get_notifications_by_recipient_matches_partial_phone_numbers(
         to_field="+447700900200",
         normalised_to="447700900200",
     )
-    results = dao_get_notifications_by_recipient_or_reference(
-        notification_1.service_id, search_term, notification_type="sms"
-    )
+    service_id = notification_1.service_id  # deliberately outside QueryRecorder
+    with QueryRecorder() as query_recorder:
+        results = dao_get_notifications_by_recipient_or_reference(
+            service_id, search_term, notification_type="sms", session=session
+        )
     notification_ids = [notification.id for notification in results.items]
 
+    assert {query_info.bind_key for query_info in query_recorder.queries} == {expected_bind_key}
     assert len(results.items) == 1
     assert notification_1.id in notification_ids
     assert notification_2.id not in notification_ids
 
 
+@pytest.mark.parametrize(
+    "session,expected_bind_key",
+    (
+        (db.session, None),
+        (db.session_bulk, "bulk"),
+    ),
+    ids=("default", "bulk"),
+)
 @pytest.mark.parametrize("to", ["not@email", "123"])
 def test_dao_get_notifications_by_recipient_accepts_invalid_phone_numbers_and_email_addresses(
     sample_template,
     to,
+    session,
+    expected_bind_key,
 ):
     notification = create_notification(
         template=sample_template, to_field="test@example.com", normalised_to="test@example.com"
     )
-    results = dao_get_notifications_by_recipient_or_reference(notification.service_id, to, notification_type="email")
+    service_id = notification.service_id  # deliberately outside QueryRecorder
+    with QueryRecorder() as query_recorder:
+        results = dao_get_notifications_by_recipient_or_reference(
+            service_id, to, notification_type="email", session=session
+        )
+
+    assert {query_info.bind_key for query_info in query_recorder.queries} == {expected_bind_key}
     assert len(results.items) == 0
 
 
-def test_dao_get_notifications_by_recipient_ignores_spaces(sample_template):
+@pytest.mark.parametrize(
+    "session,expected_bind_key",
+    (
+        (db.session, None),
+        (db.session_bulk, "bulk"),
+    ),
+    ids=("default", "bulk"),
+)
+def test_dao_get_notifications_by_recipient_ignores_spaces(
+    sample_template,
+    session,
+    expected_bind_key,
+):
     notification1 = create_notification(
         template=sample_template, to_field="+447700900855", normalised_to="447700900855"
     )
@@ -1244,17 +1431,28 @@ def test_dao_get_notifications_by_recipient_ignores_spaces(sample_template):
     )
     create_notification(template=sample_template, to_field="jaCK@gmail.com", normalised_to="jack@gmail.com")
 
-    results = dao_get_notifications_by_recipient_or_reference(
-        notification1.service_id, "+447700900855", notification_type="sms"
-    )
+    service_id = notification1.service_id  # deliberately outside QueryRecorder
+    with QueryRecorder() as query_recorder:
+        results = dao_get_notifications_by_recipient_or_reference(
+            service_id, "+447700900855", notification_type="sms", session=session
+        )
     notification_ids = [notification.id for notification in results.items]
 
+    assert {query_info.bind_key for query_info in query_recorder.queries} == {expected_bind_key}
     assert len(results.items) == 3
     assert notification1.id in notification_ids
     assert notification2.id in notification_ids
     assert notification3.id in notification_ids
 
 
+@pytest.mark.parametrize(
+    "session,expected_bind_key",
+    (
+        (db.session, None),
+        (db.session_bulk, "bulk"),
+    ),
+    ids=("default", "bulk"),
+)
 @pytest.mark.parametrize("phone_search", ("077", "7-7", "+44(0)7711 111111"))
 @pytest.mark.parametrize(
     "email_search",
@@ -1267,6 +1465,8 @@ def test_dao_get_notifications_by_recipient_searches_across_notification_types(
     notify_db_session,
     phone_search,
     email_search,
+    session,
+    expected_bind_key,
 ):
     service = create_service()
     sms_template = create_template(service=service)
@@ -1274,21 +1474,47 @@ def test_dao_get_notifications_by_recipient_searches_across_notification_types(
     sms = create_notification(template=sms_template, to_field="07711111111", normalised_to="447711111111")
     email = create_notification(template=email_template, to_field="077@example.com", normalised_to="077@example.com")
 
-    results = dao_get_notifications_by_recipient_or_reference(service.id, phone_search, notification_type="sms")
+    service_id = service.id  # deliberately outside QueryRecorder
+    with QueryRecorder() as query_recorder:
+        results = dao_get_notifications_by_recipient_or_reference(
+            service_id, phone_search, notification_type="sms", session=session
+        )
+
+    assert {query_info.bind_key for query_info in query_recorder.queries} == {expected_bind_key}
     assert len(results.items) == 1
     assert results.items[0].id == sms.id
 
-    results = dao_get_notifications_by_recipient_or_reference(service.id, email_search, notification_type="email")
+    with QueryRecorder() as query_recorder:
+        results = dao_get_notifications_by_recipient_or_reference(
+            service_id, email_search, notification_type="email", session=session
+        )
+
+    assert {query_info.bind_key for query_info in query_recorder.queries} == {expected_bind_key}
     assert len(results.items) == 1
     assert results.items[0].id == email.id
 
-    results = dao_get_notifications_by_recipient_or_reference(service.id, "77")
+    with QueryRecorder() as query_recorder:
+        results = dao_get_notifications_by_recipient_or_reference(service_id, "77", session=session)
+
+    assert {query_info.bind_key for query_info in query_recorder.queries} == {expected_bind_key}
     assert len(results.items) == 2
     assert results.items[0].id == email.id
     assert results.items[1].id == sms.id
 
 
-def test_dao_get_notifications_by_reference(notify_db_session):
+@pytest.mark.parametrize(
+    "session,expected_bind_key",
+    (
+        (db.session, None),
+        (db.session_bulk, "bulk"),
+    ),
+    ids=("default", "bulk"),
+)
+def test_dao_get_notifications_by_reference(
+    notify_db_session,
+    session,
+    expected_bind_key,
+):
     service = create_service()
     sms_template = create_template(service=service)
     email_template = create_template(service=service, template_type="email")
@@ -1312,7 +1538,11 @@ def test_dao_get_notifications_by_reference(notify_db_session):
         client_reference="77bB",
     )
 
-    results = dao_get_notifications_by_recipient_or_reference(service.id, "77")
+    service_id = service.id  # deliberately outside QueryRecorder
+    with QueryRecorder() as query_recorder:
+        results = dao_get_notifications_by_recipient_or_reference(service_id, "77", session=session)
+
+    assert {query_info.bind_key for query_info in query_recorder.queries} == {expected_bind_key}
     assert len(results.items) == 3
     assert results.items[0].id == letter.id
     assert results.items[1].id == email.id
@@ -1321,57 +1551,126 @@ def test_dao_get_notifications_by_reference(notify_db_session):
     # If notification_type isn’t specified then we can’t normalise the
     # phone number to 4477… so this query will only find the email sent
     # to 077@example.com
-    results = dao_get_notifications_by_recipient_or_reference(service.id, "077")
+    with QueryRecorder() as query_recorder:
+        results = dao_get_notifications_by_recipient_or_reference(service.id, "077", session=session)
+
+    assert {query_info.bind_key for query_info in query_recorder.queries} == {expected_bind_key}
     assert len(results.items) == 1
     assert results.items[0].id == email.id
 
-    results = dao_get_notifications_by_recipient_or_reference(service.id, "077@")
+    with QueryRecorder() as query_recorder:
+        results = dao_get_notifications_by_recipient_or_reference(service.id, "077@", session=session)
+
+    assert {query_info.bind_key for query_info in query_recorder.queries} == {expected_bind_key}
     assert len(results.items) == 1
     assert results.items[0].id == email.id
 
-    results = dao_get_notifications_by_recipient_or_reference(service.id, "077", notification_type="sms")
+    with QueryRecorder() as query_recorder:
+        results = dao_get_notifications_by_recipient_or_reference(
+            service.id, "077", notification_type="sms", session=session
+        )
+
+    assert {query_info.bind_key for query_info in query_recorder.queries} == {expected_bind_key}
     assert len(results.items) == 1
     assert results.items[0].id == sms.id
 
-    results = dao_get_notifications_by_recipient_or_reference(service.id, "77", notification_type="sms")
+    with QueryRecorder() as query_recorder:
+        results = dao_get_notifications_by_recipient_or_reference(
+            service.id, "77", notification_type="sms", session=session
+        )
+
+    assert {query_info.bind_key for query_info in query_recorder.queries} == {expected_bind_key}
     assert len(results.items) == 1
     assert results.items[0].id == sms.id
 
-    results = dao_get_notifications_by_recipient_or_reference(service.id, "Aa", notification_type="sms")
+    with QueryRecorder() as query_recorder:
+        results = dao_get_notifications_by_recipient_or_reference(
+            service.id, "Aa", notification_type="sms", session=session
+        )
+
+    assert {query_info.bind_key for query_info in query_recorder.queries} == {expected_bind_key}
     assert len(results.items) == 1
     assert results.items[0].id == sms.id
 
-    results = dao_get_notifications_by_recipient_or_reference(service.id, "bB", notification_type="sms")
+    with QueryRecorder() as query_recorder:
+        results = dao_get_notifications_by_recipient_or_reference(
+            service.id, "bB", notification_type="sms", session=session
+        )
+
+    assert {query_info.bind_key for query_info in query_recorder.queries} == {expected_bind_key}
     assert len(results.items) == 0
 
-    results = dao_get_notifications_by_recipient_or_reference(service.id, "77", notification_type="email")
+    with QueryRecorder() as query_recorder:
+        results = dao_get_notifications_by_recipient_or_reference(
+            service.id, "77", notification_type="email", session=session
+        )
+
+    assert {query_info.bind_key for query_info in query_recorder.queries} == {expected_bind_key}
     assert len(results.items) == 1
     assert results.items[0].id == email.id
 
-    results = dao_get_notifications_by_recipient_or_reference(service.id, "Bb", notification_type="email")
+    with QueryRecorder() as query_recorder:
+        results = dao_get_notifications_by_recipient_or_reference(
+            service.id, "Bb", notification_type="email", session=session
+        )
+
+    assert {query_info.bind_key for query_info in query_recorder.queries} == {expected_bind_key}
     assert len(results.items) == 1
     assert results.items[0].id == email.id
 
-    results = dao_get_notifications_by_recipient_or_reference(service.id, "aA", notification_type="email")
+    with QueryRecorder() as query_recorder:
+        results = dao_get_notifications_by_recipient_or_reference(
+            service.id, "aA", notification_type="email", session=session
+        )
+
+    assert {query_info.bind_key for query_info in query_recorder.queries} == {expected_bind_key}
     assert len(results.items) == 0
 
-    results = dao_get_notifications_by_recipient_or_reference(service.id, "aA", notification_type="letter")
+    with QueryRecorder() as query_recorder:
+        results = dao_get_notifications_by_recipient_or_reference(
+            service.id, "aA", notification_type="letter", session=session
+        )
+
+    assert {query_info.bind_key for query_info in query_recorder.queries} == {expected_bind_key}
     assert len(results.items) == 0
 
-    results = dao_get_notifications_by_recipient_or_reference(service.id, "123")
+    with QueryRecorder() as query_recorder:
+        results = dao_get_notifications_by_recipient_or_reference(service.id, "123", session=session)
+
+    assert {query_info.bind_key for query_info in query_recorder.queries} == {expected_bind_key}
     assert len(results.items) == 1
     assert results.items[0].id == letter.id
 
-    results = dao_get_notifications_by_recipient_or_reference(service.id, "xX 1x1  Xx")
+    with QueryRecorder() as query_recorder:
+        results = dao_get_notifications_by_recipient_or_reference(service.id, "xX 1x1  Xx", session=session)
+
+    assert {query_info.bind_key for query_info in query_recorder.queries} == {expected_bind_key}
     assert len(results.items) == 1
     assert results.items[0].id == letter.id
 
-    results = dao_get_notifications_by_recipient_or_reference(service.id, "77", notification_type="letter")
+    with QueryRecorder() as query_recorder:
+        results = dao_get_notifications_by_recipient_or_reference(
+            service.id, "77", notification_type="letter", session=session
+        )
+
+    assert {query_info.bind_key for query_info in query_recorder.queries} == {expected_bind_key}
     assert len(results.items) == 1
     assert results.items[0].id == letter.id
 
 
-def test_dao_get_notifications_by_to_field_filters_status(sample_template):
+@pytest.mark.parametrize(
+    "session,expected_bind_key",
+    (
+        (db.session, None),
+        (db.session_bulk, "bulk"),
+    ),
+    ids=("default", "bulk"),
+)
+def test_dao_get_notifications_by_to_field_filters_status(
+    sample_template,
+    session,
+    expected_bind_key,
+):
     notification = create_notification(
         template=sample_template, to_field="+447700900855", normalised_to="447700900855", status="delivered"
     )
@@ -1379,18 +1678,34 @@ def test_dao_get_notifications_by_to_field_filters_status(sample_template):
         template=sample_template, to_field="+447700900855", normalised_to="447700900855", status="temporary-failure"
     )
 
-    notifications = dao_get_notifications_by_recipient_or_reference(
-        notification.service_id,
-        "+447700900855",
-        statuses=["delivered"],
-        notification_type="sms",
-    )
+    service_id = notification.service_id  # deliberately outside QueryRecorder
+    with QueryRecorder() as query_recorder:
+        notifications = dao_get_notifications_by_recipient_or_reference(
+            service_id,
+            "+447700900855",
+            statuses=["delivered"],
+            notification_type="sms",
+            session=session,
+        )
 
+    assert {query_info.bind_key for query_info in query_recorder.queries} == {expected_bind_key}
     assert len(notifications.items) == 1
     assert notification.id == notifications.items[0].id
 
 
-def test_dao_get_notifications_by_to_field_filters_multiple_statuses(sample_template):
+@pytest.mark.parametrize(
+    "session,expected_bind_key",
+    (
+        (db.session, None),
+        (db.session_bulk, "bulk"),
+    ),
+    ids=("default", "bulk"),
+)
+def test_dao_get_notifications_by_to_field_filters_multiple_statuses(
+    sample_template,
+    session,
+    expected_bind_key,
+):
     notification1 = create_notification(
         template=sample_template, to_field="+447700900855", normalised_to="447700900855", status="delivered"
     )
@@ -1398,17 +1713,32 @@ def test_dao_get_notifications_by_to_field_filters_multiple_statuses(sample_temp
         template=sample_template, to_field="+447700900855", normalised_to="447700900855", status="sending"
     )
 
-    notifications = dao_get_notifications_by_recipient_or_reference(
-        notification1.service_id, "+447700900855", statuses=["delivered", "sending"], notification_type="sms"
-    )
+    service_id = notification1.service_id  # deliberately outside QueryRecorder
+    with QueryRecorder() as query_recorder:
+        notifications = dao_get_notifications_by_recipient_or_reference(
+            service_id, "+447700900855", statuses=["delivered", "sending"], notification_type="sms", session=session
+        )
     notification_ids = [notification.id for notification in notifications.items]
 
+    assert {query_info.bind_key for query_info in query_recorder.queries} == {expected_bind_key}
     assert len(notifications.items) == 2
     assert notification1.id in notification_ids
     assert notification2.id in notification_ids
 
 
-def test_dao_get_notifications_by_to_field_returns_all_if_no_status_filter(sample_template):
+@pytest.mark.parametrize(
+    "session,expected_bind_key",
+    (
+        (db.session, None),
+        (db.session_bulk, "bulk"),
+    ),
+    ids=("default", "bulk"),
+)
+def test_dao_get_notifications_by_to_field_returns_all_if_no_status_filter(
+    sample_template,
+    session,
+    expected_bind_key,
+):
     notification1 = create_notification(
         template=sample_template, to_field="+447700900855", normalised_to="447700900855", status="delivered"
     )
@@ -1416,18 +1746,33 @@ def test_dao_get_notifications_by_to_field_returns_all_if_no_status_filter(sampl
         template=sample_template, to_field="+447700900855", normalised_to="447700900855", status="temporary-failure"
     )
 
-    notifications = dao_get_notifications_by_recipient_or_reference(
-        notification1.service_id, "+447700900855", notification_type="sms"
-    )
+    service_id = notification1.service_id  # deliberately outside QueryRecorder
+    with QueryRecorder() as query_recorder:
+        notifications = dao_get_notifications_by_recipient_or_reference(
+            service_id, "+447700900855", notification_type="sms", session=session
+        )
     notification_ids = [notification.id for notification in notifications.items]
 
+    assert {query_info.bind_key for query_info in query_recorder.queries} == {expected_bind_key}
     assert len(notifications.items) == 2
     assert notification1.id in notification_ids
     assert notification2.id in notification_ids
 
 
+@pytest.mark.parametrize(
+    "session,expected_bind_key",
+    (
+        (db.session, None),
+        (db.session_bulk, "bulk"),
+    ),
+    ids=("default", "bulk"),
+)
 @freeze_time("2016-01-01 11:10:00")
-def test_dao_get_notifications_by_to_field_orders_by_created_at_desc(sample_template):
+def test_dao_get_notifications_by_to_field_orders_by_created_at_desc(
+    sample_template,
+    session,
+    expected_bind_key,
+):
     notification = partial(
         create_notification, template=sample_template, to_field="+447700900855", normalised_to="447700900855"
     )
@@ -1435,10 +1780,13 @@ def test_dao_get_notifications_by_to_field_orders_by_created_at_desc(sample_temp
     notification_a_minute_ago = notification(created_at=datetime.utcnow() - timedelta(minutes=1))
     notification = notification(created_at=datetime.utcnow())
 
-    notifications = dao_get_notifications_by_recipient_or_reference(
-        sample_template.service_id, "+447700900855", notification_type="sms"
-    )
+    service_id = sample_template.service_id  # deliberately outside QueryRecorder
+    with QueryRecorder() as query_recorder:
+        notifications = dao_get_notifications_by_recipient_or_reference(
+            service_id, "+447700900855", notification_type="sms", session=session
+        )
 
+    assert {query_info.bind_key for query_info in query_recorder.queries} == {expected_bind_key}
     assert len(notifications.items) == 2
     assert notifications.items[0].id == notification.id
     assert notifications.items[1].id == notification_a_minute_ago.id
@@ -1596,32 +1944,32 @@ def test_dao_get_notification_or_history_by_reference_with_no_matches_raises_err
         dao_get_notification_or_history_by_reference("REF1")
 
 
+@pytest.mark.parametrize("session", (db.session, db.session_bulk), ids=("default", "bulk"))
 @pytest.mark.parametrize("notification_type", ["letter", "email", "sms"])
-def test_notifications_not_yet_sent(sample_service, notification_type):
-    older_than = 4  # number of seconds the notification can not be older than
+def test_notifications_not_yet_sent(sample_service, notification_type, session):
+    older_than = timedelta(seconds=4)  # time the notification can not be older than
     template = create_template(service=sample_service, template_type=notification_type)
     old_notification = create_notification(
-        template=template, created_at=datetime.utcnow() - timedelta(seconds=older_than), status="created"
+        template=template, created_at=datetime.utcnow() - older_than, status="created"
     )
-    create_notification(
-        template=template, created_at=datetime.utcnow() - timedelta(seconds=older_than), status="sending"
-    )
+    create_notification(template=template, created_at=datetime.utcnow() - older_than, status="sending")
     create_notification(template=template, created_at=datetime.utcnow(), status="created")
 
-    results = notifications_not_yet_sent(older_than, notification_type)
+    results = notifications_not_yet_sent(older_than, notification_type, session=session)
     assert len(results) == 1
-    assert results[0] == old_notification
+    assert results[0].id == old_notification.id
 
 
+@pytest.mark.parametrize("session", (db.session, db.session_bulk), ids=("default", "bulk"))
 @pytest.mark.parametrize("notification_type", ["letter", "email", "sms"])
-def test_notifications_not_yet_sent_return_no_rows(sample_service, notification_type):
-    older_than = 5  # number of seconds the notification can not be older than
+def test_notifications_not_yet_sent_return_no_rows(sample_service, notification_type, session):
+    older_than = timedelta(seconds=4)  # time the notification can not be older than
     template = create_template(service=sample_service, template_type=notification_type)
     create_notification(template=template, created_at=datetime.utcnow(), status="created")
     create_notification(template=template, created_at=datetime.utcnow(), status="sending")
     create_notification(template=template, created_at=datetime.utcnow(), status="delivered")
 
-    results = notifications_not_yet_sent(older_than, notification_type)
+    results = notifications_not_yet_sent(older_than, notification_type, session=session)
     assert len(results) == 0
 
 
@@ -1688,6 +2036,13 @@ def test_dao_get_letters_and_sheets_volume_by_postage(notify_db_session):
 
 
 @pytest.mark.parametrize(
+    "session,expected_bind_key",
+    (
+        (db.session, None),
+        (db.session_bulk, "bulk"),
+    ),
+)
+@pytest.mark.parametrize(
     "created_at_utc,date_to_check,expected_count",
     [
         # Clocks change on the 27th of March 2022, so the query needs to look at the
@@ -1699,21 +2054,32 @@ def test_dao_get_letters_and_sheets_volume_by_postage(notify_db_session):
     ],
 )
 def test_get_service_ids_with_notifications_on_date_respects_gmt_bst(
-    sample_template, created_at_utc, date_to_check, expected_count
+    sample_template, created_at_utc, date_to_check, expected_count, session, expected_bind_key
 ):
     create_notification(template=sample_template, created_at=created_at_utc)
-    service_ids = get_service_ids_with_notifications_on_date(SMS_TYPE, date_to_check)
+    with QueryRecorder() as query_recorder:
+        service_ids = get_service_ids_with_notifications_on_date(SMS_TYPE, date_to_check, session=session)
+
     assert len(service_ids) == expected_count
+    assert {query_info.bind_key for query_info in query_recorder.queries} == {expected_bind_key}
 
 
-def test_get_service_ids_with_notifications_on_date_checks_ft_status(
-    sample_template,
-):
+@pytest.mark.parametrize(
+    "session,expected_bind_key",
+    (
+        (db.session, None),
+        (db.session_bulk, "bulk"),
+    ),
+)
+def test_get_service_ids_with_notifications_on_date_checks_ft_status(sample_template, session, expected_bind_key):
     create_notification(template=sample_template, created_at="2022-01-01T09:30")
     create_ft_notification_status(template=sample_template, bst_date="2022-01-02")
 
-    assert len(get_service_ids_with_notifications_on_date(SMS_TYPE, date(2022, 1, 1))) == 1
-    assert len(get_service_ids_with_notifications_on_date(SMS_TYPE, date(2022, 1, 2))) == 1
+    with QueryRecorder() as query_recorder:
+        assert len(get_service_ids_with_notifications_on_date(SMS_TYPE, date(2022, 1, 1), session=session)) == 1
+        assert len(get_service_ids_with_notifications_on_date(SMS_TYPE, date(2022, 1, 2), session=session)) == 1
+
+    assert {query_info.bind_key for query_info in query_recorder.queries} == {expected_bind_key}
 
 
 def test_dao_get_notification_or_history_by_id_when_notification_exists(sample_notification):
@@ -1745,3 +2111,63 @@ def test_dao_record_letter_despatched_on_by_id(notify_db_session):
     assert letter_despatch.notification_id == notification_id
     assert letter_despatch.despatched_on == date(2024, 3, 8)
     assert letter_despatch.cost_threshold == LetterCostThreshold.unsorted
+
+
+@pytest.mark.parametrize(
+    "notifications_within_ten_seconds, notifications_greater_than_ten_seconds", [(0, 0), (3, 0), (0, 3), (2, 3)]
+)
+def test_dao_get_notifications_processing_time_stats(
+    sample_job,
+    sample_api_key,
+    notifications_within_ten_seconds,
+    notifications_greater_than_ten_seconds,
+):
+    for _ in range(notifications_within_ten_seconds):
+        notification = create_notification(
+            template=sample_job.template,
+            status="created",
+            job=sample_job,
+            created_at=datetime(2000, 1, 2, 12, 0, 0),
+            api_key=sample_api_key,
+        )
+        notification.status = "delivered"
+        notification.sent_at = datetime(2000, 1, 2, 12, 0, 1)
+        dao_update_notification(notification)
+    for _ in range(notifications_greater_than_ten_seconds):
+        notification = create_notification(
+            template=sample_job.template,
+            status="created",
+            job=sample_job,
+            created_at=datetime(2000, 1, 2, 12, 1, 0),
+            api_key=sample_api_key,
+        )
+        notification.status = "delivered"
+        notification.sent_at = datetime(2025, 1, 2, 12, 0, 1)
+        dao_update_notification(notification)
+    processing_time_stats = dao_get_notifications_processing_time_stats(
+        start_dt=datetime(2000, 1, 2), end_dt=datetime(2000, 1, 3)
+    )
+    assert (
+        processing_time_stats.messages_total
+        == notifications_within_ten_seconds + notifications_greater_than_ten_seconds
+    )
+    assert processing_time_stats.messages_within_10_secs == notifications_within_ten_seconds
+
+
+@pytest.mark.parametrize(
+    "session,expected_bind_key",
+    (
+        (db.session, None),
+        (db.session_bulk, "bulk"),
+    ),
+    ids=("default", "bulk"),
+)
+def test_fetch_service_data_retention_by_for_all_services_by_notification_type_uses_session(
+    sample_template, session, expected_bind_key
+):
+    create_notification(template=sample_template, created_at="2022-01-01T09:30")
+
+    with QueryRecorder() as query_recorder:
+        get_service_ids_with_notifications_before("email", datetime.utcnow(), session=session)
+
+    assert {query_info.bind_key for query_info in query_recorder.queries} == {expected_bind_key}

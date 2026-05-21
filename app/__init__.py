@@ -31,6 +31,7 @@ from notifications_utils.eventlet import EventletTimeout
 from notifications_utils.local_vars import LazyLocalGetter
 from notifications_utils.logging import flask as utils_logging
 from sqlalchemy import event
+from sqlalchemy.orm import declarative_base
 from werkzeug.exceptions import HTTPException as WerkzeugHTTPException
 from werkzeug.local import LocalProxy
 
@@ -42,8 +43,14 @@ from app.clients.letter.dvla import DVLAClient
 from app.clients.sms.firetext import FiretextClient
 from app.clients.sms.mmg import MMGClient
 from app.clients.sms.spryng import SpryngClient
+from app.session import BindForcingSession
 
-db = SQLAlchemy()
+Base = declarative_base()
+
+db = SQLAlchemy(model_class=Base)
+# APIFRAGILE
+db.session_bulk = db._make_scoped_session({"bind_key": "bulk", "class_": BindForcingSession})  # type: ignore[attr-defined]
+
 migrate = Migrate()
 ma = Marshmallow()
 notify_celery = NotifyCelery()
@@ -259,6 +266,7 @@ def register_blueprint(application):
     from app.sms.rest import sms_rate_blueprint
     from app.status.healthcheck import status as status_blueprint
     from app.template.rest import template_blueprint
+    from app.template_email_files.rest import template_email_files_blueprint
     from app.template_folder.rest import template_folder_blueprint
     from app.template_statistics.rest import (
         template_statistics as template_statistics_blueprint,
@@ -283,6 +291,9 @@ def register_blueprint(application):
 
     template_blueprint.before_request(requires_admin_auth)
     application.register_blueprint(template_blueprint)
+
+    template_email_files_blueprint.before_request(requires_admin_auth)
+    application.register_blueprint(template_email_files_blueprint)
 
     status_blueprint.before_request(requires_no_auth)
     application.register_blueprint(status_blueprint)
@@ -422,11 +433,19 @@ def init_app(app):
     @app.after_request
     def after_request(response):
         CONCURRENT_REQUESTS.dec()
-
         response.headers.add("Access-Control-Allow-Origin", "*")
         response.headers.add("Access-Control-Allow-Headers", "Content-Type,Authorization")
         response.headers.add("Access-Control-Allow-Methods", "GET,PUT,POST,DELETE")
+        response.headers.add("X-Content-Type-Options", "nosniff")
+        response.headers.add("X-Frame-Options", "SAMEORIGIN")
+        response.headers.add("X-Permitted-Cross-Domain-Policies", "none")
+        response.headers.add("Strict-Transport-Security", "max-age=31536000; includeSubDomains; preload")
+        response.headers.add("Cache-Control", "no-store, no-cache, private, must-revalidate")
         return response
+
+    @app.teardown_appcontext
+    def teardown_session_bulk(exc):
+        db.session_bulk.remove()
 
     @app.errorhandler(Exception)
     def exception(error):
@@ -460,121 +479,155 @@ def create_random_identifier():
 
 
 def setup_sqlalchemy_events(app):  # noqa: C901
-    TOTAL_DB_CONNECTIONS = Gauge(
-        "db_connection_total_connected",
-        "How many db connections are currently held (potentially idle) by the server",
-    )
-
-    TOTAL_CHECKED_OUT_DB_CONNECTIONS = Gauge(
-        "db_connection_total_checked_out",
-        "How many db connections are currently checked out by web requests",
-    )
-
-    DB_CONNECTION_OPEN_DURATION_SECONDS = Histogram(
-        "db_connection_open_duration_seconds",
-        "How long db connections are held open for in seconds",
-        ["method", "host", "path"],
-    )
-
-    # need this or db.engine isn't accessible
+    # need this or db.engines isn't accessible
     with app.app_context():
+        TOTAL_DB_CONNECTIONS = Gauge(
+            "db_connection_total_connected",
+            "How many db connections are currently held (potentially idle) by the server",
+            ["bind", "inet_server_addr"],
+        )
 
-        @event.listens_for(db.engine, "connect")
-        def connect(dbapi_connection, connection_record):
-            # connection first opened with db
-            TOTAL_DB_CONNECTIONS.inc()
+        TOTAL_CHECKED_OUT_DB_CONNECTIONS = Gauge(
+            "db_connection_total_checked_out",
+            "How many db connections are currently checked out by web requests",
+            ["bind", "inet_server_addr"],
+        )
 
-            cursor = dbapi_connection.cursor()
+        DB_CONNECTION_OPEN_DURATION_SECONDS = Histogram(
+            "db_connection_open_duration_seconds",
+            "How long db connections are held open for in seconds",
+            ["method", "host", "path", "bind", "inet_server_addr"],
+        )
 
-            # why not set most of these using connect_args/options? just to avoid the
-            # early-binding issues cross-referencing config vars in the config object
-            # raises, and it's neater to compose these calls than to overwrite connect_args
-            # with our own constructed one
+        # do not be tempted to reference _bind_key & _engine from inside a closure - the for-loop
+        # will reassign them, hence why we have to "fix" them via kwarg defaults
+        for _bind_key, _engine in db.engines.items():
 
-            cursor.execute(
-                "SET statement_timeout = %s",
-                (current_app.config["DATABASE_STATEMENT_TIMEOUT_MS"],),
-            )
-            cursor.execute(
-                "SET application_name = %s",
-                (current_app.config["NOTIFY_APP_NAME"],),
-            )
+            @event.listens_for(_engine, "connect")
+            def connect(dbapi_connection, connection_record, bind_key=_bind_key, engine=_engine):
+                # ensure the following connection parameters get retained as the session-scoped
+                # parameters - they won't if they are set inside a transaction that gets rolled
+                # back for some reason (*despite* our explicit use of SET SESSION) and .readonly
+                # won't work at all
+                dbapi_connection.autocommit = True
 
-            if current_app.config["DATABASE_DEFAULT_DISABLE_PARALLEL_QUERY"]:
-                # by default disable parallel query because it allows large analytic-style
-                # queries to consume more resources than smaller transactional queries
-                # typically will, and if anything we want to prioritize the small
-                # transactional queries. this can be re-enabled on a case-by-case basis by
-                # executing SET LOCAL max_parallel_workers_per_gather = ... before the
-                # intended query.
-                #
-                # because this is only done once at connection-creation time, there's a small
-                # danger that SET max_par... (instead of SET LOCAL max_par...) will be used
-                # by the application somewhere, which would persist across checkouts.
-                # however, (re-)setting this on every checkout would likely add a database
-                # round-trip of latency to every request.
-                cursor.execute("SET max_parallel_workers_per_gather = 0")
+                if bind_key == "bulk":
+                    # ensure even in dev/test (where we don't want to have to set up read
+                    # replicas these connections will behave as expected
+                    dbapi_connection.readonly = True
 
-        @event.listens_for(db.engine, "close")
-        def close(dbapi_connection, connection_record):
-            # connection closed (probably only happens with overflow connections)
-            TOTAL_DB_CONNECTIONS.dec()
+                cursor = dbapi_connection.cursor()
 
-        @event.listens_for(db.engine, "checkout")
-        def checkout(dbapi_connection, connection_record, connection_proxy):
-            try:
-                # connection given to a web worker
-                TOTAL_CHECKED_OUT_DB_CONNECTIONS.inc()
+                # why not set most of these using connect_args/options? we need to probe the
+                # connection to see which database we're actually connected to and decide
+                # which connection settings we want to use
 
-                # this will overwrite any previous checkout_at timestamp
-                connection_record.info["checkout_at"] = time.monotonic()
-
-                # checkin runs after the request is already torn down, therefore we add the request_data onto the
-                # connection_record as otherwise it won't have that information when checkin actually runs.
-                # Note: this is not a problem for checkouts as the checkout always happens within a web request or task
-
-                # web requests
-                if has_request_context():
-                    connection_record.info["request_data"] = {
-                        "method": request.method,
-                        "host": request.host,
-                        "url_rule": request.url_rule.rule if request.url_rule else "No endpoint",
-                    }
-                # celery apps
-                elif current_task:
-                    connection_record.info["request_data"] = {
-                        "method": "celery",
-                        "host": current_app.config["NOTIFY_APP_NAME"],  # worker name
-                        "url_rule": current_task.name,  # task name
-                    }
-                # anything else. migrations possibly, or flask cli commands.
+                cursor.execute("SELECT pg_is_in_recovery()")
+                if cursor.fetchone()[0]:
+                    statement_timeout = current_app.config["DATABASE_STATEMENT_TIMEOUT_REPLICA_MS"]
+                    max_parallel_workers = current_app.config["DATABASE_MAX_PARALLEL_WORKERS_REPLICA"]
                 else:
-                    current_app.logger.warning("Checked out sqlalchemy connection from outside of request/task")
-                    connection_record.info["request_data"] = {
-                        "method": "unknown",
-                        "host": "unknown",
-                        "url_rule": "unknown",
-                    }
-            except Exception:
-                current_app.logger.exception("Exception caught for checkout event.")
+                    statement_timeout = current_app.config["DATABASE_STATEMENT_TIMEOUT_MS"]
+                    max_parallel_workers = current_app.config["DATABASE_MAX_PARALLEL_WORKERS"]
 
-        @event.listens_for(db.engine, "checkin")
-        def checkin(dbapi_connection, connection_record):
-            if "checkout_at" not in connection_record.info or "request_data" not in connection_record.info:
-                # we can get in this inconsistent state if the database is shutting down
-                return
+                # the following can be overridden on a case-by-case basis by executing e.g.
+                # SET LOCAL max_par... = ... before the intended query.
+                #
+                # because we only set these values once at connection-creation time, there's a
+                # small danger that e.g. SET max_par... (instead of SET LOCAL max_par...) will be
+                # used by the application somewhere, which may persist across checkouts. however,
+                # (re-)setting these app.config-based values on every checkout would likely add
+                # a database round-trip of latency to every request.
 
-            try:
-                # connection returned by a web worker
-                TOTAL_CHECKED_OUT_DB_CONNECTIONS.dec()
+                cursor.execute(
+                    "SET SESSION statement_timeout = %s",
+                    (statement_timeout,),
+                )
 
-                # duration that connection was held by a single web request
-                duration = time.monotonic() - connection_record.info["checkout_at"]
+                if max_parallel_workers is not None:
+                    cursor.execute("SET SESSION max_parallel_workers_per_gather = %s", (max_parallel_workers,))
+                # else use db default max_parallel_workers_per_gather
 
-                DB_CONNECTION_OPEN_DURATION_SECONDS.labels(
-                    connection_record.info["request_data"]["method"],
-                    connection_record.info["request_data"]["host"],
-                    connection_record.info["request_data"]["url_rule"],
-                ).observe(duration)
-            except Exception:
-                current_app.logger.exception("Exception caught for checkin event.")
+                # inet_server_addr is how we can know which db instance (primary or replica(s)) we're
+                # *actually* connected to
+                cursor.execute("SELECT inet_server_addr()")
+                connection_record.info["inet_server_addr"] = cursor.fetchone()[0]
+
+                dbapi_connection.autocommit = False
+
+                TOTAL_DB_CONNECTIONS.labels(str(bind_key), str(connection_record.info["inet_server_addr"])).inc()
+                connection_record.info["counted_in_TOTAL_DB_CONNECTIONS"] = True
+
+            @event.listens_for(_engine, "close")
+            def close(dbapi_connection, connection_record, bind_key=_bind_key, engine=_engine):
+                if connection_record.info.get("counted_in_TOTAL_DB_CONNECTIONS"):
+                    TOTAL_DB_CONNECTIONS.labels(str(bind_key), str(connection_record.info["inet_server_addr"])).dec()
+
+                # otherwise we presumably had some failure before we got a chance to increment
+                # TOTAL_DB_CONNECTIONS for this connection so shouldn't decrement it accordingly
+
+            @event.listens_for(_engine, "checkout")
+            def checkout(dbapi_connection, connection_record, connection_proxy, bind_key=_bind_key, engine=_engine):
+                try:
+                    # connection given to a web worker
+                    TOTAL_CHECKED_OUT_DB_CONNECTIONS.labels(
+                        str(bind_key), str(connection_record.info["inet_server_addr"])
+                    ).inc()
+
+                    # this will overwrite any previous checkout_at timestamp
+                    connection_record.info["checkout_at"] = time.monotonic()
+
+                    # checkin runs after the request is already torn down, therefore we add the request_data onto the
+                    # connection_record as otherwise it won't have that information when checkin actually runs.
+                    # Note: this is not a problem for checkouts as the checkout always happens within a web request or
+                    # task
+
+                    # web requests
+                    if has_request_context():
+                        connection_record.info["request_data"] = {
+                            "method": request.method,
+                            "host": request.host,
+                            "url_rule": request.url_rule.rule if request.url_rule else "No endpoint",
+                        }
+                    # celery apps
+                    elif current_task:
+                        connection_record.info["request_data"] = {
+                            "method": "celery",
+                            "host": current_app.config["NOTIFY_APP_NAME"],  # worker name
+                            "url_rule": current_task.name,  # task name
+                        }
+                    # anything else. migrations possibly, or flask cli commands.
+                    else:
+                        current_app.logger.warning("Checked out sqlalchemy connection from outside of request/task")
+                        connection_record.info["request_data"] = {
+                            "method": "unknown",
+                            "host": "unknown",
+                            "url_rule": "unknown",
+                        }
+                except Exception:
+                    current_app.logger.exception("Exception caught for checkout event.")
+
+            @event.listens_for(_engine, "checkin")
+            def checkin(dbapi_connection, connection_record, bind_key=_bind_key, engine=_engine):
+                if "checkout_at" not in connection_record.info or "request_data" not in connection_record.info:
+                    # we can get in this inconsistent state if the database is shutting down
+                    return
+
+                try:
+                    # connection returned by a web worker
+                    TOTAL_CHECKED_OUT_DB_CONNECTIONS.labels(
+                        str(bind_key), str(connection_record.info["inet_server_addr"])
+                    ).dec()
+
+                    # duration that connection was held by a single web request
+                    duration = time.monotonic() - connection_record.info["checkout_at"]
+
+                    DB_CONNECTION_OPEN_DURATION_SECONDS.labels(
+                        connection_record.info["request_data"]["method"],
+                        connection_record.info["request_data"]["host"],
+                        connection_record.info["request_data"]["url_rule"],
+                        str(bind_key),
+                        str(connection_record.info["inet_server_addr"]),
+                    ).observe(duration)
+                except Exception:
+                    current_app.logger.exception("Exception caught for checkin event.")

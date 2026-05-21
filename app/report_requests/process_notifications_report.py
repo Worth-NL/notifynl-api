@@ -1,6 +1,7 @@
 import csv
 from io import StringIO
 from typing import Any
+from uuid import UUID
 
 from flask import current_app
 from notifications_utils.s3 import (
@@ -11,6 +12,7 @@ from notifications_utils.s3 import (
     s3_multipart_upload_part,
 )
 
+from app import db
 from app.constants import NOTIFICATION_REPORT_REQUEST_MAPPING
 from app.dao.notifications_dao import get_notifications_for_service
 from app.dao.report_requests_dao import dao_get_report_request_by_id
@@ -18,7 +20,7 @@ from app.dao.service_data_retention_dao import fetch_service_data_retention_by_n
 
 
 class ReportRequestProcessor:
-    def __init__(self, service_id: str, report_request_id: str):
+    def __init__(self, service_id: UUID, report_request_id: UUID):
         self.service_id = service_id
         self.report_request_id = report_request_id
         self.report_request = dao_get_report_request_by_id(service_id, report_request_id)
@@ -84,7 +86,7 @@ class ReportRequestProcessor:
     def _fetch_serialized_notifications(self, limit_days: int, older_than: str | None) -> list[dict[str, Any]]:
         statuses = NOTIFICATION_REPORT_REQUEST_MAPPING[self.notification_status]
 
-        notifications = get_notifications_for_service(
+        notifications = get_notifications_for_service(  # type: ignore[call-arg]
             service_id=self.service_id,
             filter_dict={
                 "template_type": self.notification_type,
@@ -99,6 +101,8 @@ class ReportRequestProcessor:
             error_out=False,
             include_one_off=True,
             older_than=older_than,
+            session=db.session_bulk,
+            retry_attempts=2,
         )
 
         serialized_notifications = [notification.serialize_for_csv() for notification in notifications]
@@ -148,16 +152,21 @@ class ReportRequestProcessor:
             upload_id=self.upload_id,
             data_bytes=data_bytes,
         )
+        extra = {
+            "part_number": self.part_number,
+            "report_request_id": self.report_request_id,
+            "s3_bucket": self.s3_bucket,
+            "s3_key": self.filename,
+            "row_count": data_bytes.count(b"\n"),
+        }
+        current_app.logger.info(
+            "Uploaded part %(part_number)s of report request %(report_request_id)s to bucket %(s3_bucket)s "
+            "with filename %(s3_key)s. Rows per part: %(row_count)s",
+            extra,
+            extra=extra,
+        )
         self.parts.append({"PartNumber": self.part_number, "ETag": response["ETag"]})
         self.part_number += 1
-        current_app.logger.info(
-            "Uploaded part %s of report request %s to bucket %s with filename %s. Rows per part: %s.",
-            self.part_number - 1,
-            self.report_request_id,
-            self.s3_bucket,
-            self.filename,
-            data_bytes.count(b"\n"),
-        )
 
     def _finalize_upload(self) -> None:
         s3_multipart_upload_complete(
@@ -166,12 +175,17 @@ class ReportRequestProcessor:
             upload_id=self.upload_id,
             parts=self.parts,
         )
+        extra = {
+            "report_request_id": self.report_request_id,
+            "s3_bucket": self.s3_bucket,
+            "s3_key": self.filename,
+            "part_count": len(self.parts),
+        }
         current_app.logger.info(
-            "Upload complete for report request %s to bucket %s with filename %s. Total parts: %s.",
-            self.report_request_id,
-            self.s3_bucket,
-            self.filename,
-            len(self.parts),
+            "Upload complete for report request %(report_request_id)s to bucket %(s3_bucket)s "
+            "with filename %(s3_key)s. Total parts: %(part_count)s.",
+            extra,
+            extra=extra,
         )
 
     def _abort_upload(self) -> None:

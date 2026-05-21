@@ -34,7 +34,13 @@ case "$1" in
     exec $COMMON_CMD create-letters-pdf-tasks,letter-tasks
     ;;
   api-worker-jobs)
-    exec $COMMON_CMD database-tasks,job-tasks
+    exec $COMMON_CMD job-tasks
+    ;;
+  api-worker-jobs-save)
+    exec $COMMON_CMD database-tasks
+    ;;
+  api-worker-jobs-save-documents)
+    exec $COMMON_CMD database-tasks-documents
     ;;
   api-worker-research)
     exec $COMMON_CMD research-mode-tasks
@@ -59,7 +65,10 @@ case "$1" in
     exec $COMMON_CMD ses-callbacks,sms-callbacks,letter-callbacks,messagebox-callbacks
     ;;
   api-worker-service-callbacks)
-    exec $COMMON_CMD service-callbacks,service-callbacks-retry
+    exec $COMMON_CMD service-callbacks
+    ;;
+  api-worker-service-callbacks-retry)
+    exec $COMMON_CMD service-callbacks-retry
     ;;
   api-worker-report-requests-notifications)
     exec $COMMON_CMD report-requests-notifications-tasks

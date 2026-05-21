@@ -13,6 +13,7 @@ from app.dao.fact_billing_dao import (
     fetch_billing_data_for_day,
     fetch_daily_sms_provider_volumes_for_platform,
     fetch_daily_volumes_for_platform,
+    fetch_dvla_billing_facts,
     fetch_usage_for_all_services_letter,
     fetch_usage_for_all_services_letter_breakdown,
     fetch_usage_for_all_services_sms,
@@ -42,6 +43,7 @@ from tests.app.db import (
     create_template,
     set_up_usage_data,
 )
+from tests.utils import QueryRecorder
 
 
 @pytest.fixture
@@ -99,20 +101,43 @@ def sample_service_billing_fy_2018_variable_rates(sample_service):
     create_annual_billing(service_id=sample_service.id, free_sms_fragment_limit=6, financial_year_start=2018)
 
 
-def test_fetch_billing_data_for_today_includes_data_with_the_right_key_type(notify_db_session):
+@pytest.mark.parametrize(
+    "session,expected_bind_key",
+    (
+        (db.session, None),
+        (db.session_bulk, "bulk"),
+    ),
+    ids=("default", "bulk"),
+)
+def test_fetch_billing_data_for_today_includes_data_with_the_right_key_type(
+    notify_db_session, session, expected_bind_key
+):
     service = create_service()
     template = create_template(service=service, template_type="email")
     for key_type in ["normal", "test", "team"]:
         create_notification(template=template, status="delivered", key_type=key_type)
 
     today = convert_utc_to_bst(datetime.utcnow())
-    results = fetch_billing_data_for_day(today.date())
+    with QueryRecorder() as query_recorder:
+        results = fetch_billing_data_for_day(today.date(), session=session)
+    assert {query_info.bind_key for query_info in query_recorder.queries} == {expected_bind_key}
+
     assert len(results) == 1
     assert results[0].notifications_sent == 2
 
 
+@pytest.mark.parametrize(
+    "session,expected_bind_key",
+    (
+        (db.session, None),
+        (db.session_bulk, "bulk"),
+    ),
+    ids=("default", "bulk"),
+)
 @pytest.mark.parametrize("notification_type", ["email", "sms", "letter"])
-def test_fetch_billing_data_for_day_only_calls_query_for_permission_type(notify_db_session, notification_type):
+def test_fetch_billing_data_for_day_only_calls_query_for_permission_type(
+    notify_db_session, notification_type, session, expected_bind_key
+):
     service = create_service(service_permissions=[notification_type])
     email_template = create_template(service=service, template_type="email")
     sms_template = create_template(service=service, template_type="sms")
@@ -121,12 +146,25 @@ def test_fetch_billing_data_for_day_only_calls_query_for_permission_type(notify_
     create_notification(template=sms_template, status="delivered")
     create_notification(template=letter_template, status="delivered")
     today = convert_utc_to_bst(datetime.utcnow())
-    results = fetch_billing_data_for_day(process_day=today.date(), check_permissions=True)
+    with QueryRecorder() as query_recorder:
+        results = fetch_billing_data_for_day(process_day=today.date(), check_permissions=True, session=session)
+
+    assert {query_info.bind_key for query_info in query_recorder.queries} == {expected_bind_key}
     assert len(results) == 1
 
 
+@pytest.mark.parametrize(
+    "session,expected_bind_key",
+    (
+        (db.session, None),
+        (db.session_bulk, "bulk"),
+    ),
+    ids=("default", "bulk"),
+)
 @pytest.mark.parametrize("notification_type", ["email", "sms", "letter"])
-def test_fetch_billing_data_for_day_only_calls_query_for_all_channels(notify_db_session, notification_type):
+def test_fetch_billing_data_for_day_only_calls_query_for_all_channels(
+    notify_db_session, notification_type, session, expected_bind_key
+):
     service = create_service(service_permissions=[notification_type])
     email_template = create_template(service=service, template_type="email")
     sms_template = create_template(service=service, template_type="sms")
@@ -135,12 +173,23 @@ def test_fetch_billing_data_for_day_only_calls_query_for_all_channels(notify_db_
     create_notification(template=sms_template, status="delivered")
     create_notification(template=letter_template, status="delivered")
     today = convert_utc_to_bst(datetime.utcnow())
-    results = fetch_billing_data_for_day(process_day=today.date(), check_permissions=False)
+    with QueryRecorder() as query_recorder:
+        results = fetch_billing_data_for_day(process_day=today.date(), check_permissions=False, session=session)
+
+    assert {query_info.bind_key for query_info in query_recorder.queries} == {expected_bind_key}
     assert len(results) == 3
 
 
+@pytest.mark.parametrize(
+    "session,expected_bind_key",
+    (
+        (db.session, None),
+        (db.session_bulk, "bulk"),
+    ),
+    ids=("default", "bulk"),
+)
 @freeze_time("2018-04-02 01:20:00")
-def test_fetch_billing_data_for_today_includes_data_with_the_right_date(notify_db_session):
+def test_fetch_billing_data_for_today_includes_data_with_the_right_date(notify_db_session, session, expected_bind_key):
     process_day = datetime(2018, 4, 1, 13, 30, 0)
     service = create_service()
     template = create_template(service=service, template_type="email")
@@ -151,12 +200,67 @@ def test_fetch_billing_data_for_today_includes_data_with_the_right_date(notify_d
     create_notification(template=template, status="sending", created_at=process_day + timedelta(days=1))
 
     day_under_test = convert_utc_to_bst(process_day)
-    results = fetch_billing_data_for_day(day_under_test.date())
+    with QueryRecorder() as query_recorder:
+        results = fetch_billing_data_for_day(day_under_test.date(), session=session)
+
+    assert {query_info.bind_key for query_info in query_recorder.queries} == {expected_bind_key}
     assert len(results) == 1
     assert results[0].notifications_sent == 2
 
 
-def test_fetch_billing_data_for_day_is_grouped_by_template_and_notification_type(notify_db_session):
+@pytest.mark.parametrize(
+    "session,expected_bind_key",
+    (
+        (db.session, None),
+        (db.session_bulk, "bulk"),
+    ),
+    ids=("default", "bulk"),
+)
+@pytest.mark.parametrize(
+    "row0_constructor",
+    (
+        create_notification,
+        create_notification_history,
+    ),
+    ids=("notifications", "notification_history"),
+)
+@pytest.mark.parametrize(
+    "row1_constructor",
+    (
+        create_notification,
+        create_notification_history,
+    ),
+    ids=("notifications", "notification_history"),
+)
+def test_fetch_billing_data_for_day_straddling(
+    notify_db_session, session, expected_bind_key, row0_constructor, row1_constructor
+):
+    service = create_service()
+    email_template = create_template(service=service, template_type="email")
+    row0_constructor(template=email_template, status="delivered", created_at=datetime(2021, 2, 3, 6, 59, 59, 999999))
+    row1_constructor(template=email_template, status="delivered", created_at=datetime(2021, 2, 3, 7))
+
+    with QueryRecorder() as query_recorder:
+        results = fetch_billing_data_for_day(date(2021, 2, 3), chunk_timedelta=timedelta(hours=1), session=session)
+
+    assert {query_info.bind_key for query_info in query_recorder.queries} == {expected_bind_key}
+    # no matter the combination, these should all get aggregated into the same bucket
+    assert sorted(results) == [
+        (email_template.id, service.crown, service.id, "email", "ses", 0, False, None, "none", 0, 2),
+    ]
+
+
+@pytest.mark.parametrize(
+    "session,expected_bind_key",
+    (
+        (db.session, None),
+        (db.session_bulk, "bulk"),
+    ),
+    ids=("default", "bulk"),
+)
+def test_fetch_billing_data_for_day_is_grouped_by_template_and_notification_type(
+    notify_db_session, session, expected_bind_key
+):
     service = create_service()
     email_template = create_template(service=service, template_type="email")
     sms_template = create_template(service=service, template_type="sms")
@@ -164,13 +268,24 @@ def test_fetch_billing_data_for_day_is_grouped_by_template_and_notification_type
     create_notification(template=sms_template, status="delivered")
 
     today = convert_utc_to_bst(datetime.utcnow())
-    results = fetch_billing_data_for_day(today.date())
+    with QueryRecorder() as query_recorder:
+        results = fetch_billing_data_for_day(today.date(), session=session)
+
+    assert {query_info.bind_key for query_info in query_recorder.queries} == {expected_bind_key}
     assert len(results) == 2
     assert results[0].notifications_sent == 1
     assert results[1].notifications_sent == 1
 
 
-def test_fetch_billing_data_for_day_is_grouped_by_service(notify_db_session):
+@pytest.mark.parametrize(
+    "session,expected_bind_key",
+    (
+        (db.session, None),
+        (db.session_bulk, "bulk"),
+    ),
+    ids=("default", "bulk"),
+)
+def test_fetch_billing_data_for_day_is_grouped_by_service(notify_db_session, session, expected_bind_key):
     service_1 = create_service()
     service_2 = create_service(service_name="Service 2")
     email_template = create_template(service=service_1)
@@ -179,39 +294,73 @@ def test_fetch_billing_data_for_day_is_grouped_by_service(notify_db_session):
     create_notification(template=sms_template, status="delivered")
 
     today = convert_utc_to_bst(datetime.utcnow())
-    results = fetch_billing_data_for_day(today.date())
+    results = fetch_billing_data_for_day(today.date(), session=session)
+    with QueryRecorder() as query_recorder:
+        results = fetch_billing_data_for_day(today.date(), session=session)
+
+    assert {query_info.bind_key for query_info in query_recorder.queries} == {expected_bind_key}
     assert len(results) == 2
     assert results[0].notifications_sent == 1
     assert results[1].notifications_sent == 1
 
 
-def test_fetch_billing_data_for_day_is_grouped_by_provider(notify_db_session):
+@pytest.mark.parametrize(
+    "session,expected_bind_key",
+    (
+        (db.session, None),
+        (db.session_bulk, "bulk"),
+    ),
+    ids=("default", "bulk"),
+)
+def test_fetch_billing_data_for_day_is_grouped_by_provider(notify_db_session, session, expected_bind_key):
     service = create_service()
     template = create_template(service=service)
     create_notification(template=template, status="delivered", sent_by="mmg")
     create_notification(template=template, status="delivered", sent_by="firetext")
 
     today = convert_utc_to_bst(datetime.utcnow())
-    results = fetch_billing_data_for_day(today.date())
+    with QueryRecorder() as query_recorder:
+        results = fetch_billing_data_for_day(today.date(), session=session)
+
+    assert {query_info.bind_key for query_info in query_recorder.queries} == {expected_bind_key}
     assert len(results) == 2
     assert results[0].notifications_sent == 1
     assert results[1].notifications_sent == 1
 
 
-def test_fetch_billing_data_for_day_is_grouped_by_rate_mulitplier(notify_db_session):
+@pytest.mark.parametrize(
+    "session,expected_bind_key",
+    (
+        (db.session, None),
+        (db.session_bulk, "bulk"),
+    ),
+    ids=("default", "bulk"),
+)
+def test_fetch_billing_data_for_day_is_grouped_by_rate_mulitplier(notify_db_session, session, expected_bind_key):
     service = create_service()
     template = create_template(service=service)
     create_notification(template=template, status="delivered", rate_multiplier=1)
     create_notification(template=template, status="delivered", rate_multiplier=2)
 
     today = convert_utc_to_bst(datetime.utcnow())
-    results = fetch_billing_data_for_day(today.date())
+    with QueryRecorder() as query_recorder:
+        results = fetch_billing_data_for_day(today.date(), session=session)
+
+    assert {query_info.bind_key for query_info in query_recorder.queries} == {expected_bind_key}
     assert len(results) == 2
     assert results[0].notifications_sent == 1
     assert results[1].notifications_sent == 1
 
 
-def test_fetch_billing_data_for_day_is_grouped_by_international(notify_db_session):
+@pytest.mark.parametrize(
+    "session,expected_bind_key",
+    (
+        (db.session, None),
+        (db.session_bulk, "bulk"),
+    ),
+    ids=("default", "bulk"),
+)
+def test_fetch_billing_data_for_day_is_grouped_by_international(notify_db_session, session, expected_bind_key):
     service = create_service()
     sms_template = create_template(service=service)
     letter_template = create_template(template_type="letter", service=service)
@@ -221,12 +370,23 @@ def test_fetch_billing_data_for_day_is_grouped_by_international(notify_db_sessio
     create_notification(template=letter_template, status="delivered", international=False)
 
     today = convert_utc_to_bst(datetime.utcnow())
-    results = fetch_billing_data_for_day(today.date())
+    with QueryRecorder() as query_recorder:
+        results = fetch_billing_data_for_day(today.date(), session=session)
+
+    assert {query_info.bind_key for query_info in query_recorder.queries} == {expected_bind_key}
     assert len(results) == 4
     assert all(result.notifications_sent == 1 for result in results)
 
 
-def test_fetch_billing_data_for_day_is_grouped_by_notification_type(notify_db_session):
+@pytest.mark.parametrize(
+    "session,expected_bind_key",
+    (
+        (db.session, None),
+        (db.session_bulk, "bulk"),
+    ),
+    ids=("default", "bulk"),
+)
+def test_fetch_billing_data_for_day_is_grouped_by_notification_type(notify_db_session, session, expected_bind_key):
     service = create_service()
     sms_template = create_template(service=service, template_type="sms")
     email_template = create_template(service=service, template_type="email")
@@ -239,13 +399,24 @@ def test_fetch_billing_data_for_day_is_grouped_by_notification_type(notify_db_se
     create_notification(template=letter_template, status="delivered")
 
     today = convert_utc_to_bst(datetime.utcnow())
-    results = fetch_billing_data_for_day(today.date())
+    with QueryRecorder() as query_recorder:
+        results = fetch_billing_data_for_day(today.date(), session=session)
+
+    assert {query_info.bind_key for query_info in query_recorder.queries} == {expected_bind_key}
     assert len(results) == 3
     notification_types = [x.notification_type for x in results]
     assert len(notification_types) == 3
 
 
-def test_fetch_billing_data_for_day_groups_by_postage(notify_db_session):
+@pytest.mark.parametrize(
+    "session,expected_bind_key",
+    (
+        (db.session, None),
+        (db.session_bulk, "bulk"),
+    ),
+    ids=("default", "bulk"),
+)
+def test_fetch_billing_data_for_day_groups_by_postage(notify_db_session, session, expected_bind_key):
     service = create_service()
     letter_template = create_template(service=service, template_type="letter")
     email_template = create_template(service=service, template_type="email")
@@ -258,11 +429,22 @@ def test_fetch_billing_data_for_day_groups_by_postage(notify_db_session):
     create_notification(template=email_template, status="delivered")
 
     today = convert_utc_to_bst(datetime.utcnow())
-    results = fetch_billing_data_for_day(today.date())
+    with QueryRecorder() as query_recorder:
+        results = fetch_billing_data_for_day(today.date(), session=session)
+
+    assert {query_info.bind_key for query_info in query_recorder.queries} == {expected_bind_key}
     assert len(results) == 6
 
 
-def test_fetch_billing_data_for_day_groups_by_sent_by(notify_db_session):
+@pytest.mark.parametrize(
+    "session,expected_bind_key",
+    (
+        (db.session, None),
+        (db.session_bulk, "bulk"),
+    ),
+    ids=("default", "bulk"),
+)
+def test_fetch_billing_data_for_day_groups_by_sent_by(notify_db_session, session, expected_bind_key):
     service = create_service()
     letter_template = create_template(service=service, template_type="letter")
     email_template = create_template(service=service, template_type="email")
@@ -272,11 +454,22 @@ def test_fetch_billing_data_for_day_groups_by_sent_by(notify_db_session):
     create_notification(template=email_template, status="delivered")
 
     today = convert_utc_to_bst(datetime.utcnow())
-    results = fetch_billing_data_for_day(today.date())
+    with QueryRecorder() as query_recorder:
+        results = fetch_billing_data_for_day(today.date(), session=session)
+
+    assert {query_info.bind_key for query_info in query_recorder.queries} == {expected_bind_key}
     assert len(results) == 2
 
 
-def test_fetch_billing_data_for_day_groups_by_page_count(notify_db_session):
+@pytest.mark.parametrize(
+    "session,expected_bind_key",
+    (
+        (db.session, None),
+        (db.session_bulk, "bulk"),
+    ),
+    ids=("default", "bulk"),
+)
+def test_fetch_billing_data_for_day_groups_by_page_count(notify_db_session, session, expected_bind_key):
     service = create_service()
     letter_template = create_template(service=service, template_type="letter")
     email_template = create_template(service=service, template_type="email")
@@ -286,11 +479,24 @@ def test_fetch_billing_data_for_day_groups_by_page_count(notify_db_session):
     create_notification(template=email_template, status="delivered")
 
     today = convert_utc_to_bst(datetime.utcnow())
-    results = fetch_billing_data_for_day(today.date())
+    with QueryRecorder() as query_recorder:
+        results = fetch_billing_data_for_day(today.date(), session=session)
+
+    assert {query_info.bind_key for query_info in query_recorder.queries} == {expected_bind_key}
     assert len(results) == 3
 
 
-def test_fetch_billing_data_for_day_sets_postage_for_emails_and_sms_to_none(notify_db_session):
+@pytest.mark.parametrize(
+    "session,expected_bind_key",
+    (
+        (db.session, None),
+        (db.session_bulk, "bulk"),
+    ),
+    ids=("default", "bulk"),
+)
+def test_fetch_billing_data_for_day_sets_postage_for_emails_and_sms_to_none(
+    notify_db_session, session, expected_bind_key
+):
     service = create_service()
     sms_template = create_template(service=service, template_type="sms")
     email_template = create_template(service=service, template_type="email")
@@ -298,19 +504,42 @@ def test_fetch_billing_data_for_day_sets_postage_for_emails_and_sms_to_none(noti
     create_notification(template=email_template, status="delivered")
 
     today = convert_utc_to_bst(datetime.utcnow())
-    results = fetch_billing_data_for_day(today.date())
-    assert len(results) == 2
-    assert results[0].postage == "none"
-    assert results[1].postage == "none"
+    with QueryRecorder() as query_recorder:
+        results = fetch_billing_data_for_day(today.date(), session=session)
+
+    assert {query_info.bind_key for query_info in query_recorder.queries} == {expected_bind_key}
+    assert [r.postage for r in results] == [
+        "none",
+        "none",
+    ]
 
 
-def test_fetch_billing_data_for_day_returns_empty_list(notify_db_session):
+@pytest.mark.parametrize(
+    "session,expected_bind_key",
+    (
+        (db.session, None),
+        (db.session_bulk, "bulk"),
+    ),
+    ids=("default", "bulk"),
+)
+def test_fetch_billing_data_for_day_returns_empty_list(notify_db_session, session, expected_bind_key):
     today = convert_utc_to_bst(datetime.utcnow())
-    results = fetch_billing_data_for_day(today.date())
+    with QueryRecorder() as query_recorder:
+        results = fetch_billing_data_for_day(today.date(), session=session)
+
+    assert {query_info.bind_key for query_info in query_recorder.queries} == {expected_bind_key}
     assert results == []
 
 
-def test_fetch_billing_data_for_day_uses_correct_table(notify_db_session):
+@pytest.mark.parametrize(
+    "session,expected_bind_key",
+    (
+        (db.session, None),
+        (db.session_bulk, "bulk"),
+    ),
+    ids=("default", "bulk"),
+)
+def test_fetch_billing_data_for_day_uses_correct_table(notify_db_session, session, expected_bind_key):
     service = create_service()
     create_service_data_retention(service, notification_type="email", days_of_retention=3)
     sms_template = create_template(service=service, template_type="sms")
@@ -319,30 +548,54 @@ def test_fetch_billing_data_for_day_uses_correct_table(notify_db_session):
     five_days_ago = datetime.utcnow() - timedelta(days=5)
     create_notification(template=sms_template, status="delivered", created_at=five_days_ago)
     create_notification_history(template=email_template, status="delivered", created_at=five_days_ago)
+    service_id = service.id
 
-    results = fetch_billing_data_for_day(process_day=five_days_ago.date(), service_ids=[service.id])
-    assert len(results) == 2
-    assert results[0].notification_type == "sms"
-    assert results[0].notifications_sent == 1
-    assert results[1].notification_type == "email"
-    assert results[1].notifications_sent == 1
+    with QueryRecorder() as query_recorder:
+        results = fetch_billing_data_for_day(
+            process_day=five_days_ago.date(), service_ids=[service_id], session=session
+        )
+
+    assert {query_info.bind_key for query_info in query_recorder.queries} == {expected_bind_key}
+    assert sorted((r.notification_type, r.notifications_sent) for r in results) == [
+        ("email", 1),
+        ("sms", 1),
+    ]
 
 
-def test_fetch_billing_data_for_day_returns_list_for_given_service(notify_db_session):
+@pytest.mark.parametrize(
+    "session,expected_bind_key",
+    (
+        (db.session, None),
+        (db.session_bulk, "bulk"),
+    ),
+    ids=("default", "bulk"),
+)
+def test_fetch_billing_data_for_day_returns_list_for_given_service(notify_db_session, session, expected_bind_key):
     service = create_service()
     service_2 = create_service(service_name="Service 2")
     template = create_template(service=service)
     template_2 = create_template(service=service_2)
     create_notification(template=template, status="delivered")
     create_notification(template=template_2, status="delivered")
+    service_id = service.id
 
     today = convert_utc_to_bst(datetime.utcnow())
-    results = fetch_billing_data_for_day(process_day=today.date(), service_ids=[service.id])
-    assert len(results) == 1
-    assert results[0].service_id == service.id
+    with QueryRecorder() as query_recorder:
+        results = fetch_billing_data_for_day(process_day=today.date(), service_ids=[service_id], session=session)
+
+    assert {query_info.bind_key for query_info in query_recorder.queries} == {expected_bind_key}
+    assert [r.service_id for r in results] == [service_id]
 
 
-def test_fetch_billing_data_for_day_bills_correctly_for_status(notify_db_session):
+@pytest.mark.parametrize(
+    "session,expected_bind_key",
+    (
+        (db.session, None),
+        (db.session_bulk, "bulk"),
+    ),
+    ids=("default", "bulk"),
+)
+def test_fetch_billing_data_for_day_bills_correctly_for_status(notify_db_session, session, expected_bind_key):
     service = create_service()
     sms_template = create_template(service=service, template_type="sms")
     email_template = create_template(service=service, template_type="email")
@@ -351,16 +604,28 @@ def test_fetch_billing_data_for_day_bills_correctly_for_status(notify_db_session
         create_notification(template=sms_template, status=status)
         create_notification(template=email_template, status=status)
         create_notification(template=letter_template, status=status)
-    today = convert_utc_to_bst(datetime.utcnow())
-    results = fetch_billing_data_for_day(process_day=today.date(), service_ids=[service.id])
 
-    sms_results = [x for x in results if x.notification_type == "sms"]
-    email_results = [x for x in results if x.notification_type == "email"]
-    letter_results = [x for x in results if x.notification_type == "letter"]
-    # we expect as many rows as we check for notification types
-    assert 6 == sms_results[0].notifications_sent
-    assert 4 == email_results[0].notifications_sent
-    assert 3 == letter_results[0].notifications_sent
+    service_id = service.id
+
+    today = convert_utc_to_bst(datetime.utcnow())
+    with QueryRecorder() as query_recorder:
+        results = fetch_billing_data_for_day(process_day=today.date(), service_ids=[service_id], session=session)
+
+    assert {query_info.bind_key for query_info in query_recorder.queries} == {expected_bind_key}
+    assert sorted((r.notification_type, r.notifications_sent) for r in results) == [
+        (
+            "email",
+            4,
+        ),
+        (
+            "letter",
+            3,
+        ),
+        (
+            "sms",
+            6,
+        ),
+    ]
 
 
 def test_get_rates_for_billing(notify_db_session):
@@ -552,12 +817,27 @@ def test_fetch_usage_for_service_by_month_populates_ft_billing_for_today(notify_
     assert len(results) == 2
 
 
+@pytest.mark.parametrize(
+    "session,expected_bind_key",
+    (
+        (db.session, None),
+        (db.session_bulk, "bulk"),
+    ),
+    ids=("default", "bulk"),
+)
 def test_fetch_usage_for_service_annual(
     sample_service,
     sample_service_billing_fy_2016,
     notify_db_session,
+    session,
+    expected_bind_key,
 ):
-    results = fetch_usage_for_service_annual(service_id=sample_service.id, year=2016)
+    service_id = sample_service.id
+
+    with QueryRecorder() as query_recorder:
+        results = fetch_usage_for_service_annual(service_id=service_id, year=2016, session=session)
+
+    assert {q.bind_key for q in query_recorder.queries} == {expected_bind_key}
     assert len(results) == 3
 
     assert results[0].notification_type == "email"
@@ -585,12 +865,27 @@ def test_fetch_usage_for_service_annual(
     assert results[2].charged_units == 3
 
 
+@pytest.mark.parametrize(
+    "session,expected_bind_key",
+    (
+        (db.session, None),
+        (db.session_bulk, "bulk"),
+    ),
+    ids=("default", "bulk"),
+)
 def test_fetch_usage_for_service_annual_variable_rates(
     sample_service,
     sample_service_billing_fy_2018_variable_rates,
     notify_db_session,
+    session,
+    expected_bind_key,
 ):
-    results = fetch_usage_for_service_annual(service_id=sample_service.id, year=2018)
+    service_id = sample_service.id
+
+    with QueryRecorder() as query_recorder:
+        results = fetch_usage_for_service_annual(service_id=service_id, year=2018, session=session)
+
+    assert {q.bind_key for q in query_recorder.queries} == {expected_bind_key}
     assert len(results) == 4
 
     assert results[0].notification_type == "letter"
@@ -863,10 +1158,20 @@ def test_fetch_usage_for_all_services_without_annual_billing(
     assert len(results) == 0
 
 
-def test_fetch_usage_for_all_services_letter(notify_db_session):
+@pytest.mark.parametrize(
+    "session,expected_bind_key",
+    ((db.session, None), (db.session_bulk, "bulk")),
+    ids=("default", "bulk"),
+)
+def test_fetch_usage_for_all_services_letter(notify_db_session, session, expected_bind_key):
     fixtures = set_up_usage_data(datetime(2019, 6, 1))
 
-    results = fetch_usage_for_all_services_letter(datetime(2019, 6, 1), datetime(2019, 9, 30)).all()
+    with QueryRecorder() as query_recorder:
+        results = fetch_usage_for_all_services_letter(
+            datetime(2019, 6, 1), datetime(2019, 9, 30), session=session
+        ).all()
+
+    assert {q.bind_key for q in query_recorder.queries} == {expected_bind_key}
 
     assert len(results) == 3
     assert results[0] == (
@@ -896,10 +1201,20 @@ def test_fetch_usage_for_all_services_letter(notify_db_session):
 
 
 @pytest.mark.skip(reason="[NOTIFYNL] Postage issue")
-def test_fetch_usage_for_all_services_letter_breakdown(notify_db_session):
+@pytest.mark.parametrize(
+    "session,expected_bind_key",
+    ((db.session, None), (db.session_bulk, "bulk")),
+    ids=("default", "bulk"),
+)
+def test_fetch_usage_for_all_services_letter_breakdown(notify_db_session, session, expected_bind_key):
     fixtures = set_up_usage_data(datetime(2019, 6, 1))
 
-    results = fetch_usage_for_all_services_letter_breakdown(datetime(2019, 6, 1), datetime(2019, 9, 30)).all()
+    with QueryRecorder() as query_recorder:
+        results = fetch_usage_for_all_services_letter_breakdown(
+            datetime(2019, 6, 1), datetime(2019, 9, 30), session=session
+        ).all()
+
+    assert {q.bind_key for q in query_recorder.queries} == {expected_bind_key}
 
     assert len(results) == 8
     assert results[0] == (
@@ -976,11 +1291,22 @@ def test_fetch_usage_for_all_services_letter_breakdown(notify_db_session):
     )
 
 
+@pytest.mark.parametrize(
+    "session,expected_bind_key",
+    ((db.session, None), (db.session_bulk, "bulk")),
+    ids=("default", "bulk"),
+)
 def test_fetch_usage_for_organisation(
-    sample_service, sample_organisation, sample_service_billing_fy_2016, notify_db_session
+    sample_service, sample_organisation, sample_service_billing_fy_2016, notify_db_session, session, expected_bind_key
 ):
     dao_add_service_to_organisation(service=sample_service, organisation_id=sample_organisation.id)
-    results, updated_at = fetch_usage_for_organisation(sample_organisation.id, 2016)
+
+    organisation_id = sample_organisation.id
+
+    with QueryRecorder() as query_recorder:
+        results, updated_at = fetch_usage_for_organisation(organisation_id, 2016, session=session)
+
+    assert {q.bind_key for q in query_recorder.queries} == {expected_bind_key}
     assert len(results) == 1
     assert updated_at is None
 
@@ -995,16 +1321,32 @@ def test_fetch_usage_for_organisation(
     assert first_row["emails_sent"] == 4
 
 
+@pytest.mark.parametrize(
+    "session,expected_bind_key",
+    ((db.session, None), (db.session_bulk, "bulk")),
+    ids=("default", "bulk"),
+)
 def test_fetch_usage_for_organisation_includes_updated_at_from_cache_for_current_year(
-    sample_service, sample_organisation, sample_service_billing_fy_2016, notify_db_session, mocker
+    sample_service,
+    sample_organisation,
+    sample_service_billing_fy_2016,
+    notify_db_session,
+    mocker,
+    session,
+    expected_bind_key,
 ):
     dao_add_service_to_organisation(service=sample_service, organisation_id=sample_organisation.id)
     mocker.patch(
         "app.dao.fact_billing_dao.get_ft_billing_data_for_today_updated_at", return_value="2016-06-01T12:00:00+00:00"
     )
 
+    organisation_id = sample_organisation.id
+
     with freeze_time("2016-06-01"):
-        results, updated_at = fetch_usage_for_organisation(sample_organisation.id, 2016)
+        with QueryRecorder() as query_recorder:
+            results, updated_at = fetch_usage_for_organisation(organisation_id, 2016, session=session)
+
+    assert {q.bind_key for q in query_recorder.queries} == {expected_bind_key}
     assert len(results) == 1
     assert updated_at == "2016-06-01T12:00:00+00:00"
 
@@ -1019,14 +1361,26 @@ def test_fetch_usage_for_organisation_includes_updated_at_from_cache_for_current
     assert first_row["emails_sent"] == 4
 
 
+@pytest.mark.parametrize(
+    "session,expected_bind_key",
+    ((db.session, None), (db.session_bulk, "bulk")),
+    ids=("default", "bulk"),
+)
 def test_fetch_usage_for_organisation_variable_rates(
     sample_service,
     sample_organisation,
     sample_service_billing_fy_2018_variable_rates,
     notify_db_session,
+    session,
+    expected_bind_key,
 ):
     dao_add_service_to_organisation(service=sample_service, organisation_id=sample_organisation.id)
-    results, _ = fetch_usage_for_organisation(organisation_id=sample_organisation.id, year=2018)
+    organisation_id = sample_organisation.id
+
+    with QueryRecorder() as query_recorder:
+        results, _ = fetch_usage_for_organisation(organisation_id=organisation_id, year=2018, session=session)
+
+    assert {q.bind_key for q in query_recorder.queries} == {expected_bind_key}
 
     assert len(results) == 1
     row = results[str(sample_service.id)]
@@ -1038,29 +1392,69 @@ def test_fetch_usage_for_organisation_variable_rates(
     assert row["sms_cost"] == 0.045
 
 
+@pytest.mark.parametrize(
+    "session,expected_bind_key",
+    ((db.session, None), (db.session_bulk, "bulk")),
+    ids=("default", "bulk"),
+)
 def test_fetch_usage_for_organisation_sms_remainder(
-    sample_service, sample_organisation, sample_sms_template, notify_db_session
+    sample_service,
+    sample_restricted_service,
+    sample_organisation,
+    sample_sms_template,
+    notify_db_session,
+    session,
+    expected_bind_key,
 ):
-    dao_add_service_to_organisation(service=sample_service, organisation_id=sample_organisation.id)
+    organisation_id = sample_organisation.id
+    # Restricted (trial) service
+    dao_add_service_to_organisation(service=sample_restricted_service, organisation_id=organisation_id)
+    restricted_service_sms_template = create_template(service=sample_restricted_service, template_type="sms")
+    create_annual_billing(service_id=sample_restricted_service.id, free_sms_fragment_limit=3, financial_year_start=2016)
+    create_ft_billing(
+        template=restricted_service_sms_template, bst_date=datetime(2016, 4, 20), billable_unit=4, rate=0.162
+    )
+
+    # Live service
+    dao_add_service_to_organisation(service=sample_service, organisation_id=organisation_id)
     create_annual_billing(service_id=sample_service.id, free_sms_fragment_limit=3, financial_year_start=2016)
     create_ft_billing(template=sample_sms_template, bst_date=datetime(2016, 4, 20), billable_unit=1)
 
-    results, _ = fetch_usage_for_organisation(organisation_id=sample_organisation.id, year=2016)
-    assert len(results) == 1
+    with QueryRecorder() as query_recorder:
+        results, _ = fetch_usage_for_organisation(
+            organisation_id=organisation_id,
+            year=2016,
+            session=session,
+        )
+
+    assert {q.bind_key for q in query_recorder.queries} == {expected_bind_key}
+    assert len(results) == 1  # show organisation usage for only live services
 
     row = results[str(sample_service.id)]
     assert row["sms_remainder"] == 2
 
 
+@pytest.mark.parametrize(
+    "session,expected_bind_key",
+    ((db.session, None), (db.session_bulk, "bulk")),
+    ids=("default", "bulk"),
+)
 def test_fetch_usage_for_organisation_no_usage(
-    sample_service,
-    sample_organisation,
-    notify_db_session,
+    sample_service, sample_organisation, notify_db_session, session, expected_bind_key
 ):
-    dao_add_service_to_organisation(service=sample_service, organisation_id=sample_organisation.id)
+    organisation_id = sample_organisation.id
+
+    dao_add_service_to_organisation(service=sample_service, organisation_id=organisation_id)
     create_annual_billing(service_id=sample_service.id, free_sms_fragment_limit=3, financial_year_start=2016)
 
-    results, _ = fetch_usage_for_organisation(organisation_id=sample_organisation.id, year=2016)
+    with QueryRecorder() as query_recorder:
+        results, _ = fetch_usage_for_organisation(
+            organisation_id=organisation_id,
+            year=2016,
+            session=session,
+        )
+
+    assert {q.bind_key for q in query_recorder.queries} == {expected_bind_key}
     assert len(results) == 1
 
     row = results[str(sample_service.id)]
@@ -1071,34 +1465,76 @@ def test_fetch_usage_for_organisation_no_usage(
     assert row["sms_cost"] == 0.0
 
 
+@pytest.mark.parametrize(
+    "session,expected_bind_key",
+    ((db.session, None), (db.session_bulk, "bulk")),
+    ids=("default", "bulk"),
+)
 def test_fetch_usage_for_organisation_excludes_trial_services(
     sample_service,
     sample_organisation,
     sample_sms_template,
     notify_db_session,
+    session,
+    expected_bind_key,
 ):
-    dao_add_service_to_organisation(service=sample_service, organisation_id=sample_organisation.id)
+    organisation_id = sample_organisation.id
+
+    dao_add_service_to_organisation(service=sample_service, organisation_id=organisation_id)
     create_annual_billing(service_id=sample_service.id, free_sms_fragment_limit=3, financial_year_start=2016)
 
-    results, _ = fetch_usage_for_organisation(organisation_id=sample_organisation.id, year=2016)
+    with QueryRecorder() as query_recorder:
+        results, _ = fetch_usage_for_organisation(
+            organisation_id=organisation_id,
+            year=2016,
+            session=session,
+        )
+
+    assert {q.bind_key for q in query_recorder.queries} == {expected_bind_key}
     assert len(results) == 1
 
+    # Persist the "restricted" change so the bulk session can see it
     sample_service.restricted = True
-    results, _ = fetch_usage_for_organisation(organisation_id=sample_organisation.id, year=2016)
+    db.session.commit()
+
+    with QueryRecorder() as query_recorder:
+        results, _ = fetch_usage_for_organisation(
+            organisation_id=organisation_id,
+            year=2016,
+            session=session,
+        )
+
+    assert {q.bind_key for q in query_recorder.queries} == {expected_bind_key}
     assert len(results) == 0
 
 
+@pytest.mark.parametrize(
+    "session,expected_bind_key",
+    ((db.session, None), (db.session_bulk, "bulk")),
+    ids=("default", "bulk"),
+)
 def test_fetch_usage_for_organisation_partially_billable(
     sample_service,
     sample_organisation,
     sample_sms_template,
     notify_db_session,
+    session,
+    expected_bind_key,
 ):
-    dao_add_service_to_organisation(service=sample_service, organisation_id=sample_organisation.id)
+    organisation_id = sample_organisation.id
+
+    dao_add_service_to_organisation(service=sample_service, organisation_id=organisation_id)
     create_annual_billing(service_id=sample_service.id, free_sms_fragment_limit=3, financial_year_start=2019)
     create_ft_billing(template=sample_sms_template, bst_date=datetime(2019, 4, 20), billable_unit=5, rate=0.11)
 
-    results, _ = fetch_usage_for_organisation(sample_organisation.id, 2019)
+    with QueryRecorder() as query_recorder:
+        results, _ = fetch_usage_for_organisation(
+            organisation_id=organisation_id,
+            year=2019,
+            session=session,
+        )
+
+    assert {q.bind_key for q in query_recorder.queries} == {expected_bind_key}
     assert len(results) == 1
 
     row = results[str(sample_service.id)]
@@ -1108,23 +1544,39 @@ def test_fetch_usage_for_organisation_partially_billable(
     assert row["sms_cost"] == 0.22
 
 
+@pytest.mark.parametrize(
+    "session,expected_bind_key",
+    ((db.session, None), (db.session_bulk, "bulk")),
+    ids=("default", "bulk"),
+)
 def test_fetch_usage_for_organisation_multiple_services(
     sample_organisation,
     notify_db_session,
+    session,
+    expected_bind_key,
 ):
+    organisation_id = sample_organisation.id
     service_1 = create_service(service_name="Service 1")
-    dao_add_service_to_organisation(service=service_1, organisation_id=sample_organisation.id)
+    dao_add_service_to_organisation(service=service_1, organisation_id=organisation_id)
     service_1_template = create_template(service=service_1, template_type="sms")
     create_ft_billing(template=service_1_template, bst_date=datetime(2016, 4, 20), billable_unit=4, rate=0.162)
     create_annual_billing(service_id=service_1.id, free_sms_fragment_limit=3, financial_year_start=2016)
 
     service_2 = create_service(service_name="Service 2")
-    dao_add_service_to_organisation(service=service_2, organisation_id=sample_organisation.id)
+    dao_add_service_to_organisation(service=service_2, organisation_id=organisation_id)
     service_2_template = create_template(service=service_2, template_type="sms")
     create_ft_billing(template=service_2_template, bst_date=datetime(2016, 4, 20), billable_unit=4, rate=0.162)
     create_annual_billing(service_id=service_2.id, free_sms_fragment_limit=6, financial_year_start=2016)
 
-    results, _ = fetch_usage_for_organisation(sample_organisation.id, 2016)
+    with QueryRecorder() as query_recorder:
+        results, _ = fetch_usage_for_organisation(
+            organisation_id=organisation_id,
+            year=2016,
+            session=session,
+        )
+
+    assert {q.bind_key for q in query_recorder.queries} == {expected_bind_key}
+
     assert len(results) == 2
 
     service_1_row = results[str(service_1.id)]
@@ -1138,14 +1590,32 @@ def test_fetch_usage_for_organisation_multiple_services(
     assert service_2_row["sms_cost"] == 0
 
 
+@pytest.mark.parametrize(
+    "session,expected_bind_key",
+    ((db.session, None), (db.session_bulk, "bulk")),
+    ids=("default", "bulk"),
+)
 def test_fetch_usage_for_organisation_without_annual_billing(
-    sample_service, sample_organisation, sample_sms_template, notify_db_session
+    sample_service,
+    sample_organisation,
+    sample_sms_template,
+    notify_db_session,
+    session,
+    expected_bind_key,
 ):
+    organisation_id = sample_organisation.id
     # Example: we don't continue populating annual_billing for inactive services
     sample_service.active = False
-    dao_add_service_to_organisation(service=sample_service, organisation_id=sample_organisation.id)
+    dao_add_service_to_organisation(service=sample_service, organisation_id=organisation_id)
 
-    results, _ = fetch_usage_for_organisation(sample_organisation.id, 2016)
+    with QueryRecorder() as query_recorder:
+        results, _ = fetch_usage_for_organisation(
+            organisation_id=organisation_id,
+            year=2016,
+            session=session,
+        )
+
+    assert {q.bind_key for q in query_recorder.queries} == {expected_bind_key}
     assert len(results) == 1
 
     row = results[str(sample_service.id)]
@@ -1155,8 +1625,13 @@ def test_fetch_usage_for_organisation_without_annual_billing(
     assert row["sms_cost"] == 0
 
 
+@pytest.mark.parametrize(
+    "session,expected_bind_key",
+    ((db.session, None), (db.session_bulk, "bulk")),
+    ids=("default", "bulk"),
+)
 def test_fetch_daily_volumes_for_platform(
-    notify_db_session, sample_template, sample_email_template, sample_letter_template
+    notify_db_session, sample_template, sample_email_template, sample_letter_template, session, expected_bind_key
 ):
     create_ft_billing(bst_date="2022-02-03", template=sample_template, notifications_sent=10, billable_unit=10)
     create_ft_billing(
@@ -1177,7 +1652,10 @@ def test_fetch_daily_volumes_for_platform(
     create_ft_billing(bst_date="2022-02-04", template=sample_email_template, notifications_sent=50)
     create_ft_billing(bst_date="2022-02-04", template=sample_letter_template, notifications_sent=20, billable_unit=40)
 
-    results = fetch_daily_volumes_for_platform(start_date="2022-02-03", end_date="2022-02-04")
+    with QueryRecorder() as qr:
+        results = fetch_daily_volumes_for_platform(start_date="2022-02-03", end_date="2022-02-04", session=session)
+
+    assert {q.bind_key for q in qr.queries} == {expected_bind_key}
 
     assert len(results) == 2
     assert results[0].bst_date == "2022-02-03"
@@ -1197,8 +1675,13 @@ def test_fetch_daily_volumes_for_platform(
     assert results[1].letter_sheet_totals == 40
 
 
+@pytest.mark.parametrize(
+    "session,expected_bind_key",
+    ((db.session, None), (db.session_bulk, "bulk")),
+    ids=("default", "bulk"),
+)
 def test_fetch_daily_sms_provider_volumes_for_platform_groups_values_by_provider(
-    notify_db_session,
+    notify_db_session, session, expected_bind_key
 ):
     services = [create_service(service_name="a"), create_service(service_name="b")]
     templates = [create_template(services[0]), create_template(services[1])]
@@ -1209,7 +1692,12 @@ def test_fetch_daily_sms_provider_volumes_for_platform_groups_values_by_provider
     create_ft_billing("2022-02-01", templates[0], provider="bar", notifications_sent=16, billable_unit=32)
     create_ft_billing("2022-02-01", templates[1], provider="bar", notifications_sent=64, billable_unit=128)
 
-    results = fetch_daily_sms_provider_volumes_for_platform(start_date="2022-02-01", end_date="2022-02-01")
+    with QueryRecorder() as qr:
+        results = fetch_daily_sms_provider_volumes_for_platform(
+            start_date="2022-02-01", end_date="2022-02-01", session=session
+        )
+
+    assert {q.bind_key for q in qr.queries} == {expected_bind_key}
 
     assert len(results) == 2
     assert results[0].provider == "bar"
@@ -1221,12 +1709,22 @@ def test_fetch_daily_sms_provider_volumes_for_platform_groups_values_by_provider
     assert results[1].sms_fragment_totals == 10
 
 
+@pytest.mark.parametrize(
+    "session,expected_bind_key",
+    ((db.session, None), (db.session_bulk, "bulk")),
+    ids=("default", "bulk"),
+)
 def test_fetch_daily_sms_provider_volumes_for_platform_for_platform_calculates_chargeable_units_and_costs(
-    sample_template,
+    sample_template, session, expected_bind_key
 ):
     create_ft_billing("2022-02-01", sample_template, rate_multiplier=3, rate=1.5, notifications_sent=1, billable_unit=2)
 
-    results = fetch_daily_sms_provider_volumes_for_platform(start_date="2022-02-01", end_date="2022-02-01")
+    with QueryRecorder() as qr:
+        results = fetch_daily_sms_provider_volumes_for_platform(
+            start_date="2022-02-01", end_date="2022-02-01", session=session
+        )
+
+    assert {q.bind_key for q in qr.queries} == {expected_bind_key}
 
     assert len(results) == 1
     assert results[0].sms_totals == 1
@@ -1235,7 +1733,14 @@ def test_fetch_daily_sms_provider_volumes_for_platform_for_platform_calculates_c
     assert results[0].sms_cost == 9
 
 
-def test_fetch_daily_sms_provider_volumes_for_platform_for_platform_searches_dates_inclusively(sample_template):
+@pytest.mark.parametrize(
+    "session,expected_bind_key",
+    ((db.session, None), (db.session_bulk, "bulk")),
+    ids=("default", "bulk"),
+)
+def test_fetch_daily_sms_provider_volumes_for_platform_for_platform_searches_dates_inclusively(
+    sample_template, session, expected_bind_key
+):
     # too early
     create_ft_billing("2022-02-02", sample_template)
 
@@ -1247,30 +1752,55 @@ def test_fetch_daily_sms_provider_volumes_for_platform_for_platform_searches_dat
     # too late
     create_ft_billing("2022-02-06", sample_template)
 
-    results = fetch_daily_sms_provider_volumes_for_platform(start_date="2022-02-03", end_date="2022-02-05")
+    with QueryRecorder() as qr:
+        results = fetch_daily_sms_provider_volumes_for_platform(
+            start_date="2022-02-03", end_date="2022-02-05", session=session
+        )
+
+    assert {q.bind_key for q in qr.queries} == {expected_bind_key}
 
     assert len(results) == 3
     assert results[0].bst_date == date(2022, 2, 3)
     assert results[-1].bst_date == date(2022, 2, 5)
 
 
+@pytest.mark.parametrize(
+    "session,expected_bind_key",
+    ((db.session, None), (db.session_bulk, "bulk")),
+    ids=("default", "bulk"),
+)
 def test_fetch_daily_sms_provider_volumes_for_platform_for_platform_only_returns_sms(
-    sample_template, sample_email_template, sample_letter_template
+    sample_template, sample_email_template, sample_letter_template, session, expected_bind_key
 ):
     create_ft_billing("2022-02-01", sample_template, notifications_sent=1)
     create_ft_billing("2022-02-01", sample_email_template, notifications_sent=2)
     create_ft_billing("2022-02-01", sample_letter_template, notifications_sent=4)
 
-    results = fetch_daily_sms_provider_volumes_for_platform(start_date="2022-02-01", end_date="2022-02-01")
+    with QueryRecorder() as qr:
+        results = fetch_daily_sms_provider_volumes_for_platform(
+            start_date="2022-02-01", end_date="2022-02-01", session=session
+        )
+
+    assert {q.bind_key for q in qr.queries} == {expected_bind_key}
 
     assert len(results) == 1
     assert results[0].sms_totals == 1
 
 
-def test_fetch_volumes_by_service(notify_db_session):
+@pytest.mark.parametrize(
+    "session,expected_bind_key",
+    ((db.session, None), (db.session_bulk, "bulk")),
+    ids=("default", "bulk"),
+)
+def test_fetch_volumes_by_service(notify_db_session, session, expected_bind_key):
     set_up_usage_data(datetime(2022, 2, 1))
 
-    results = fetch_volumes_by_service(start_date=datetime(2022, 2, 1), end_date=datetime(2022, 2, 28))
+    with QueryRecorder() as qr:
+        results = fetch_volumes_by_service(
+            start_date=datetime(2022, 2, 1), end_date=datetime(2022, 2, 28), session=session
+        )
+
+    assert {q.bind_key for q in qr.queries} == {expected_bind_key}
 
     # since we are using a pre-set up fixture, we only care about some of the results
     assert len(results) == 7
@@ -1315,12 +1845,22 @@ def test_fetch_volumes_by_service(notify_db_session):
     assert float(results[6].letter_cost) == 0
 
 
-def test_fetch_volumes_by_service_returns_free_allowance_for_end_date(sample_service):
+@pytest.mark.parametrize(
+    "session,expected_bind_key",
+    ((db.session, None), (db.session_bulk, "bulk")),
+    ids=("default", "bulk"),
+)
+def test_fetch_volumes_by_service_returns_free_allowance_for_end_date(sample_service, session, expected_bind_key):
     create_annual_billing(service_id=sample_service.id, free_sms_fragment_limit=1000, financial_year_start=2023)
     create_annual_billing(service_id=sample_service.id, free_sms_fragment_limit=50, financial_year_start=2022)
     create_annual_billing(service_id=sample_service.id, free_sms_fragment_limit=7, financial_year_start=2021)
 
-    results = fetch_volumes_by_service(start_date=datetime(2021, 4, 1), end_date=datetime(2022, 2, 28))
+    with QueryRecorder() as qr:
+        results = fetch_volumes_by_service(
+            start_date=datetime(2021, 4, 1), end_date=datetime(2022, 2, 28), session=session
+        )
+
+    assert {q.bind_key for q in qr.queries} == {expected_bind_key}
 
     assert len(results) == 1
     assert results[0].free_allowance == 50
@@ -1504,7 +2044,12 @@ test_cases = [
     test_cases,
     ids=["All template types within 7 days", "Only SMS template type within 7 days", "Limit days exclude all data"],
 )
-def test_get_count_of_notifications_sent(sample_service, test_case):
+@pytest.mark.parametrize(
+    "session,expected_bind_key",
+    ((db.session, None), (db.session_bulk, "bulk")),
+    ids=("default", "bulk"),
+)
+def test_get_count_of_notifications_sent(sample_service, test_case, session, expected_bind_key):
     assert len(FactBilling.query.all()) == 0
 
     sms_template = create_template(service=sample_service, template_type="sms")
@@ -1518,9 +2063,18 @@ def test_get_count_of_notifications_sent(sample_service, test_case):
             notifications_sent=notification_data["notifications_sent"],
         )
 
-    count = get_count_of_notifications_sent(
-        service_id=sample_service.id, template_types=test_case.template_types, limit_days=test_case.limit_days
-    )
+    count = 0
+    service_id = sample_service.id
+
+    with QueryRecorder() as query_recorder:
+        count = get_count_of_notifications_sent(
+            service_id=service_id,
+            template_types=test_case.template_types,
+            limit_days=test_case.limit_days,
+            session=session,
+        )
+
+    assert {query_info.bind_key for query_info in query_recorder.queries} == {expected_bind_key}
 
     assert count == test_case.expected_count
 
@@ -1557,3 +2111,79 @@ def test_get_organisation_live_services_with_free_allowance(sample_service, samp
 
     assert org_services[1].id == service_with_no_free_allowance.id
     assert org_services[1].free_sms_fragment_limit == 0
+
+
+@pytest.mark.parametrize(
+    "session,expected_bind_key",
+    ((db.session, None), (db.session_bulk, "bulk")),
+    ids=("default", "bulk"),
+)
+def test_fetch_dvla_billing_facts_happy_path_uses_expected_bind(notify_db_session, session, expected_bind_key):
+    facts = [
+        FactBillingLetterDespatch(
+            bst_date="2020-04-01",
+            postage="first",
+            cost_threshold=LetterCostThreshold.sorted,
+            rate=1,
+            billable_units=1,
+            notifications_sent=5,
+        ),
+        FactBillingLetterDespatch(
+            bst_date="2020-04-01",
+            postage="second",
+            cost_threshold=LetterCostThreshold.sorted,
+            rate=0.5,
+            billable_units=1,
+            notifications_sent=100,
+        ),
+        FactBillingLetterDespatch(
+            bst_date="2020-05-01",
+            postage="second",
+            cost_threshold=LetterCostThreshold.sorted,
+            rate=0.75,
+            billable_units=2,
+            notifications_sent=25,
+        ),
+        FactBillingLetterDespatch(
+            bst_date="2020-05-01",
+            postage="europe",
+            cost_threshold=LetterCostThreshold.sorted,
+            rate=1.5,
+            billable_units=1,
+            notifications_sent=10,
+        ),
+        FactBillingLetterDespatch(
+            bst_date="2021-03-31",
+            postage="rest-of-world",
+            cost_threshold=LetterCostThreshold.sorted,
+            rate=1.5,
+            billable_units=1,
+            notifications_sent=5,
+        ),
+    ]
+    notify_db_session.add_all(facts)
+    notify_db_session.commit()
+
+    with QueryRecorder() as qr:
+        results = fetch_dvla_billing_facts("2020-04-01", "2021-03-31", session=session)
+
+    assert {q.bind_key for q in qr.queries} == {expected_bind_key}
+
+    assert [
+        (
+            r.date.isoformat(),
+            r.postage,
+            r.cost_threshold.value,
+            float(r.rate),
+            r.sheets,
+            r.letters,
+            float(r.cost),
+        )
+        for r in results
+    ] == [
+        ("2020-04-01", "first", "sorted", 1.0, 1, 5, 5.0),
+        ("2020-04-01", "second", "sorted", 0.5, 1, 100, 50.0),
+        ("2020-05-01", "europe", "sorted", 1.5, 1, 10, 15.0),
+        ("2020-05-01", "second", "sorted", 0.75, 2, 25, 18.75),
+        ("2021-03-31", "rest-of-world", "sorted", 1.5, 1, 5, 7.5),
+    ]

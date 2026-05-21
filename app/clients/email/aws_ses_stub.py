@@ -5,6 +5,7 @@ import requests
 from flask import current_app
 
 from app.clients.email import EmailClient, EmailClientException
+from app.otel_metrics.provider import record_request_duration
 
 
 class AwsSesStubClientException(EmailClientException):
@@ -26,6 +27,7 @@ class AwsSesStubClient(EmailClient):
         self.url = stub_url
         self.requests_session = requests.Session()
 
+    @record_request_duration(notification_type="email", provider_name="ses_stub")
     def send_email(
         self,
         *,
@@ -48,7 +50,9 @@ class AwsSesStubClient(EmailClient):
             raise AwsSesStubClientException(str(e)) from e
         else:
             elapsed_time = monotonic() - start_time
-            current_app.logger.info("AWS SES stub request finished in %s", elapsed_time)
+            current_app.logger.info(
+                "AWS SES stub request finished in %.4g seconds", elapsed_time, extra={"duration": elapsed_time}
+            )
             self.statsd_client.timing("clients.ses_stub.request-time", elapsed_time)
             self.statsd_client.incr("clients.ses_stub.success")
             return response_json["MessageId"]

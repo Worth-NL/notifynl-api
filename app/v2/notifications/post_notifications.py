@@ -1,14 +1,18 @@
 import base64
 import functools
+import re
 import uuid
 from datetime import datetime
 
 from flask import abort, current_app, jsonify, request
 from gds_metrics import Histogram
+from notifications_utils.formatters import url
+from notifications_utils.insensitive_dict import InsensitiveSet
 
 from app import (
     api_user,
     authenticated_service,
+    db,
     document_download_client,
     notify_celery,
 )
@@ -30,7 +34,6 @@ from app.constants import (
     NOTIFICATION_SENDING,
     SMS_TYPE,
 )
-from app.dao.dao_utils import transaction
 from app.dao.templates_dao import get_precompiled_letter_template
 from app.letters.utils import upload_letter_pdf
 from app.notifications.process_letter_notifications import (
@@ -125,12 +128,26 @@ def post_notification(notification_type):
 
     check_service_has_permission(authenticated_service, notification_type)
 
+    unsanitised_personalisation = form.get("personalisation", {})
+    personalisation = (
+        _prepare_personalisation_for_post_notification(
+            personalisation=unsanitised_personalisation, sanitise_content_for=form.get("sanitise_content_for", [])
+        )
+        if notification_type == "email"
+        else unsanitised_personalisation
+    )
+
+    sanitised_content = (
+        _get_sanitised_content(unsanitised_personalisation, personalisation) if notification_type == "email" else {}
+    )
+
     template, template_with_content = validate_template(
-        form["template_id"],
-        form.get("personalisation", {}),
-        authenticated_service,
-        notification_type,
+        template_id=form["template_id"],
+        personalisation=personalisation,
+        service=authenticated_service,
+        notification_type=notification_type,
         check_char_count=False,
+        recipient=form.get("email_address"),
     )
 
     reply_to = get_reply_to_text(notification_type, form, template)
@@ -151,11 +168,56 @@ def post_notification(notification_type):
             template=template,
             template_with_content=template_with_content,
             service=authenticated_service,
+            personalisation=personalisation,
             reply_to_text=reply_to,
             unsubscribe_link=form.get("one_click_unsubscribe_url", None),
         )
 
-    return jsonify(notification), 201
+    return jsonify(notification | sanitised_content), 201
+
+
+def _prepare_personalisation_for_post_notification(personalisation, sanitise_content_for):
+    return {
+        key: sanitise_personalisation_item(value) if key in InsensitiveSet(sanitise_content_for) else value
+        for key, value in personalisation.items()
+    }
+
+
+def sanitise_personalisation_item(value):
+    value = _find_and_sanitise_urls(value)
+    sanitised_value = _escape_markdown_characters(value)
+
+    return sanitised_value
+
+
+def _escape_markdown_characters(value):
+    return re.sub(r"([`*_()\\{}\[\]<>#+\-.!|])", r"\\\1", value, flags=re.M)
+
+
+def _find_and_sanitise_urls(value):
+    return re.sub(url, lambda m: _sanitise_url(m.group()), value)
+
+
+def _sanitise_url(url):
+    return _break_up_link(url) if _could_be_accidental_link(url) else ""
+
+
+def _could_be_accidental_link(link):
+    return re.fullmatch(r"[a-zA-Z0-9\.\-]+", link)
+
+
+def _break_up_link(link):
+    return re.sub(r"\.", ". ", link)
+
+
+def _get_sanitised_content(unsanitised_personalisation, personalisation):
+    return {
+        "sanitised_content": {
+            key: {"unsanitised": unsanitised_personalisation[key], "sanitised": personalisation[key]}
+            for key, value in personalisation.items()
+            if personalisation[key] != unsanitised_personalisation[key]
+        }
+    }
 
 
 def process_sms_or_email_notification(
@@ -165,6 +227,7 @@ def process_sms_or_email_notification(
     template,
     template_with_content,
     service,
+    personalisation,
     reply_to_text=None,
     unsubscribe_link=None,
 ):
@@ -181,7 +244,7 @@ def process_sms_or_email_notification(
     simulated = simulated_recipient(send_to, notification_type)
 
     personalisation, document_download_count = process_document_uploads(
-        form.get("personalisation"),
+        personalisation,
         service,
         send_to=send_to,
         simulated=simulated,
@@ -227,9 +290,14 @@ def process_sms_or_email_notification(
             key_type=api_user.key_type,
             notification_type=notification_type,
             notification_id=notification_id,
+            message_group_id=str(service.id),
         )
     else:
-        current_app.logger.debug("POST simulated notification for id: %s", notification_id)
+        current_app.logger.info(
+            "POST simulated notification for notification %s",
+            notification_id,
+            extra={"notification_id": notification_id},
+        )
 
     return response
 
@@ -253,13 +321,14 @@ def process_document_uploads(personalisation_data, service, send_to: str, simula
     personalisation_data = personalisation_data.copy()
 
     check_if_service_can_send_files_by_email(
-        service_contact_link=authenticated_service.contact_link, service_id=authenticated_service.id
+        service_contact_link=authenticated_service.contact_link,  # type: ignore[attr-defined]
+        service_id=authenticated_service.id,  # type: ignore[attr-defined]
     )
 
     for key in file_keys:
         if simulated:
             personalisation_data[key] = (
-                document_download_client.get_upload_url_for_simulated_email(service.id) + "/test-document"
+                document_download_client.get_upload_url_for_simulated_email(service.id) + "/test-document"  # type: ignore[attr-defined]
             )
         else:
             confirm_email = personalisation_data[key].get("confirm_email_before_download", True)
@@ -270,7 +339,7 @@ def process_document_uploads(personalisation_data, service, send_to: str, simula
 
             filename = personalisation_data[key].get("filename")
 
-            personalisation_data[key] = document_download_client.upload_document(
+            personalisation_data[key] = document_download_client.upload_document(  # type: ignore[attr-defined]
                 service.id,
                 personalisation_data[key]["file"],
                 personalisation_data[key].get("is_csv"),
@@ -324,12 +393,17 @@ def process_letter_notification(
         postage=postage,
     )
 
-    get_pdf_for_templated_letter.apply_async([str(notification.id)], queue=queue)
+    get_pdf_for_templated_letter.apply_async(
+        [str(notification.id)],
+        queue=queue,
+        MessageGroupId=str(service.id),
+    )
 
     if test_key and current_app.config["TEST_LETTERS_FAKE_DELIVERY"]:
         create_fake_letter_callback.apply_async(
             [notification.id, notification.billable_units, notification.postage],
             queue=queue,
+            MessageGroupId=str(service.id),
         )
 
     resp = create_response_for_post_notification(
@@ -352,7 +426,7 @@ def process_precompiled_letter_notifications(*, letter_data, api_key, service, t
     except ValueError as e:
         raise BadRequestError(message="Cannot decode letter content (invalid base64 encoding)", status_code=400) from e
 
-    with transaction():
+    try:
         notification = create_letter_notification(
             letter_data=letter_data,
             service=service,
@@ -360,22 +434,34 @@ def process_precompiled_letter_notifications(*, letter_data, api_key, service, t
             api_key=api_key,
             status=status,
             reply_to_text=reply_to_text,
+            _autocommit=False,
         )
         filename = upload_letter_pdf(notification, letter_content, precompiled=True)
+        db.session.commit()
+    except Exception:
+        db.session.rollback()
+        raise
 
     resp = {"id": notification.id, "reference": notification.client_reference, "postage": notification.postage}
 
     # call task to add the filename to anti virus queue
     if current_app.config["ANTIVIRUS_ENABLED"]:
-        current_app.logger.info("Calling task scan-file for %s", filename)
+        current_app.logger.info(
+            "Calling task scan-file for %s", filename, extra={"file_name": filename, "notification_id": notification.id}
+        )
         notify_celery.send_task(
             name=TaskNames.SCAN_FILE,
             kwargs={"filename": filename},
             queue=QueueNames.ANTIVIRUS,
+            MessageGroupId=str(service.id),
         )
     else:
         # stub out antivirus in dev
-        sanitise_letter.apply_async([filename], queue=QueueNames.LETTERS)
+        sanitise_letter.apply_async(
+            [filename],
+            queue=QueueNames.LETTERS,
+            MessageGroupId=str(service.id),
+        )
 
     return resp
 

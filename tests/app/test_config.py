@@ -1,7 +1,8 @@
 from celery.schedules import crontab
+from sqlalchemy import text
 
 from app import db
-from app.config import QueueNames
+from app.config import Config, QueueNames
 
 
 def test_queue_names_all_queues_correct():
@@ -11,6 +12,7 @@ def test_queue_names_all_queues_correct():
     assert {
         QueueNames.PERIODIC,
         QueueNames.DATABASE,
+        QueueNames.DATABASE_DOCUMENTS,
         QueueNames.SEND_SMS,
         QueueNames.SEND_EMAIL,
         QueueNames.SEND_LETTER,
@@ -27,7 +29,7 @@ def test_queue_names_all_queues_correct():
         QueueNames.SMS_CALLBACKS,
         QueueNames.LETTER_CALLBACKS,
         QueueNames.REPORT_REQUESTS_NOTIFICATIONS,
-        QueueNames.MESSAGEBOX_CALLBACKS
+        QueueNames.MESSAGEBOX_CALLBACKS,
     } == set(queues)
 
 
@@ -74,10 +76,17 @@ def test_no_celery_beat_tasks_scheduled_over_midnight_between_timezones(notify_a
 
 
 def test_sqlalchemy_config(notify_api, notify_db_session):
-    timeout = notify_db_session.execute("show statement_timeout").scalar()
+    timeout = notify_db_session.execute(text("show statement_timeout")).scalar()
     assert timeout == "20min"
     assert notify_api.config["SQLALCHEMY_ENGINE_OPTIONS"]["connect_args"]["options"] == "-c statement_timeout=1200000"
 
     assert db.engine.pool.size() == notify_api.config["SQLALCHEMY_ENGINE_OPTIONS"]["pool_size"]
     assert db.engine.pool.timeout() == notify_api.config["SQLALCHEMY_ENGINE_OPTIONS"]["pool_timeout"]
     assert db.engine.pool._recycle == notify_api.config["SQLALCHEMY_ENGINE_OPTIONS"]["pool_recycle"]
+
+
+def test_celery_config_contains_task_ignore_result_is_true():
+    # We currently do not declare a result_backend for celery. This test ensures that
+    # task_ignore_result have been declared in the CELERY config
+    # in order to prevent celery from expending resources on trying to process results from tasks
+    assert Config.CELERY["task_ignore_result"] is True

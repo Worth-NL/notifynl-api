@@ -27,7 +27,13 @@ from app.delivery import send_to_providers
 from app.delivery.send_to_providers import get_html_email_options, get_logo_url
 from app.exceptions import NotificationTechnicalFailureException
 from app.models import EmailBranding, Notification
-from app.serialised_models import SerialisedService
+from app.otel_metrics.notification import _international_sms
+from app.serialised_models import (
+    SerialisedProvider,
+    SerialisedProviders,
+    SerialisedService,
+    get_provider_details_by_notification_type,
+)
 from app.utils import parse_and_format_phone_number
 from tests.app.db import (
     create_email_branding,
@@ -43,7 +49,7 @@ from tests.app.db import (
 def setup_function(_function):
     # pytest will run this function before each test. It makes sure the
     # state of the cache is not shared between tests.
-    send_to_providers.provider_cache.clear()
+    SerialisedProviders.from_notification_type.cache_clear()
 
 
 def test_provider_to_use_should_return_random_provider(mocker, notify_db_session):
@@ -55,11 +61,13 @@ def test_provider_to_use_should_return_random_provider(mocker, notify_db_session
 
     ret = send_to_providers.provider_to_use("sms", international=False)
 
-    mock_choices.assert_called_once_with([spryng, firetext], weights=[25, 75])
+    mock_choices.assert_called_once_with(
+        [SerialisedProvider(spryng.serialize()), SerialisedProvider(firetext.serialize())], weights=[25, 75]
+    )
     assert ret.name == "spryng"
 
 
-def test_provider_to_use_should_cache_repeated_calls(mocker, notify_db_session):
+def test_provider_to_use_should_call_random_choice_every_time(mocker, notify_db_session):
     mock_choices = mocker.patch(
         "app.delivery.send_to_providers.random.choices",
         wraps=send_to_providers.random.choices,
@@ -68,7 +76,19 @@ def test_provider_to_use_should_cache_repeated_calls(mocker, notify_db_session):
     results = [send_to_providers.provider_to_use("sms", international=False) for _ in range(10)]
 
     assert all(result == results[0] for result in results)
-    assert len(mock_choices.call_args_list) == 1
+    assert len(mock_choices.call_args_list) == 10
+
+
+def test_provider_to_use_should_only_call_database_once(mocker, notify_db_session):
+    mock_dao = mocker.patch(
+        "app.serialised_models.get_provider_details_by_notification_type",
+        wraps=get_provider_details_by_notification_type,
+    )
+
+    results = [send_to_providers.provider_to_use("sms", international=False) for _ in range(10)]
+
+    assert all(result == results[0] for result in results)
+    assert len(mock_dao.call_args_list) == 1
 
 
 @pytest.mark.skip(reason="[NOTIFYNL] Both Spryng and Firetext are marked as supporting international")
@@ -93,7 +113,7 @@ def test_provider_to_use_should_only_return_mmg_for_international(
 
     ret = send_to_providers.provider_to_use("sms", international=True)
 
-    mock_choices.assert_called_once_with([spryng], weights=[100])
+    mock_choices.assert_called_once_with([SerialisedProvider(spryng.serialize())], weights=[100])
     assert ret.name == "spryng"
 
 
@@ -105,7 +125,7 @@ def test_provider_to_use_should_only_return_active_providers(mocker, restore_pro
 
     ret = send_to_providers.provider_to_use("sms")
 
-    mock_choices.assert_called_once_with([firetext], weights=[100])
+    mock_choices.assert_called_once_with([SerialisedProvider(firetext.serialize())], weights=[100])
     assert ret.name == "firetext"
 
 
@@ -354,7 +374,9 @@ def test_send_email_to_provider_should_call_response_task_if_test_key(sample_ema
     send_to_providers.send_email_to_provider(notification)
 
     assert not app.aws_ses_client.send_email.called
-    app.delivery.send_to_providers.send_email_response.assert_called_once_with(str(reference), "john@smith.com")
+    app.delivery.send_to_providers.send_email_response.assert_called_once_with(
+        str(reference), "john@smith.com", notification.service_id
+    )
     persisted_notification = Notification.query.filter_by(id=notification.id).one()
     assert persisted_notification.to == "john@smith.com"
     assert persisted_notification.template_id == sample_email_template.id
@@ -625,6 +647,7 @@ def test_should_set_notification_billable_units_and_reduce_provider_priority_if_
 
 @pytest.mark.skip(reason="[NOTIFYNL] Requires mocked Spryng client")
 def test_should_send_sms_to_international_providers(sample_template, mocker):
+    add_international_sms_mock = mocker.patch.object(_international_sms, "add")
     mocker.patch("app.mmg_client.send_sms")
     mocker.patch("app.firetext_client.send_sms")
 
@@ -640,6 +663,7 @@ def test_should_send_sms_to_international_providers(sample_template, mocker):
         international=True,
         reply_to_text=sample_template.service.get_default_sms_sender(),
         normalised_to="601117224412",
+        phone_prefix="60",
     )
 
     send_to_providers.send_sms_to_provider(notification_international)
@@ -650,6 +674,14 @@ def test_should_send_sms_to_international_providers(sample_template, mocker):
         reference=str(notification_international.id),
         sender=current_app.config["FROM_NUMBER"],
         international=True,
+    )
+
+    add_international_sms_mock.assert_called_once_with(
+        1,
+        {
+            "notification.status": "sent",
+            "notification.sms.country_code": "60",
+        },
     )
 
     assert notification_international.status == "sent"
