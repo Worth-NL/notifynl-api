@@ -294,21 +294,39 @@ post_letter_response = {
 
 post_messagebox_request = {
     "$schema": "http://json-schema.org/draft-07/schema#",
-    "description": "POST berichtenbox notification schema",
+    "description": "POST messagebox notification schema",
     "type": "object",
-    "title": "POST v2/notifications/berichtenbox",
+    "title": "POST v2/notifications/messagebox",
     "properties": {
+        "sender": {"type": "string", "minLength": 20, "maxLength": 20},
+        "recipient": {"type": "string", "minLength": 9, "maxLength": 9},
+        "subject": {"type": "string", "default": "Berichtenboxbericht"},
+        "message": {"type": "string"},
+        "attachments": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "file": {"type": "string"},
+                    "filename": {"type": "string"},
+                },
+                "required": ["file", "filename"],
+                "additionalProperties": False,
+            },
+            "minItems": 1,
+            "maxItems": 2,
+        },
         "reference": {"type": "string", "maxLength": 1_000},
     },
-    "required": [],
+    "required": ["sender", "recipient", "message", "attachments"],
     "additionalProperties": False,
 }
 
 post_messagebox_response = {
     "$schema": "http://json-schema.org/draft-07/schema#",
-    "description": "POST berichtenbox notification response schema",
+    "description": "POST messagebox notification response schema",
     "type": "object",
-    "title": "response v2/notifications/berichtenbox",
+    "title": "response v2/notifications/messagebox",
     "properties": {
         "id": uuid,
         "organisation_id": {"oneOf": [uuid, {"type": "null"}]},
