@@ -799,6 +799,12 @@ class ConfigNL(Config):
 
     ASSET_PATH = "https://static.notifynl.nl/"
 
+    # NotifyNL-specific buckets
+    # *Names overriden in environment-specific configs, but default to empty string to avoid accidents*
+    S3_BUCKET_MESSAGEBOX_SCAN = ""
+    S3_BUCKET_MESSAGEBOX_ATTACHMENTS = ""
+    S3_BUCKET_MESSAGEBOX_INVALID = ""
+
 
 class DevNL(ConfigNL):
     DEBUG = True
@@ -834,6 +840,9 @@ class DevNL(ConfigNL):
     S3_BUCKET_LETTER_SANITISE = f"{NL_PREFIX}-{NOTIFY_ENVIRONMENT}-letters-sanitise"
     S3_BUCKET_REPORT_REQUESTS_DOWNLOAD = f"{NL_PREFIX}-{NOTIFY_ENVIRONMENT}-report-requests-download"
     S3_BUCKET_TEMPLATE_EMAIL_FILES = f"{NL_PREFIX}-{NOTIFY_ENVIRONMENT}-template-email-files"
+    S3_BUCKET_MESSAGEBOX_SCAN = f"{NL_PREFIX}-{NOTIFY_ENVIRONMENT}-messagebox-scan"
+    S3_BUCKET_MESSAGEBOX_ATTACHMENTS = f"{NL_PREFIX}-{NOTIFY_ENVIRONMENT}-messagebox-attachments"
+    S3_BUCKET_MESSAGEBOX_INVALID = f"{NL_PREFIX}-{NOTIFY_ENVIRONMENT}-messagebox-invalid"
 
     INTERNAL_CLIENT_API_KEYS = {
         Config.ADMIN_CLIENT_ID: ["dev-notify-secret-key"],
@@ -879,7 +888,9 @@ class TestNL(ConfigNL):
     S3_BUCKET_LETTER_SANITISE = f"{NL_PREFIX}-{NOTIFY_ENVIRONMENT}-letters-sanitise"
     S3_BUCKET_REPORT_REQUESTS_DOWNLOAD = f"{NL_PREFIX}-{NOTIFY_ENVIRONMENT}-report-requests-download"
     S3_BUCKET_TEMPLATE_EMAIL_FILES = f"{NL_PREFIX}-{NOTIFY_ENVIRONMENT}-template-email-files"
-
+    S3_BUCKET_MESSAGEBOX_SCAN = f"{NL_PREFIX}-{NOTIFY_ENVIRONMENT}-messagebox-scan"
+    S3_BUCKET_MESSAGEBOX_ATTACHMENTS = f"{NL_PREFIX}-{NOTIFY_ENVIRONMENT}-messagebox-attachments"
+    S3_BUCKET_MESSAGEBOX_INVALID = f"{NL_PREFIX}-{NOTIFY_ENVIRONMENT}-messagebox-invalid"
     ASSET_PATH = "https://static.test.notifynl.nl/"
 
 
@@ -898,6 +909,9 @@ class AccNL(ConfigNL):
     S3_BUCKET_LETTER_SANITISE = f"{NL_PREFIX}-{NOTIFY_ENVIRONMENT}-letters-sanitise"
     S3_BUCKET_REPORT_REQUESTS_DOWNLOAD = f"{NL_PREFIX}-{NOTIFY_ENVIRONMENT}-report-requests-download"
     S3_BUCKET_TEMPLATE_EMAIL_FILES = f"{NL_PREFIX}-{NOTIFY_ENVIRONMENT}-template-email-files"
+    S3_BUCKET_MESSAGEBOX_SCAN = f"{NL_PREFIX}-{NOTIFY_ENVIRONMENT}-messagebox-scan"
+    S3_BUCKET_MESSAGEBOX_ATTACHMENTS = f"{NL_PREFIX}-{NOTIFY_ENVIRONMENT}-messagebox-attachments"
+    S3_BUCKET_MESSAGEBOX_INVALID = f"{NL_PREFIX}-{NOTIFY_ENVIRONMENT}-messagebox-invalid"
 
     REGISTER_FUNCTIONAL_TESTING_BLUEPRINT = False
 
@@ -919,6 +933,9 @@ class ProdNL(ConfigNL):
     S3_BUCKET_LETTER_SANITISE = f"{NL_PREFIX}-{NOTIFY_ENVIRONMENT}-letters-sanitise"
     S3_BUCKET_REPORT_REQUESTS_DOWNLOAD = f"{NL_PREFIX}-{NOTIFY_ENVIRONMENT}-report-requests-download"
     S3_BUCKET_TEMPLATE_EMAIL_FILES = f"{NL_PREFIX}-{NOTIFY_ENVIRONMENT}-template-email-files"
+    S3_BUCKET_MESSAGEBOX_SCAN = f"{NL_PREFIX}-{NOTIFY_ENVIRONMENT}-messagebox-scan"
+    S3_BUCKET_MESSAGEBOX_ATTACHMENTS = f"{NL_PREFIX}-{NOTIFY_ENVIRONMENT}-messagebox-attachments"
+    S3_BUCKET_MESSAGEBOX_INVALID = f"{NL_PREFIX}-{NOTIFY_ENVIRONMENT}-messagebox-invalid"
 
     REGISTER_FUNCTIONAL_TESTING_BLUEPRINT = False
 
