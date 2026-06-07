@@ -1,21 +1,151 @@
-import pytest
+import base64
 
-from app.constants import MESSAGEBOX_TYPE, NOTIFICATION_CREATED
+import pytest
+from faker import Faker
+from jsonschema import ValidationError
+
+from app.constants import MESSAGEBOX_TYPE, NOTIFICATION_PENDING_VIRUS_CHECK
 from app.models import Notification
 from app.notifications.validators import check_rate_limiting
 from app.schema_validation import validate
 from app.v2.notifications.notification_schemas import post_messagebox_request, post_messagebox_response
 from tests.app.db import create_api_key, create_service
 
+fake = Faker()
+
+
+@pytest.mark.parametrize(
+    "data, expected_result",
+    [
+        (
+            {
+                "sender": str(fake.random_number(digits=20, fix_len=True)),
+                "recipient": str(fake.random_number(digits=9, fix_len=True)),
+                "attachments": [
+                    {
+                        "file": base64.b64encode(fake.binary(length=1024)).decode(),
+                        "filename": fake.file_name(extension="pdf"),
+                    }
+                ],
+                "message": "This is a valid message",
+            },
+            True,
+        ),
+        (
+            {
+                "sender": str(fake.random_number(digits=20, fix_len=True)),
+                "recipient": str(fake.random_number(digits=9, fix_len=True)),
+                "attachments": [
+                    {
+                        "file": base64.b64encode(fake.binary(length=1024)).decode(),
+                        "filename": fake.file_name(extension="pdf"),
+                    },
+                    {
+                        "file": base64.b64encode(fake.binary(length=1024)).decode(),
+                        "filename": fake.file_name(extension="pdf"),
+                    },
+                ],
+                "subject": "Custom subject",
+                "message": "This is also a valid message",
+            },
+            True,
+        ),
+        (
+            {
+                "sender": "invalid",
+                "recipient": str(fake.random_number(digits=9, fix_len=True)),
+                "attachments": [
+                    {
+                        "file": base64.b64encode(fake.binary(length=1024)).decode(),
+                        "filename": fake.file_name(extension="pdf"),
+                    }
+                ],
+                "message": "This message has an invalid sender",
+            },
+            False,
+        ),
+        (
+            {
+                "sender": str(fake.random_number(digits=20, fix_len=True)),
+                "recipient": "invalid",
+                "attachments": [
+                    {
+                        "file": base64.b64encode(fake.binary(length=1024)).decode(),
+                        "filename": fake.file_name(extension="pdf"),
+                    }
+                ],
+                "message": "This message has an invalid recipient",
+            },
+            False,
+        ),
+        (
+            {
+                "sender": str(fake.random_number(digits=20, fix_len=True)),
+                "recipient": str(fake.random_number(digits=9, fix_len=True)),
+                "attachments": [
+                    {
+                        "file": base64.b64encode(fake.binary(length=1024)).decode(),
+                        "filename": fake.file_name(extension="pdf"),
+                    }
+                ],
+                # "message": "This is missing the message field",
+            },
+            False,
+        ),
+        (
+            {
+                "sender": str(fake.random_number(digits=20, fix_len=True)),
+                "recipient": str(fake.random_number(digits=9, fix_len=True)),
+                "message": "This is missing attachments",
+            },
+            False,
+        ),
+        (
+            {
+                "sender": str(fake.random_number(digits=20, fix_len=True)),
+                "recipient": str(fake.random_number(digits=9, fix_len=True)),
+                "attachments": [
+                    {
+                        "file": base64.b64encode(fake.binary(length=1024)).decode(),
+                        "filename": fake.file_name(extension="pdf"),
+                    },
+                    {
+                        "file": base64.b64encode(fake.binary(length=1024)).decode(),
+                        "filename": fake.file_name(extension="pdf"),
+                    },
+                    {
+                        "file": base64.b64encode(fake.binary(length=1024)).decode(),
+                        "filename": fake.file_name(extension="pdf"),
+                    },
+                ],
+                "subject": "Custom subject",
+                "message": "This message has too many attachments",
+            },
+            False,
+        ),
+    ],
+)
+def test_post_messagebox_schema_validation(data, expected_result):
+    if expected_result:
+        assert validate(data, post_messagebox_request) == data
+    else:
+        with pytest.raises(ValidationError):
+            validate(data, post_messagebox_request)
+
 
 @pytest.mark.parametrize("reference", [None, "reference_from_client"])
 def test_post_messagebox_notification_returns_201(api_client_request, sample_template_with_placeholders, reference):
     data = {
-        "reference": ""
+        "sender": str(fake.random_number(digits=20, fix_len=True)),
+        "recipient": str(fake.random_number(digits=9, fix_len=True)),
+        "message": "This is a messagebox message",
+        "attachments": [
+            {"file": base64.b64encode(fake.binary(length=1024)).decode(), "filename": fake.file_name(extension="pdf")}
+        ],
     }
 
     if reference:
-        data.update({"reference": reference})
+        data["reference"] = reference
 
     assert validate(data, post_messagebox_request)
 
@@ -23,14 +153,14 @@ def test_post_messagebox_notification_returns_201(api_client_request, sample_tem
         sample_template_with_placeholders.service_id,
         "v2_notifications.post_notification_messagebox",
         notification_type=MESSAGEBOX_TYPE,
-        _data=data
+        _data=data,
     )
 
     assert validate(resp_json, post_messagebox_response) == resp_json
 
     notifications = Notification.query.all()
     assert len(notifications) == 1
-    assert notifications[0].status == NOTIFICATION_CREATED
+    assert notifications[0].status == NOTIFICATION_PENDING_VIRUS_CHECK
     notification_id = notifications[0].id
     assert resp_json["id"] == str(notification_id)
     assert resp_json["organisation_id"] is None
