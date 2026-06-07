@@ -1,21 +1,20 @@
-import uuid as uuid_type
 from datetime import UTC, datetime
 
-from flask import jsonify, request
+from flask import current_app, jsonify, request
 from gds_metrics import Histogram
 
-from app import (
-    api_user,
-    authenticated_service,
-)
+from app import api_user, authenticated_service, notify_celery, signing
+from app.config import QueueNames, TaskNames
 from app.constants import (
     KEY_TYPE_TEAM,
     KEY_TYPE_TEST,
     MESSAGEBOX_TYPE,
-    NOTIFICATION_CREATED,
     NOTIFICATION_DELIVERED,
+    NOTIFICATION_PENDING_VIRUS_CHECK,
 )
+from app.dao.dao_utils import transaction
 from app.dao.templates_messagebox_dao import get_messagebox_template
+from app.messagebox.utils import upload_messagebox_attachments
 from app.notifications.process_notifications import (
     persist_notification,
 )
@@ -36,6 +35,8 @@ POST_NOTIFICATION_JSON_PARSE_DURATION_SECONDS = Histogram(
 def post_notification_messagebox():
     check_rate_limiting(authenticated_service, api_user, notification_type=MESSAGEBOX_TYPE)
 
+    check_service_has_permission(authenticated_service, MESSAGEBOX_TYPE)
+
     with POST_NOTIFICATION_JSON_PARSE_DURATION_SECONDS.time():
         request_json = get_valid_json()
         form = validate(request_json, post_messagebox_request)
@@ -45,55 +46,61 @@ def post_notification_messagebox():
             service=authenticated_service,
         )
 
-    check_service_has_permission(authenticated_service, MESSAGEBOX_TYPE)
-
     return jsonify(notification), 201
 
 
 def process_messagebox_notification(*, messagebox_data, api_key, service):
+    test_key = api_key.key_type == KEY_TYPE_TEST
+
     if api_key.key_type == KEY_TYPE_TEAM:
         raise BadRequestError(message="Cannot send messagebox messages with a team api key", status_code=403)
 
-    if service.restricted and api_key.key_type != KEY_TYPE_TEST:
+    if service.restricted and not test_key:
         raise BadRequestError(message="Cannot send messagebox messages when service is in trial mode", status_code=403)
 
-    test_key = api_key.key_type == KEY_TYPE_TEST
-    status = NOTIFICATION_CREATED
+    status = NOTIFICATION_PENDING_VIRUS_CHECK
     updated_at = None
 
     if test_key:
         status = NOTIFICATION_DELIVERED
         updated_at = datetime.now(UTC)
 
-    notification_id = uuid_type.uuid4()
-
     template = get_messagebox_template(authenticated_service.id)
 
-    persist_notification(
-        notification_id=notification_id,
-        template_id=template.id,
-        template_version=template.version,
-        recipient="",
-        service=service,
-        status=status,
-        personalisation=None,
-        notification_type=MESSAGEBOX_TYPE,
-        api_key_id=api_user.id,
-        key_type=api_user.key_type,
-        client_reference=messagebox_data.get("reference", None),
-        updated_at=updated_at,
-    )
+    with transaction():
+        notification = persist_notification(
+            template_id=template.id,
+            template_version=template.version,
+            recipient=signing.encode(messagebox_data.get("recipient")),
+            service=service,
+            status=status,
+            personalisation=None,
+            notification_type=MESSAGEBOX_TYPE,
+            api_key_id=api_key.id,
+            key_type=api_key.key_type,
+            client_reference=messagebox_data.get("reference", None),
+            updated_at=updated_at,
+        )
 
-    resp = create_response_for_post_notification(
-        notification_id=notification_id, organisation_id=template.service.organisation_id
-    )
+        filenames: list[str] = upload_messagebox_attachments(notification, messagebox_data.get("attachments"))
+
+    resp = {
+        "id": notification.id,
+        "organisation_id": template.service.organisation_id,
+        "uri": f"{request.url_root}v2/notifications/{str(notification.id)}",
+    }
+
+    for filename in filenames:
+        if current_app.config["ANTIVIRUS_ENABLED"]:
+            current_app.logger.info("Calling task scan-file for %s", filename)
+            notify_celery.send_task(
+                name=TaskNames.SCAN_FILE,
+                kwargs={"filename": filename},
+                queue=QueueNames.ANTIVIRUS,
+            )
+        else:
+            # stub out antivirus in dev
+            # sanitise_letter.apply_async([filename], queue=QueueNames.LETTERS)
+            current_app.logger.info("Antivirus disabled, skipping scan for %s", filename)
 
     return resp
-
-
-def create_response_for_post_notification(notification_id, organisation_id):
-    return {
-        "id": notification_id,
-        "organisation_id": organisation_id,
-        "uri": f"{request.url_root}v2/notifications/{str(notification_id)}",
-    }
