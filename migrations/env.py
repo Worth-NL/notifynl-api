@@ -110,6 +110,9 @@ def run_migrations_online():
         with context.begin_transaction():
             context.run_migrations()
 
+        # Commit the transaction to persist changes
+        connection.commit()
+
         # if we're running on the main db (as opposed to the test db)
         if engine.url.database == "notification_api":
             with open(Path(__file__).parent / ".current-alembic-head", "w") as f:
@@ -117,6 +120,9 @@ def run_migrations_online():
                 # being merged at the same time and breaking the build.
                 head = context.get_head_revision()
                 f.write(head + "\n")
+    except Exception as e:
+        print("Migrations failed because: ", e)
+        connection.rollback()
     finally:
         connection.close()
 

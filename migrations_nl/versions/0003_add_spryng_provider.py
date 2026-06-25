@@ -9,6 +9,7 @@ Create Date: 2025-04-29 12:48:25.810290
 import uuid
 
 from alembic import op
+from sqlalchemy import text
 
 # revision identifiers, used by Alembic.
 revision = "0003"
@@ -21,22 +22,22 @@ provider_id = str(uuid.uuid4())
 
 
 def upgrade():
-    op.execute(
+    op.execute(text(
         f"""INSERT INTO provider_details
         (id, display_name, identifier, priority, notification_type, active, version, supports_international)
         VALUES ('{provider_id}', '{identifier.capitalize()}', '{identifier}', 30, 'sms', true, 1, true)
         """
-    )
+    ))
 
-    op.execute(
+    op.execute(text(
         f"""INSERT INTO provider_details_history
         (id, display_name, identifier, priority, notification_type, active, version, supports_international)
         VALUES ('{provider_id}', '{identifier.capitalize()}', '{identifier}', 30, 'sms', true, 1, true)
         """
-    )
+    ))
 
 
 def downgrade():
-    op.execute(f"DELETE FROM provider_details WHERE identifier = '{identifier}'")
+    op.execute(text(f"DELETE FROM provider_details WHERE identifier = '{identifier}'"))
 
-    op.execute(f"DELETE FROM provider_details_history WHERE identifier = '{identifier}'")
+    op.execute(text(f"DELETE FROM provider_details_history WHERE identifier = '{identifier}'"))

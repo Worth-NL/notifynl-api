@@ -733,6 +733,7 @@ greenlet==3.3.2 \
     # via
     #   -r requirements.txt
     #   eventlet
+    #   sqlalchemy
 grpcio==1.80.0 \
     --hash=sha256:00168469238b022500e486c1c33916acf2f2a9b2c022202cf8a1885d2e3073c1 \
     --hash=sha256:02e64bb0bb2da14d947a49e6f120a75e947250aebe65f9629b62bb1f5c14e6e9 \
