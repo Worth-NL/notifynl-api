@@ -12,10 +12,44 @@
             }
         },
         {
+            "label": "PIP compile API requirements_nl.in",
+            "type": "shell",
+            "command": "uv pip compile requirements_nl.in -o requirements_nl.txt",
+            "dependsOn": [],
+            "problemMatcher": [],
+            "presentation": {
+                "showReuseMessage": false,
+                "close": true
+            },
+            "options": {
+                "env": {
+                    "UV_LINK_MODE": "copy"
+                }
+            }
+        },
+        {
+            "label": "PIP compile API requirements ALL",
+            "detail": "- compiles requirements_nl.in, requirements_nl_test.in in order",
+            "type": "shell",
+            "command": "uv pip compile requirements_nl_test.in -o requirements_nl_test.txt",
+            "dependsOn": ["PIP compile API requirements_nl.in"],
+            "problemMatcher": [],
+            "presentation": {
+                "showReuseMessage": false,
+                "close": true
+            },
+            "options": {
+                "env": {
+                    "UV_LINK_MODE": "copy"
+                }
+            }
+        },
+        {
             "label": "Install API Python requirements",
             "type": "shell",
+            "detail": "- compiles the requirements_nl/nl_test, installs them and generates the new version API versio  " ,
             "command": "uv pip install -r requirements_nl_test.txt",
-            "dependsOn": ["Generate API version file"],
+            "dependsOn": ["PIP compile API requirements ALL","Generate API version file"],
             "problemMatcher": [],
             "presentation": {
                 "showReuseMessage": false,
