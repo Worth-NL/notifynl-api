@@ -152,9 +152,9 @@ def sms_providers(_notify_db):
     time, make sure we always choose mmg. You'll need to override them in your tests if you wish to do something
     different.
     """
-    get_provider_details_by_identifier("mmg").priority = 100
+    get_provider_details_by_identifier("mmg").priority = 0
     get_provider_details_by_identifier("firetext").priority = 0
-    # get_provider_details_by_identifier("spryng").priority = 0
+    get_provider_details_by_identifier("spryng").priority = 100
 
 
 @pytest.fixture(scope="function")

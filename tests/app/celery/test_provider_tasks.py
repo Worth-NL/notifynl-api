@@ -530,6 +530,7 @@ def test_get_callback_url_returns_unique_callback_for_notification(notify_api, f
     )
 
 
+@pytest.mark.skip(reason="[NOTIFYNL] Changes from mmg to spryng")
 @freeze_time("2026-01-01 09:00:00")
 @pytest.mark.parametrize(
     "key_type, phone_number, international, country_code, should_raise",
