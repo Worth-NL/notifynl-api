@@ -623,12 +623,10 @@ def get_total_notifications_for_date_range(start_date, end_date):
             ).label("letters"),
             func.sum(
                 case(
-                    [
-                        (
-                            FactNotificationStatus.notification_type == "messagebox",
-                            FactNotificationStatus.notification_count,
-                        )
-                    ],
+                    (
+                        FactNotificationStatus.notification_type == "messagebox",
+                        FactNotificationStatus.notification_count,
+                    ),
                     else_=0,
                 )
             ).label("messagebox"),
