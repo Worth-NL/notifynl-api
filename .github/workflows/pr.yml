@@ -21,7 +21,7 @@ jobs:
 
     strategy:
       matrix:
-        python-version: ["3.11"]
+        python-version: ["3.13"]
 
     services:
       db:
@@ -113,7 +113,7 @@ jobs:
 
     strategy:
       matrix:
-        python-version: ["3.11"]
+        python-version: ["3.13"]
         dockerfile-target: ["test", "concourse_tests"]
 
     steps:
