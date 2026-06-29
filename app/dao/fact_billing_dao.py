@@ -225,7 +225,7 @@ def fetch_usage_for_all_services_letter(start_date, end_date, session: Session |
 @retryable_query()
 def fetch_usage_for_all_services_letter_breakdown(start_date, end_date, session: Session | scoped_session = db.session):
     formatted_postage = case(
-        [(FactBilling.postage.in_(INTERNATIONAL_POSTAGE_TYPES), "international")], else_="netherlands"
+        (FactBilling.postage.in_(INTERNATIONAL_POSTAGE_TYPES), "international"), else_="netherlands"
     ).label("postage")
 
     postage_order = case(
