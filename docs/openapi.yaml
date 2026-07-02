@@ -2,7 +2,7 @@ openapi: 3.0.3
 
 info:
   title: NotifyNL API
-  version: "2"
+  version: "v2"
   description: |
     De NotifyNL API stelt overheidsorganisaties in staat om e-mail, sms, brief en
     berichtenbox-notificaties te versturen aan burgers en bedrijven.
