@@ -274,17 +274,24 @@ info:
 
     ---
 
-    ## Python
+    ## API-clients
 
-    ### Installatie
+    NotifyNL biedt officiële client libraries voor de meestgebruikte programmeertalen.
+    Deze libraries zijn gebaseerd op de GOV.UK Notify clients en werken standaard met
+    de GOV.UK Notify API.
+
+    > **Belangrijk:** Geef bij elke client de NotifyNL API-URL mee: `https://api.notifynl.nl`
+    > Zonder deze instelling stuurt de client berichten via de Britse GOV.UK Notify omgeving.
+
+    ### Python
+
+    **Installatie**
 
     ```bash
     pip install notifications-python-client
     ```
 
-    ### Client aanmaken
-
-    Geef altijd de NotifyNL API-URL mee als `base_url`, anders gaat het verkeer naar de Britse GOV.UK Notify omgeving.
+    **Client aanmaken**
 
     ```python
     from notifications_python_client.notifications import NotificationsAPIClient
@@ -295,7 +302,7 @@ info:
     )
     ```
 
-    ### SMS versturen
+    **SMS versturen**
 
     ```python
     response = client.send_sms_notification(
@@ -307,7 +314,7 @@ info:
     )
     ```
 
-    ### E-mail versturen
+    **E-mail versturen**
 
     ```python
     response = client.send_email_notification(
@@ -319,23 +326,21 @@ info:
     )
     ```
 
-    ### Notificatiestatus ophalen
+    **Notificatiestatus ophalen**
 
     ```python
     response = client.get_notification_by_id("notificatie-id")
     ```
 
-    ---
+    ### Node.js
 
-    ## Node.js
-
-    ### Installatie
+    **Installatie**
 
     ```bash
     npm install --save notifications-node-client
     ```
 
-    ### Client aanmaken
+    **Client aanmaken**
 
     Geef de NotifyNL API-URL als eerste argument, gevolgd door je API-sleutel.
 
@@ -345,7 +350,7 @@ info:
     const client = new NotifyClient("https://api.notifynl.nl", "jouw-api-sleutel");
     ```
 
-    ### SMS versturen
+    **SMS versturen**
 
     ```javascript
     const response = await client.sendSms(
@@ -359,7 +364,7 @@ info:
     );
     ```
 
-    ### E-mail versturen
+    **E-mail versturen**
 
     ```javascript
     const response = await client.sendEmail(
@@ -373,17 +378,15 @@ info:
     );
     ```
 
-    ### Notificatiestatus ophalen
+    **Notificatiestatus ophalen**
 
     ```javascript
     const response = await client.getNotificationById("notificatie-id");
     ```
 
-    ---
+    ### Java
 
-    ## Java
-
-    ### Installatie
+    **Installatie**
 
     Maven (`pom.xml`):
 
@@ -401,7 +404,7 @@ info:
     implementation 'uk.gov.service.notify:notifications-java-client:5.2.1-RELEASE'
     ```
 
-    ### Client aanmaken
+    **Client aanmaken**
 
     Geef de NotifyNL API-URL als tweede argument.
 
@@ -414,7 +417,7 @@ info:
     );
     ```
 
-    ### SMS versturen
+    **SMS versturen**
 
     ```java
     HashMap<String, Object> personalisation = new HashMap<>();
@@ -429,7 +432,7 @@ info:
     );
     ```
 
-    ### E-mail versturen
+    **E-mail versturen**
 
     ```java
     SendEmailResponse response = client.sendEmail(
@@ -441,23 +444,21 @@ info:
     );
     ```
 
-    ### Notificatiestatus ophalen
+    **Notificatiestatus ophalen**
 
     ```java
     Notification notification = client.getNotificationById("notificatie-id");
     ```
 
-    ---
+    ### .NET
 
-    ## .NET
-
-    ### Installatie
+    **Installatie**
 
     ```bash
     dotnet add package GovukNotify
     ```
 
-    ### Client aanmaken
+    **Client aanmaken**
 
     Geef de NotifyNL API-URL als **eerste** argument, gevolgd door je API-sleutel.
 
@@ -467,7 +468,7 @@ info:
     var client = new NotificationClient("https://api.notifynl.nl", "jouw-api-sleutel");
     ```
 
-    ### SMS versturen
+    **SMS versturen**
 
     ```csharp
     var personalisation = new Dictionary<string, dynamic> { { "naam", "Jan" } };
@@ -481,7 +482,7 @@ info:
     );
     ```
 
-    ### E-mail versturen
+    **E-mail versturen**
 
     ```csharp
     EmailNotificationResponse response = client.SendEmail(
@@ -493,23 +494,21 @@ info:
     );
     ```
 
-    ### Notificatiestatus ophalen
+    **Notificatiestatus ophalen**
 
     ```csharp
     Notification notification = client.GetNotificationById("notificatie-id");
     ```
 
-    ---
+    ### PHP
 
-    ## PHP
-
-    ### Installatie
+    **Installatie**
 
     ```bash
     composer require php-http/guzzle7-adapter alphagov/notifications-php-client
     ```
 
-    ### Client aanmaken
+    **Client aanmaken**
 
     Geef `baseUrl` mee in de configuratie-array.
 
@@ -524,7 +523,7 @@ info:
     ]);
     ```
 
-    ### SMS versturen
+    **SMS versturen**
 
     ```php
     $response = $client->sendSms(
@@ -536,7 +535,7 @@ info:
     );
     ```
 
-    ### E-mail versturen
+    **E-mail versturen**
 
     ```php
     $response = $client->sendEmail(
@@ -548,17 +547,15 @@ info:
     );
     ```
 
-    ### Notificatiestatus ophalen
+    **Notificatiestatus ophalen**
 
     ```php
     $notification = $client->getNotification('notificatie-id');
     ```
 
-    ---
+    ### Ruby
 
-    ## Ruby
-
-    ### Installatie
+    **Installatie**
 
     `Gemfile`:
 
@@ -570,7 +567,7 @@ info:
     bundle install
     ```
 
-    ### Client aanmaken
+    **Client aanmaken**
 
     Geef de NotifyNL API-URL als tweede argument.
 
@@ -580,7 +577,7 @@ info:
     client = Notifications::Client.new("jouw-api-sleutel", "https://api.notifynl.nl")
     ```
 
-    ### SMS versturen
+    **SMS versturen**
 
     ```ruby
     response = client.send_sms(
@@ -592,7 +589,7 @@ info:
     )
     ```
 
-    ### E-mail versturen
+    **E-mail versturen**
 
     ```ruby
     response = client.send_email(
@@ -604,7 +601,7 @@ info:
     )
     ```
 
-    ### Notificatiestatus ophalen
+    **Notificatiestatus ophalen**
 
     ```ruby
     notification = client.get_notification("notificatie-id")
