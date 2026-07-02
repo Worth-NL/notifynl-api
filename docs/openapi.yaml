@@ -290,6 +290,11 @@ tags:
     description: Raadpleeg de bezorgstatus van verzonden notificaties
   - name: Templates
     description: Raadpleeg geconfigureerde templates
+  - name: Verificatie
+    description: |
+      Verifieer e-mailadressen en telefoonnummers van burgers via een verificatiecode.
+
+      Deze endpoints zijn beschikbaar via `https://verify.notifynl.nl/api`.
 
 paths:
 
@@ -763,6 +768,126 @@ paths:
         "404":
           $ref: '#/components/responses/NotFound'
 
+  /verification-requests:
+    post:
+      tags: [Verificatie]
+      summary: Verificatieverzoek aanmaken
+      operationId: createVerificationRequest
+      description: |
+        Maakt een nieuw verificatieverzoek aan voor een e-mailadres of telefoonnummer.
+        NotifyNL verstuurt automatisch een verificatiecode naar de opgegeven ontvanger.
+
+        Geef óf `email` óf `phoneNumber` mee — niet beide.
+      servers:
+        - url: https://verify.notifynl.nl/api
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateVerificationRequest'
+            examples:
+              email:
+                summary: Verificatie via e-mail
+                value:
+                  email: "burger@voorbeeld.nl"
+                  reference: "zaaknummer-2024-00123"
+              sms:
+                summary: Verificatie via sms
+                value:
+                  phoneNumber: "+31612345678"
+                  reference: "zaaknummer-2024-00123"
+      responses:
+        "201":
+          description: Verificatieverzoek aangemaakt
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+        "400":
+          description: Ontbrekende of conflicterende invoer
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          $ref: '#/components/responses/ServerError'
+
+  /verification-requests/verify:
+    post:
+      tags: [Verificatie]
+      summary: Verificatiecode controleren
+      operationId: verifyCode
+      description: |
+        Controleert of de opgegeven verificatiecode geldig is.
+
+        Geef naast `code` ook één van de volgende mee om het verzoek te identificeren
+        (in volgorde van prioriteit):
+        1. `reference` — eigen referentie-ID
+        2. `email` — e-mailadres als fallback
+        3. `phoneNumber` — telefoonnummer als fallback
+      servers:
+        - url: https://verify.notifynl.nl/api
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/VerifyRequest'
+            examples:
+              metReference:
+                summary: Verificatie met referentie
+                value:
+                  code: "123456"
+                  reference: "zaaknummer-2024-00123"
+              metEmail:
+                summary: Verificatie met e-mailadres
+                value:
+                  code: "123456"
+                  email: "burger@voorbeeld.nl"
+      responses:
+        "200":
+          description: Verificatie geslaagd
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VerifiedResponse'
+              example:
+                verified: true
+                verifiedOn: "2026-01-05T14:32:41+01:00"
+        "400":
+          description: Ongeldige code of invoer
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  verified:
+                    type: boolean
+                    example: false
+                  reason:
+                    type: string
+                    example: "Code is onjuist of verlopen"
+        "404":
+          description: Verificatieverzoek niet gevonden
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  verified:
+                    type: boolean
+                    example: false
+                  reason:
+                    type: string
+                    example: "Geen verificatieverzoek gevonden voor deze referentie"
+        "500":
+          $ref: '#/components/responses/ServerError'
+
 components:
 
   securitySchemes:
@@ -1189,6 +1314,66 @@ components:
           type: object
           additionalProperties:
             type: object
+
+    CreateVerificationRequest:
+      type: object
+      description: Geef óf `email` óf `phoneNumber` mee — niet beide.
+      properties:
+        email:
+          type: string
+          format: email
+          description: E-mailadres om te verifiëren.
+        phoneNumber:
+          type: string
+          description: Telefoonnummer om te verifiëren (E.164-formaat, bijv. `+31612345678`).
+        reference:
+          type: string
+          description: Eigen referentie-ID (optioneel maar aanbevolen voor opzoeken bij verificatie).
+        apiKey:
+          type: string
+          description: NotifyNL API-sleutel (optioneel; standaard de `NOTIFYNL_API_KEY` omgevingsvariabele).
+        templateId:
+          type: string
+          description: NotifyNL template-ID (optioneel; overschrijft de standaard e-mail- of sms-template).
+      oneOf:
+        - required: [email]
+        - required: [phoneNumber]
+
+    VerifyRequest:
+      type: object
+      required: [code]
+      description: Geef `code` mee plus één van `reference`, `email` of `phoneNumber`.
+      properties:
+        code:
+          type: string
+          description: De ontvangen verificatiecode.
+        reference:
+          type: string
+          description: Referentie-ID (heeft prioriteit boven e-mail en telefoonnummer).
+        email:
+          type: string
+          format: email
+          description: E-mailadres (fallback als referentie niet gevonden wordt).
+        phoneNumber:
+          type: string
+          description: Telefoonnummer (fallback als referentie en e-mail niet gevonden worden).
+      oneOf:
+        - required: [code, reference]
+        - required: [code, email]
+        - required: [code, phoneNumber]
+
+    VerifiedResponse:
+      type: object
+      required: [verified, verifiedOn]
+      properties:
+        verified:
+          type: boolean
+          example: true
+        verifiedOn:
+          type: string
+          format: date-time
+          description: Tijdstip van succesvolle verificatie (NEN-ISO 8601).
+          example: "2026-01-05T14:32:41+01:00"
 
     PaginationLinks:
       type: object
