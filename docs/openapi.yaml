@@ -272,6 +272,344 @@ info:
     | `spreadsheet_row_number` | Rijnummer in het batch-bestand | `2` of null |
     | `upload_letter_file_name` | Naam van het geüploade briefbestand | `brief.pdf` of null |
 
+    ---
+
+    ## Python
+
+    ### Installatie
+
+    ```bash
+    pip install notifications-python-client
+    ```
+
+    ### Client aanmaken
+
+    Geef altijd de NotifyNL API-URL mee als `base_url`, anders gaat het verkeer naar de Britse GOV.UK Notify omgeving.
+
+    ```python
+    from notifications_python_client.notifications import NotificationsAPIClient
+
+    client = NotificationsAPIClient(
+        api_key="jouw-api-sleutel",
+        base_url="https://api.notifynl.nl"
+    )
+    ```
+
+    ### SMS versturen
+
+    ```python
+    response = client.send_sms_notification(
+        phone_number="+31612345678",
+        template_id="jouw-template-id",
+        personalisation={"naam": "Jan"},   # optioneel
+        reference="jouw-referentie",       # optioneel
+        sms_sender_id="jouw-sender-id"     # optioneel
+    )
+    ```
+
+    ### E-mail versturen
+
+    ```python
+    response = client.send_email_notification(
+        email_address="ontvanger@voorbeeld.nl",
+        template_id="jouw-template-id",
+        personalisation={"naam": "Jan"},   # optioneel
+        reference="jouw-referentie",       # optioneel
+        email_reply_to_id="reply-to-id"    # optioneel
+    )
+    ```
+
+    ### Notificatiestatus ophalen
+
+    ```python
+    response = client.get_notification_by_id("notificatie-id")
+    ```
+
+    ---
+
+    ## Node.js
+
+    ### Installatie
+
+    ```bash
+    npm install --save notifications-node-client
+    ```
+
+    ### Client aanmaken
+
+    Geef de NotifyNL API-URL als eerste argument, gevolgd door je API-sleutel.
+
+    ```javascript
+    const NotifyClient = require("notifications-node-client").NotifyClient;
+
+    const client = new NotifyClient("https://api.notifynl.nl", "jouw-api-sleutel");
+    ```
+
+    ### SMS versturen
+
+    ```javascript
+    const response = await client.sendSms(
+      "jouw-template-id",
+      "+31612345678",
+      {
+        personalisation: { naam: "Jan" },  // optioneel
+        reference: "jouw-referentie",      // optioneel
+        smsSenderId: "jouw-sender-id"      // optioneel
+      }
+    );
+    ```
+
+    ### E-mail versturen
+
+    ```javascript
+    const response = await client.sendEmail(
+      "jouw-template-id",
+      "ontvanger@voorbeeld.nl",
+      {
+        personalisation: { naam: "Jan" },  // optioneel
+        reference: "jouw-referentie",      // optioneel
+        emailReplyToId: "reply-to-id"      // optioneel
+      }
+    );
+    ```
+
+    ### Notificatiestatus ophalen
+
+    ```javascript
+    const response = await client.getNotificationById("notificatie-id");
+    ```
+
+    ---
+
+    ## Java
+
+    ### Installatie
+
+    Maven (`pom.xml`):
+
+    ```xml
+    <dependency>
+        <groupId>uk.gov.service.notify</groupId>
+        <artifactId>notifications-java-client</artifactId>
+        <version>5.2.1-RELEASE</version>
+    </dependency>
+    ```
+
+    Gradle:
+
+    ```gradle
+    implementation 'uk.gov.service.notify:notifications-java-client:5.2.1-RELEASE'
+    ```
+
+    ### Client aanmaken
+
+    Geef de NotifyNL API-URL als tweede argument.
+
+    ```java
+    import uk.gov.service.notify.NotificationClient;
+
+    NotificationClient client = new NotificationClient(
+        "jouw-api-sleutel",
+        "https://api.notifynl.nl"
+    );
+    ```
+
+    ### SMS versturen
+
+    ```java
+    HashMap<String, Object> personalisation = new HashMap<>();
+    personalisation.put("naam", "Jan");
+
+    SendSmsResponse response = client.sendSms(
+        "jouw-template-id",
+        "+31612345678",
+        personalisation,      // null als niet nodig
+        "jouw-referentie",    // null als niet nodig
+        "jouw-sender-id"      // null als niet nodig
+    );
+    ```
+
+    ### E-mail versturen
+
+    ```java
+    SendEmailResponse response = client.sendEmail(
+        "jouw-template-id",
+        "ontvanger@voorbeeld.nl",
+        personalisation,      // null als niet nodig
+        "jouw-referentie",    // null als niet nodig
+        "reply-to-id"         // null als niet nodig
+    );
+    ```
+
+    ### Notificatiestatus ophalen
+
+    ```java
+    Notification notification = client.getNotificationById("notificatie-id");
+    ```
+
+    ---
+
+    ## .NET
+
+    ### Installatie
+
+    ```bash
+    dotnet add package GovukNotify
+    ```
+
+    ### Client aanmaken
+
+    Geef de NotifyNL API-URL als **eerste** argument, gevolgd door je API-sleutel.
+
+    ```csharp
+    using Notify.Client;
+
+    var client = new NotificationClient("https://api.notifynl.nl", "jouw-api-sleutel");
+    ```
+
+    ### SMS versturen
+
+    ```csharp
+    var personalisation = new Dictionary<string, dynamic> { { "naam", "Jan" } };
+
+    SmsNotificationResponse response = client.SendSms(
+        mobileNumber: "+31612345678",
+        templateId: "jouw-template-id",
+        personalisation: personalisation,  // optioneel
+        reference: "jouw-referentie",      // optioneel
+        smsSenderId: "jouw-sender-id"      // optioneel
+    );
+    ```
+
+    ### E-mail versturen
+
+    ```csharp
+    EmailNotificationResponse response = client.SendEmail(
+        emailAddress: "ontvanger@voorbeeld.nl",
+        templateId: "jouw-template-id",
+        personalisation: personalisation,  // optioneel
+        reference: "jouw-referentie",      // optioneel
+        emailReplyToId: "reply-to-id"      // optioneel
+    );
+    ```
+
+    ### Notificatiestatus ophalen
+
+    ```csharp
+    Notification notification = client.GetNotificationById("notificatie-id");
+    ```
+
+    ---
+
+    ## PHP
+
+    ### Installatie
+
+    ```bash
+    composer require php-http/guzzle7-adapter alphagov/notifications-php-client
+    ```
+
+    ### Client aanmaken
+
+    Geef `baseUrl` mee in de configuratie-array.
+
+    ```php
+    use Alphagov\Notifications\Client;
+    use Http\Adapter\Guzzle7\Client as GuzzleClient;
+
+    $client = new Client([
+        'apiKey'     => 'jouw-api-sleutel',
+        'baseUrl'    => 'https://api.notifynl.nl',
+        'httpClient' => new GuzzleClient(),
+    ]);
+    ```
+
+    ### SMS versturen
+
+    ```php
+    $response = $client->sendSms(
+        '+31612345678',
+        'jouw-template-id',
+        ['naam' => 'Jan'],     // optioneel
+        'jouw-referentie',     // optioneel
+        'jouw-sender-id'       // optioneel
+    );
+    ```
+
+    ### E-mail versturen
+
+    ```php
+    $response = $client->sendEmail(
+        'ontvanger@voorbeeld.nl',
+        'jouw-template-id',
+        ['naam' => 'Jan'],     // optioneel
+        'jouw-referentie',     // optioneel
+        'reply-to-id'          // optioneel
+    );
+    ```
+
+    ### Notificatiestatus ophalen
+
+    ```php
+    $notification = $client->getNotification('notificatie-id');
+    ```
+
+    ---
+
+    ## Ruby
+
+    ### Installatie
+
+    `Gemfile`:
+
+    ```ruby
+    gem "notifications-ruby-client"
+    ```
+
+    ```bash
+    bundle install
+    ```
+
+    ### Client aanmaken
+
+    Geef de NotifyNL API-URL als tweede argument.
+
+    ```ruby
+    require "notifications/client"
+
+    client = Notifications::Client.new("jouw-api-sleutel", "https://api.notifynl.nl")
+    ```
+
+    ### SMS versturen
+
+    ```ruby
+    response = client.send_sms(
+      phone_number:    "+31612345678",
+      template_id:     "jouw-template-id",
+      personalisation: { naam: "Jan" },    # optioneel
+      reference:       "jouw-referentie",  # optioneel
+      sms_sender_id:   "jouw-sender-id"    # optioneel
+    )
+    ```
+
+    ### E-mail versturen
+
+    ```ruby
+    response = client.send_email(
+      email_address:   "ontvanger@voorbeeld.nl",
+      template_id:     "jouw-template-id",
+      personalisation: { naam: "Jan" },    # optioneel
+      reference:       "jouw-referentie",  # optioneel
+      email_reply_to_id: "reply-to-id"     # optioneel
+    )
+    ```
+
+    ### Notificatiestatus ophalen
+
+    ```ruby
+    notification = client.get_notification("notificatie-id")
+    ```
+
   contact:
     name: NotifyNL
     url: https://www.notifynl.nl
