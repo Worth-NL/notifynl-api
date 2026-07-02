@@ -503,7 +503,16 @@ def _deep_archive_notification_history_hour_starting(
 
             for row in history_rows:
                 latest_created_at = row.created_at
-                writer.write({k: (v.bytes if isinstance(v, UUID) else v) for k, v in row._mapping.items()})
+                writer.write(
+                    {
+                        k: (
+                            v.bytes
+                            if isinstance(v, UUID)
+                            else (v.replace(tzinfo=UTC) if isinstance(v, datetime) and v.tzinfo is None else v)
+                        )
+                        for k, v in row._mapping.items()
+                    }
+                )
                 if not writer.current_row % written_rows_log_every:
                     current_app.logger.info(
                         "%s rows of ORC file written",
