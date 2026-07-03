@@ -1,0 +1,1841 @@
+openapi: 3.0.3
+
+info:
+  title: NotifyNL API
+  version: "v2"
+  description: |
+    De NotifyNL API stelt overheidsorganisaties in staat om e-mail, sms, brief en
+    berichtenbox-notificaties te versturen aan burgers en bedrijven.
+
+    Je kunt deze API direct integreren als je geen gebruik kunt maken van de beschikbare
+    client libraries, of wanneer je besluit dat je niet alles via het OMC kunt doen.
+
+    > **Let op:** Niet alle functionaliteit die hieronder wordt beschreven (zoals het
+    > versturen van brieven) wordt in Nederland al ondersteund.
+
+    Ontwikkelaars kunnen ook gebruik maken van ons
+    [OpenAPI-bestand](./openapi.yaml) in combinatie met tools zoals
+    [Swagger](https://swagger.io/) en [Redoc](https://github.com/Redocly/redoc).
+
+    ---
+
+    ## Authenticatie
+
+    Alle endpoints vereisen een `Authorization`-header met een JWT Bearer-token,
+    opgebouwd vanuit je API-sleutel.
+
+    Een API-sleutel heeft het formaat:
+    ```
+    {sleutelnaam}-{iss-uuid}-{geheime-sleutel-uuid}
+    ```
+
+    Bijvoorbeeld, als je API-sleutel
+    `mijn_test_sleutel-26785a09-ab16-4eb0-8407-a37497a57506-3d844edf-8d35-48ac-975b-e847b4f122b0`
+    is:
+
+    - je API-sleutelnaam is `mijn_test_sleutel`
+    - je `iss` (je dienst-ID) is `26785a09-ab16-4eb0-8407-a37497a57506`
+    - je geheime sleutel is `3d844edf-8d35-48ac-975b-e847b4f122b0`
+
+    JWT-header:
+    ```json
+    { "typ": "JWT", "alg": "HS256" }
+    ```
+
+    JWT-payload:
+    ```json
+    { "iss": "26785a09-ab16-4eb0-8407-a37497a57506", "iat": 1568818578 }
+    ```
+
+    `iat` (issued at) is de huidige tijd in UTC in epoch-seconden. Het token verloopt
+    binnen 30 seconden na de huidige tijd.
+
+    Raadpleeg de [JSON Web Tokens website](https://jwt.io/) voor meer informatie over
+    het coderen van je autorisatieheader.
+
+    Voeg het token als volgt toe aan elk verzoek:
+    ```
+    Authorization: Bearer <jwt-token>
+    Content-Type: application/json
+    ```
+
+    ---
+
+    ## API-sleutels
+
+    Er zijn drie soorten API-sleutels:
+
+    | Type | Beschrijving |
+    |---|---|
+    | **Test** | Voor het testen van je integratie; berichten worden **niet** echt verstuurd |
+    | **Team en gastlijst** | Voor het versturen van echte berichten aan teamleden en je gastlijst tijdens de proefperiode |
+    | **Live** | Voor het versturen van berichten aan iedereen; alleen beschikbaar als je dienst live is |
+
+    **Gedrag van de testsleutel:**
+    - Genereert realistische API-responsen
+    - Berichten krijgen status `delivered` maar worden nooit echt verstuurd
+    - Berichten verschijnen niet in het dashboard
+    - Tellen niet mee voor dagelijkse limieten
+    - Geen intrekking vereist
+
+    **Speciale testnummers en -adressen (testsleutel):**
+
+    | Telefoonnummer / E-mailadres | Respons |
+    |---|---|
+    | `+31600000003` | `temporary-failure` |
+    | `+31600000002` | `permanent-failure` |
+    | `temp-fail@simulator.notify` | `temporary-failure` |
+    | `perm-fail@simulator.notify` | `permanent-failure` |
+    | Elk ander geldig nummer of adres | `delivered` |
+
+    **Gedrag van de team-en-gastlijst-sleutel:**
+    - Verstuurt echte berichten aan teamleden en maximaal 5 gasten
+    - Geeft een fout bij het versturen buiten de gastlijst
+    - Berichten verschijnen in het dashboard en tellen mee voor dagelijkse limieten
+    - Geen intrekking vereist
+
+    **Gedrag van de live-sleutel:**
+    - Verstuurt berichten aan iedereen
+    - Berichten verschijnen in het dashboard en tellen mee voor dagelijkse limieten
+    - Trek sleutels regelmatig in en vervang ze
+
+    Een API-sleutel aanmaken:
+
+    1. [Meld je aan bij NotifyNL](https://admin.notifynl.nl)
+    2. Ga naar de pagina **API-integratie**
+    3. Selecteer **API-sleutels**
+    4. Selecteer **Maak een API-sleutel aan**
+
+    ---
+
+    ## Foutmeldingen
+
+    Foutmeldingen bestaan uit:
+
+    - een `status_code`, bijv. `400`
+    - een `errors`-lijst met per fout een `error` (fouttype) en `message` (omschrijving)
+
+    Gebruik de `status_code` of het `error`-veld in je code — niet de inhoud van
+    `message`, want die kan veranderen.
+
+    ```json
+    {
+      "status_code": 400,
+      "errors": [
+        {
+          "error": "ValidationError",
+          "message": "phone_number is not valid"
+        }
+      ]
+    }
+    ```
+
+    ---
+
+    ## Statussen
+
+    ### E-mailstatussen
+
+    | Status | Beschrijving |
+    |---|---|
+    | `created` | Bericht staat in de wachtrij |
+    | `sending` | Bericht is verstuurd naar de provider |
+    | `delivered` | Bericht is succesvol afgeleverd |
+    | `permanent-failure` | Aflevering mislukt — e-mailadres ongeldig |
+    | `temporary-failure` | Aflevering tijdelijk mislukt — inbox vol of spamfilter |
+    | `technical-failure` | Technische fout tussen Notify en de provider |
+
+    ### Sms-statussen
+
+    | Status | Beschrijving |
+    |---|---|
+    | `created` | Bericht staat in de wachtrij |
+    | `sending` | Bericht is verstuurd naar de provider |
+    | `pending` | Wacht op meer afleverinformatie |
+    | `sent` | Verstuurd naar een internationaal nummer |
+    | `delivered` | Succesvol afgeleverd |
+    | `permanent-failure` | Aflevering mislukt — telefoonnummer ongeldig of geblokkeerd |
+    | `temporary-failure` | Aflevering tijdelijk mislukt — telefoon uit, geen bereik, inbox vol |
+    | `technical-failure` | Technische fout — je wordt niet in rekening gebracht |
+
+    ### Briefstatussen
+
+    | Status | Beschrijving |
+    |---|---|
+    | `accepted` | Brief is verstuurd naar de drukker |
+    | `received` | Brief is gedrukt en verstuurd |
+    | `cancelled` | Verzending geannuleerd |
+    | `technical-failure` | Onverwachte fout bij de drukker |
+    | `permanent-failure` | De drukker kan de brief niet afdrukken |
+
+    ---
+
+    ## Limieten
+
+    ### Snelheidslimieten
+
+    Je bent beperkt tot 3.000 berichten per minuut per API-sleuteltype. Bij
+    overschrijding ontvang je een `429`-fout (`RateLimitError`).
+
+    ### Dagelijkse limieten
+
+    | Dienststatus | Type API-sleutel | Dagelijkse limiet |
+    |---|---|---|
+    | Live | Team of live | 250.000 e-mails / 250.000 sms-berichten / 20.000 brieven |
+    | Proef | Team | 50 e-mails of sms-berichten |
+    | Live of proef | Test | Onbeperkt |
+
+    Limieten worden gereset om middernacht UTC.
+
+    ### Telefoonnetwerklimieten
+
+    Als je herhaaldelijk sms-berichten stuurt naar hetzelfde nummer, kunnen
+    telefoonnetwerken deze blokkeren. Uurlimiet:
+
+    - 20 berichten met dezelfde inhoud
+    - 100 berichten met willekeurige inhoud
+
+    ---
+
+    ## Testen
+
+    Alle tests vinden plaats in de productieomgeving. Er is geen aparte testomgeving.
+
+    ### Faalscenario's testen met een testsleutel
+
+    | E-mailadres | Respons |
+    |---|---|
+    | `temp-fail@simulator.notify` | `temporary-failure` |
+    | `perm-fail@simulator.notify` | `permanent-failure` |
+    | Elk ander geldig adres of nummer | `delivered` |
+
+    ---
+
+    ## Callbacks
+
+    Callbacks zijn `POST`-aanvragen die NotifyNL naar jouw dienst stuurt wanneer:
+
+    - een e-mail of sms-bericht is afgeleverd of mislukt
+    - je dienst een sms-bericht ontvangt
+
+    ### Callbacks instellen
+
+    1. [Meld je aan bij NotifyNL](https://admin.notifynl.nl)
+    2. Ga naar de pagina **API-integratie**
+    3. Selecteer **Callbacks**
+
+    Je moet opgeven:
+    - Een URL waarnaar Notify de callback stuurt
+    - Een bearer-token dat Notify in de autorisatieheader plaatst
+
+    ### Callbacks opnieuw proberen
+
+    Als een `POST`-aanvraag naar jouw dienst mislukt, probeert Notify het elke
+    5 minuten opnieuw, maximaal 5 keer.
+
+    Callbacks worden verstuurd voor:
+
+    - Afleverstatus van e-mail of sms (bezorgd of mislukt)
+    - Teruggestuurde brieven
+
+    ### Afleverbewijzen (e-mail en sms)
+
+    De callback-payload voor afleverstatus bevat de volgende velden:
+
+    | Sleutel | Beschrijving | Formaat |
+    |---|---|---|
+    | `id` | Notify's ID voor de statusmelding | UUID |
+    | `reference` | De door de dienst opgegeven referentie | `12345678` of null |
+    | `to` | Het e-mailadres of telefoonnummer van de ontvanger | `hello@voorbeeld.nl` of `+31612345678` |
+    | `status` | De status van de notificatie | `delivered`, `permanent-failure`, `temporary-failure` of `technical-failure` |
+    | `created_at` | Tijdstip waarop de dienst de aanvraag verstuurde | `2017-05-14T12:15:30.000000Z` |
+    | `completed_at` | Laatste tijdstip waarop de status is bijgewerkt | `2017-05-14T12:15:30.000000Z` of null |
+    | `sent_at` | Tijdstip waarop de notificatie is verstuurd | `2017-05-14T12:15:30.000000Z` of null |
+    | `notification_type` | Het type notificatie | `email` of `sms` |
+    | `template_id` | Het ID van het gebruikte template | UUID |
+    | `template_version` | Het versienummer van het gebruikte template | `1` |
+
+    ### Teruggestuurde brief callback
+
+    Wanneer een brief wordt teruggestuurd door de bezorgdienst:
+
+    | Sleutel | Beschrijving | Formaat |
+    |---|---|---|
+    | `notification_id` | ID van de briefnotificatie | UUID |
+    | `reference` | De door de dienst opgegeven referentie | `12345678` of null |
+    | `date_sent` | Tijdstip waarop de brief is verstuurd | `2017-05-14T12:15:30.000000Z` |
+    | `sent_by` | E-mailadres van de afzender | `hello@voorbeeld.nl` of null |
+    | `template_name` | Naam van het gebruikte template | `Brief sjabloon` |
+    | `template_id` | ID van het gebruikte template | UUID |
+    | `template_version` | Versienummer van het template | `1` |
+    | `spreadsheet_file_name` | Naam van het batch-uploadbestand | `contactlijst.csv` of null |
+    | `spreadsheet_row_number` | Rijnummer in het batch-bestand | `2` of null |
+    | `upload_letter_file_name` | Naam van het geüploade briefbestand | `brief.pdf` of null |
+
+  contact:
+    name: NotifyNL
+    url: https://www.notifynl.nl
+
+servers:
+  - url: https://api.notifynl.nl
+    description: Productie
+
+security:
+  - bearerAuth: []
+
+x-tagGroups:
+  - name: API-clients
+    tags:
+      - Python
+      - Node.js
+      - Java
+      - .NET
+      - PHP
+      - Ruby
+  - name: API Referentie
+    tags:
+      - Berichten versturen
+      - Status
+      - Templates
+      - Verificatie
+
+tags:
+  - name: Python
+    description: |
+      > **Belangrijk:** Geef altijd de NotifyNL API-URL mee. Zonder deze instelling
+      > stuurt de client berichten via de Britse GOV.UK Notify omgeving.
+
+      ### Installatie
+
+      ```bash
+      pip install notifications-python-client
+      ```
+
+      ### Client aanmaken
+
+      ```python
+      from notifications_python_client.notifications import NotificationsAPIClient
+
+      client = NotificationsAPIClient(
+          api_key="jouw-api-sleutel",
+          base_url="https://api.notifynl.nl"
+      )
+      ```
+
+      ### SMS versturen
+
+      ```python
+      response = client.send_sms_notification(
+          phone_number="+31612345678",
+          template_id="jouw-template-id",
+          personalisation={"naam": "Jan"},   # optioneel
+          reference="jouw-referentie",       # optioneel
+          sms_sender_id="jouw-sender-id"     # optioneel
+      )
+      ```
+
+      ### E-mail versturen
+
+      ```python
+      response = client.send_email_notification(
+          email_address="ontvanger@voorbeeld.nl",
+          template_id="jouw-template-id",
+          personalisation={"naam": "Jan"},   # optioneel
+          reference="jouw-referentie",       # optioneel
+          email_reply_to_id="reply-to-id"    # optioneel
+      )
+      ```
+
+      ### Notificatiestatus ophalen
+
+      ```python
+      response = client.get_notification_by_id("notificatie-id")
+      ```
+
+  - name: Node.js
+    description: |
+      > **Belangrijk:** Geef altijd de NotifyNL API-URL mee als eerste argument.
+      > Zonder deze instelling stuurt de client berichten via de Britse GOV.UK Notify omgeving.
+
+      ### Installatie
+
+      ```bash
+      npm install --save notifications-node-client
+      ```
+
+      ### Client aanmaken
+
+      ```javascript
+      const NotifyClient = require("notifications-node-client").NotifyClient;
+
+      const client = new NotifyClient("https://api.notifynl.nl", "jouw-api-sleutel");
+      ```
+
+      ### SMS versturen
+
+      ```javascript
+      const response = await client.sendSms(
+        "jouw-template-id",
+        "+31612345678",
+        {
+          personalisation: { naam: "Jan" },  // optioneel
+          reference: "jouw-referentie",      // optioneel
+          smsSenderId: "jouw-sender-id"      // optioneel
+        }
+      );
+      ```
+
+      ### E-mail versturen
+
+      ```javascript
+      const response = await client.sendEmail(
+        "jouw-template-id",
+        "ontvanger@voorbeeld.nl",
+        {
+          personalisation: { naam: "Jan" },  // optioneel
+          reference: "jouw-referentie",      // optioneel
+          emailReplyToId: "reply-to-id"      // optioneel
+        }
+      );
+      ```
+
+      ### Notificatiestatus ophalen
+
+      ```javascript
+      const response = await client.getNotificationById("notificatie-id");
+      ```
+
+  - name: Java
+    description: |
+      > **Belangrijk:** Geef altijd de NotifyNL API-URL mee als tweede argument.
+      > Zonder deze instelling stuurt de client berichten via de Britse GOV.UK Notify omgeving.
+
+      ### Installatie
+
+      Maven (`pom.xml`):
+
+      ```xml
+      <dependency>
+          <groupId>uk.gov.service.notify</groupId>
+          <artifactId>notifications-java-client</artifactId>
+          <version>5.2.1-RELEASE</version>
+      </dependency>
+      ```
+
+      Gradle:
+
+      ```gradle
+      implementation 'uk.gov.service.notify:notifications-java-client:5.2.1-RELEASE'
+      ```
+
+      ### Client aanmaken
+
+      ```java
+      import uk.gov.service.notify.NotificationClient;
+
+      NotificationClient client = new NotificationClient(
+          "jouw-api-sleutel",
+          "https://api.notifynl.nl"
+      );
+      ```
+
+      ### SMS versturen
+
+      ```java
+      HashMap<String, Object> personalisation = new HashMap<>();
+      personalisation.put("naam", "Jan");
+
+      SendSmsResponse response = client.sendSms(
+          "jouw-template-id",
+          "+31612345678",
+          personalisation,      // null als niet nodig
+          "jouw-referentie",    // null als niet nodig
+          "jouw-sender-id"      // null als niet nodig
+      );
+      ```
+
+      ### E-mail versturen
+
+      ```java
+      SendEmailResponse response = client.sendEmail(
+          "jouw-template-id",
+          "ontvanger@voorbeeld.nl",
+          personalisation,      // null als niet nodig
+          "jouw-referentie",    // null als niet nodig
+          "reply-to-id"         // null als niet nodig
+      );
+      ```
+
+      ### Notificatiestatus ophalen
+
+      ```java
+      Notification notification = client.getNotificationById("notificatie-id");
+      ```
+
+  - name: .NET
+    description: |
+      > **Belangrijk:** Geef de NotifyNL API-URL mee als **eerste** argument (vóór de API-sleutel).
+      > Zonder deze instelling stuurt de client berichten via de Britse GOV.UK Notify omgeving.
+
+      ### Installatie
+
+      ```bash
+      dotnet add package GovukNotify
+      ```
+
+      ### Client aanmaken
+
+      ```csharp
+      using Notify.Client;
+
+      var client = new NotificationClient("https://api.notifynl.nl", "jouw-api-sleutel");
+      ```
+
+      ### SMS versturen
+
+      ```csharp
+      var personalisation = new Dictionary<string, dynamic> { { "naam", "Jan" } };
+
+      SmsNotificationResponse response = client.SendSms(
+          mobileNumber: "+31612345678",
+          templateId: "jouw-template-id",
+          personalisation: personalisation,  // optioneel
+          reference: "jouw-referentie",      // optioneel
+          smsSenderId: "jouw-sender-id"      // optioneel
+      );
+      ```
+
+      ### E-mail versturen
+
+      ```csharp
+      EmailNotificationResponse response = client.SendEmail(
+          emailAddress: "ontvanger@voorbeeld.nl",
+          templateId: "jouw-template-id",
+          personalisation: personalisation,  // optioneel
+          reference: "jouw-referentie",      // optioneel
+          emailReplyToId: "reply-to-id"      // optioneel
+      );
+      ```
+
+      ### Notificatiestatus ophalen
+
+      ```csharp
+      Notification notification = client.GetNotificationById("notificatie-id");
+      ```
+
+  - name: PHP
+    description: |
+      > **Belangrijk:** Geef `baseUrl` mee in de configuratie-array.
+      > Zonder deze instelling stuurt de client berichten via de Britse GOV.UK Notify omgeving.
+
+      ### Installatie
+
+      ```bash
+      composer require php-http/guzzle7-adapter alphagov/notifications-php-client
+      ```
+
+      ### Client aanmaken
+
+      ```php
+      use Alphagov\Notifications\Client;
+      use Http\Adapter\Guzzle7\Client as GuzzleClient;
+
+      $client = new Client([
+          'apiKey'     => 'jouw-api-sleutel',
+          'baseUrl'    => 'https://api.notifynl.nl',
+          'httpClient' => new GuzzleClient(),
+      ]);
+      ```
+
+      ### SMS versturen
+
+      ```php
+      $response = $client->sendSms(
+          '+31612345678',
+          'jouw-template-id',
+          ['naam' => 'Jan'],     // optioneel
+          'jouw-referentie',     // optioneel
+          'jouw-sender-id'       // optioneel
+      );
+      ```
+
+      ### E-mail versturen
+
+      ```php
+      $response = $client->sendEmail(
+          'ontvanger@voorbeeld.nl',
+          'jouw-template-id',
+          ['naam' => 'Jan'],     // optioneel
+          'jouw-referentie',     // optioneel
+          'reply-to-id'          // optioneel
+      );
+      ```
+
+      ### Notificatiestatus ophalen
+
+      ```php
+      $notification = $client->getNotification('notificatie-id');
+      ```
+
+  - name: Ruby
+    description: |
+      > **Belangrijk:** Geef de NotifyNL API-URL mee als tweede argument.
+      > Zonder deze instelling stuurt de client berichten via de Britse GOV.UK Notify omgeving.
+
+      ### Installatie
+
+      `Gemfile`:
+
+      ```ruby
+      gem "notifications-ruby-client"
+      ```
+
+      ```bash
+      bundle install
+      ```
+
+      ### Client aanmaken
+
+      ```ruby
+      require "notifications/client"
+
+      client = Notifications::Client.new("jouw-api-sleutel", "https://api.notifynl.nl")
+      ```
+
+      ### SMS versturen
+
+      ```ruby
+      response = client.send_sms(
+        phone_number:    "+31612345678",
+        template_id:     "jouw-template-id",
+        personalisation: { naam: "Jan" },    # optioneel
+        reference:       "jouw-referentie",  # optioneel
+        sms_sender_id:   "jouw-sender-id"    # optioneel
+      )
+      ```
+
+      ### E-mail versturen
+
+      ```ruby
+      response = client.send_email(
+        email_address:   "ontvanger@voorbeeld.nl",
+        template_id:     "jouw-template-id",
+        personalisation: { naam: "Jan" },    # optioneel
+        reference:       "jouw-referentie",  # optioneel
+        email_reply_to_id: "reply-to-id"     # optioneel
+      )
+      ```
+
+      ### Notificatiestatus ophalen
+
+      ```ruby
+      notification = client.get_notification("notificatie-id")
+      ```
+
+  - name: Berichten versturen
+    description: Verstuur e-mail, sms, brief of berichtenbox-berichten
+  - name: Status
+    description: Raadpleeg de bezorgstatus van verzonden notificaties
+  - name: Templates
+    description: Raadpleeg geconfigureerde templates
+  - name: Verificatie
+    description: |
+      Verifieer e-mailadressen en telefoonnummers van burgers via een verificatiecode.
+
+      Deze endpoints zijn beschikbaar via `https://verify.notifynl.nl/api`.
+
+paths:
+
+  /v2/notifications/sms:
+    post:
+      tags: [Berichten versturen]
+      summary: Sms versturen
+      operationId: postSms
+      description: |
+        Verstuurt een sms-notificatie naar het opgegeven telefoonnummer.
+
+        **Foutcodes**
+
+        | status_code | Foutmelding | Oplossing |
+        |---|---|---|
+        | `400` | `phone_number Too many digits` | Geef een geldig telefoonnummer op |
+        | `400` | `phone_number Not enough digits` | Geef een geldig telefoonnummer op |
+        | `400` | `phone_number Must not contain letters or symbols` | Gebruik alleen cijfers |
+        | `400` | `phone_number Not a valid country prefix` | Controleer de landcode |
+        | `400` | `sms_sender_id does not exist` | Controleer de afzender-ID via Instellingen |
+        | `400` | `Can't send to this recipient using a team-only API key` | Gebruik het juiste type API-sleutel |
+        | `400` | `Can't send to this recipient when service is in trial mode` | Je dienst kan niet versturen in proefmodus |
+        | `400` | `Cannot send to international mobile numbers` | Schakel internationale sms in via Instellingen |
+        | `403` | `Error: Your system clock must be accurate to within 30 seconds` | Controleer je systeemklok |
+        | `403` | `Invalid token: API key not found` | Gebruik de juiste API-sleutel |
+        | `429` | `Exceeded rate limit for key type TEAM/TEST/LIVE of 3000 requests per 60 seconds` | Zie snelheidslimieten |
+        | `429` | `Exceeded send limits (LIMIT NUMBER) for today` | Zie dagelijkse limieten |
+        | `500` | `Internal server error` | Notify kon de aanvraag niet verwerken, probeer opnieuw |
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PostSmsRequest'
+            example:
+              phone_number: "+31612345678"
+              template_id: "f33517ff-2a88-4f6e-b855-c550268ce08a"
+              personalisation:
+                naam: "Jan de Vries"
+                zaaknummer: "2024-00123"
+      responses:
+        "201":
+          description: Sms-notificatie aangemaakt
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PostSmsResponse'
+        "400":
+          $ref: '#/components/responses/BadRequest'
+        "403":
+          $ref: '#/components/responses/Forbidden'
+        "429":
+          $ref: '#/components/responses/RateLimited'
+        "500":
+          $ref: '#/components/responses/ServerError'
+
+  /v2/notifications/email:
+    post:
+      tags: [Berichten versturen]
+      summary: E-mail versturen
+      operationId: postEmail
+      description: |
+        Verstuurt een e-mailnotificatie naar het opgegeven e-mailadres.
+
+        ### Bestand versturen via e-mail
+
+        Je kunt bestanden meesturen door ze als base64-gecodeerde string op te nemen
+        in een `personalisation`-veld. Ondersteunde bestandstypen: CSV, JPEG, JPG,
+        PNG, XLSX, DOC, DOCX, PDF, JSON, ODT, RTF, TXT. Maximale bestandsgrootte: 2MB.
+
+        ```json
+        {
+          "personalisation": {
+            "link_to_file": {
+              "file": "<base64-gecodeerde-bestandsinhoud>",
+              "filename": "document.pdf",
+              "confirm_email_before_download": true,
+              "retention_period": "4 weeks"
+            }
+          }
+        }
+        ```
+
+        | Parameter | Verplicht | Beschrijving |
+        |---|---|---|
+        | `file` | Ja | Base64-gecodeerde bestandsinhoud |
+        | `filename` | Nee | Max. 100 tekens, inclusief extensie |
+        | `confirm_email_before_download` | Nee | Standaard `true` — ontvanger bevestigt eerst e-mailadres |
+        | `retention_period` | Nee | Standaard 26 weken; bereik: 1–78 weken |
+
+        Downloadlinks zijn uniek en niet te raden. Notify heeft geen toegang tot of
+        kan de bestanden niet ontsleutelen.
+
+
+        **Foutcodes**
+
+        | status_code | Foutmelding | Oplossing |
+        |---|---|---|
+        | `400` | `email_address Not a valid email address` | Controleer het e-mailadres |
+        | `400` | `one_click_unsubscribe_url is not a valid https url` | Gebruik een HTTPS-URL |
+        | `400` | `email_reply_to_id does not exist` | Controleer de ID via Instellingen |
+        | `400` | `Emails cannot be longer than 2000000 bytes` | Verkort het bericht |
+        | `400` | `Can't send to this recipient using a team-only API key` | Gebruik het juiste type API-sleutel |
+        | `400` | `Can't send to this recipient when service is in trial mode` | Je dienst kan niet versturen in proefmodus |
+        | `403` | `Error: Your system clock must be accurate to within 30 seconds` | Controleer je systeemklok |
+        | `403` | `Invalid token: API key not found` | Gebruik de juiste API-sleutel |
+        | `429` | `Exceeded rate limit for key type TEAM/TEST/LIVE of 3000 requests per 60 seconds` | Zie snelheidslimieten |
+        | `429` | `Exceeded send limits (LIMIT NUMBER) for today` | Zie dagelijkse limieten |
+        | `500` | `Internal server error` | Notify kon de aanvraag niet verwerken, probeer opnieuw |
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PostEmailRequest'
+            example:
+              email_address: "burger@voorbeeld.nl"
+              template_id: "f33517ff-2a88-4f6e-b855-c550268ce08a"
+              personalisation:
+                naam: "Jan de Vries"
+                zaaknummer: "2024-00123"
+      responses:
+        "201":
+          description: E-mailnotificatie aangemaakt
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PostEmailResponse'
+        "400":
+          $ref: '#/components/responses/BadRequest'
+        "403":
+          $ref: '#/components/responses/Forbidden'
+        "429":
+          $ref: '#/components/responses/RateLimited'
+        "500":
+          $ref: '#/components/responses/ServerError'
+
+  /v2/notifications/letter:
+    post:
+      tags: [Berichten versturen]
+      summary: Brief versturen
+      description: >
+        **Let op:** Het versturen van brieven wordt in Nederland nog niet ondersteund.
+        Dit endpoint is beschikbaar voor toekomstig gebruik.
+      operationId: postLetter
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              oneOf:
+                - $ref: '#/components/schemas/PostLetterRequest'
+                - $ref: '#/components/schemas/PostPrecompiledLetterRequest'
+      responses:
+        "201":
+          description: Briefnotificatie aangemaakt
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PostLetterResponse'
+        "400":
+          $ref: '#/components/responses/BadRequest'
+        "403":
+          $ref: '#/components/responses/Forbidden'
+        "429":
+          $ref: '#/components/responses/RateLimited'
+        "500":
+          $ref: '#/components/responses/ServerError'
+
+  /v2/notifications/berichtenbox:
+    post:
+      tags: [Berichten versturen]
+      summary: Berichtenbox-bericht versturen
+      description: |
+        Verstuurt een bericht naar de berichtenbox van de burger via MijnOverheid.
+
+        Het bericht wordt opgebouwd aan de hand van het berichtenbox-template dat is
+        geconfigureerd voor jouw dienst. Er is geen `template_id` of `personalisation`
+        nodig in het verzoek — die zijn vastgelegd in de dienstconfiguratie.
+
+        **Beperkingen:**
+        - Niet beschikbaar met een team-API-sleutel.
+        - Niet beschikbaar wanneer de dienst in proefmodus staat (tenzij testsleutel).
+      operationId: postBerichtenbox
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PostBerichtenboxRequest'
+            example:
+              reference: "zaaknummer-2024-00123"
+      responses:
+        "201":
+          description: Berichtenbox-notificatie aangemaakt
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PostBerichtenboxResponse'
+              example:
+                id: "740e5834-3a29-46b4-9a6f-16142fde533a"
+                organisation_id: "c9f0b6d1-4f3e-4b2a-9d1e-123456789abc"
+                uri: "https://api.notifynl.nl/v2/notifications/740e5834-3a29-46b4-9a6f-16142fde533a"
+        "400":
+          $ref: '#/components/responses/BadRequest'
+        "403":
+          $ref: '#/components/responses/Forbidden'
+        "429":
+          $ref: '#/components/responses/RateLimited'
+        "500":
+          $ref: '#/components/responses/ServerError'
+
+  /v2/notifications/{notification_id}:
+    get:
+      tags: [Status]
+      summary: Status van één notificatie opvragen
+      operationId: getNotification
+      description: |
+        Je kunt alleen de status opvragen van berichten die binnen de bewaarperiode
+        vallen. De standaard bewaarperiode is 7 dagen.
+
+        **Foutcodes**
+
+        | status_code | Foutmelding | Oplossing |
+        |---|---|---|
+        | `400` | `id is not a valid UUID` | Controleer het notificatie-ID |
+        | `403` | `Error: Your system clock must be accurate to within 30 seconds` | Controleer je systeemklok |
+        | `403` | `Invalid token: API key not found` | Gebruik de juiste API-sleutel |
+        | `404` | `No result found` | Controleer het notificatie-ID |
+      parameters:
+        - name: notification_id
+          in: path
+          required: true
+          description: Het UUID van de notificatie, teruggegeven bij het versturen.
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: Notificatiestatus
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GetNotificationResponse'
+        "400":
+          $ref: '#/components/responses/BadRequest'
+        "403":
+          $ref: '#/components/responses/Forbidden'
+        "404":
+          $ref: '#/components/responses/NotFound'
+
+  /v2/notifications/{notification_id}/pdf:
+    get:
+      tags: [Status]
+      summary: PDF van een briefnotificatie opvragen
+      operationId: getNotificationPdf
+      parameters:
+        - name: notification_id
+          in: path
+          required: true
+          description: Het UUID van een briefnotificatie.
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: PDF-bestand
+          content:
+            application/pdf:
+              schema:
+                type: string
+                format: binary
+        "400":
+          $ref: '#/components/responses/BadRequest'
+        "403":
+          $ref: '#/components/responses/Forbidden'
+        "404":
+          $ref: '#/components/responses/NotFound'
+
+  /v2/notifications:
+    get:
+      tags: [Status]
+      summary: Status van meerdere notificaties opvragen
+      description: |
+        Geeft één pagina terug met maximaal 250 notificaties, gesorteerd op aanmaaktijd
+        (nieuwste eerst). Je kunt alleen berichten opvragen die binnen de bewaarperiode
+        van 7 dagen vallen.
+      operationId: getNotifications
+      parameters:
+        - name: template_type
+          in: query
+          description: Filter op type bericht.
+          schema:
+            type: string
+            enum: [email, sms, letter]
+        - name: status
+          in: query
+          description: >
+            Filter op berichtstatus. Herhaalbaar voor meerdere statussen
+            (bijv. `?status=delivered&status=sending`).
+          schema:
+            type: string
+            enum:
+              - cancelled
+              - created
+              - sending
+              - sent
+              - delivered
+              - pending
+              - failed
+              - technical-failure
+              - temporary-failure
+              - permanent-failure
+              - pending-virus-check
+              - validation-failed
+              - virus-scan-failed
+              - returned-letter
+              - accepted
+              - received
+        - name: older_than
+          in: query
+          description: Geeft notificaties terug die ouder zijn dan het opgegeven notificatie-UUID (paginering).
+          schema:
+            type: string
+            format: uuid
+        - name: reference
+          in: query
+          description: Filter op de referentie die bij het versturen is meegegeven.
+          schema:
+            type: string
+        - name: include_jobs
+          in: query
+          description: Inclusief notificaties verstuurd als onderdeel van een batch-upload.
+          schema:
+            type: string
+            enum: ["true"]
+      responses:
+        "200":
+          description: Lijst van notificaties
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GetNotificationsResponse'
+        "400":
+          $ref: '#/components/responses/BadRequest'
+        "403":
+          $ref: '#/components/responses/Forbidden'
+
+  /v2/template/{template_id}:
+    get:
+      tags: [Templates]
+      summary: Template op ID opvragen
+      description: Geeft de meest recente versie van het template terug.
+      operationId: getTemplate
+      parameters:
+        - name: template_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: Template
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TemplateResponse'
+        "403":
+          $ref: '#/components/responses/Forbidden'
+        "404":
+          $ref: '#/components/responses/NotFound'
+
+  /v2/template/{template_id}/version/{version}:
+    get:
+      tags: [Templates]
+      summary: Specifieke versie van een template opvragen
+      operationId: getTemplateVersion
+      parameters:
+        - name: template_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: version
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Template (specifieke versie)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TemplateResponse'
+        "403":
+          $ref: '#/components/responses/Forbidden'
+        "404":
+          $ref: '#/components/responses/NotFound'
+
+  /v2/templates:
+    get:
+      tags: [Templates]
+      summary: Alle templates opvragen
+      operationId: getTemplates
+      parameters:
+        - name: type
+          in: query
+          description: Filter op type template.
+          schema:
+            type: string
+            enum: [email, sms, letter]
+      responses:
+        "200":
+          description: Lijst van templates
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  templates:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/TemplateResponse'
+        "400":
+          $ref: '#/components/responses/BadRequest'
+        "403":
+          $ref: '#/components/responses/Forbidden'
+
+  /v2/template/{template_id}/preview:
+    post:
+      tags: [Templates]
+      summary: Voorbeeld van een template genereren
+      operationId: previewTemplate
+      parameters:
+        - name: template_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                personalisation:
+                  type: object
+                  additionalProperties:
+                    type: string
+                  description: Key-value pairs voor de placeholders in het template.
+              example:
+                personalisation:
+                  naam: "Jan de Vries"
+                  zaaknummer: "2024-00123"
+      responses:
+        "200":
+          description: Voorbeeld van de template-inhoud
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TemplateResponse'
+        "400":
+          $ref: '#/components/responses/BadRequest'
+        "403":
+          $ref: '#/components/responses/Forbidden'
+        "404":
+          $ref: '#/components/responses/NotFound'
+
+  /verification-requests:
+    post:
+      tags: [Verificatie]
+      summary: Verificatieverzoek aanmaken
+      operationId: createVerificationRequest
+      description: |
+        Maakt een nieuw verificatieverzoek aan voor een e-mailadres of telefoonnummer.
+        NotifyNL verstuurt automatisch een verificatiecode naar de opgegeven ontvanger.
+
+        Geef óf `email` óf `phoneNumber` mee — niet beide.
+      servers:
+        - url: https://verify.notifynl.nl/api
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateVerificationRequest'
+            examples:
+              email:
+                summary: Verificatie via e-mail
+                value:
+                  email: "burger@voorbeeld.nl"
+                  reference: "zaaknummer-2024-00123"
+              sms:
+                summary: Verificatie via sms
+                value:
+                  phoneNumber: "+31612345678"
+                  reference: "zaaknummer-2024-00123"
+      responses:
+        "201":
+          description: Verificatieverzoek aangemaakt
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+        "400":
+          description: Ontbrekende of conflicterende invoer
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          $ref: '#/components/responses/ServerError'
+
+  /verification-requests/verify:
+    post:
+      tags: [Verificatie]
+      summary: Verificatiecode controleren
+      operationId: verifyCode
+      description: |
+        Controleert of de opgegeven verificatiecode geldig is.
+
+        Geef naast `code` ook één van de volgende mee om het verzoek te identificeren
+        (in volgorde van prioriteit):
+        1. `reference` — eigen referentie-ID
+        2. `email` — e-mailadres als fallback
+        3. `phoneNumber` — telefoonnummer als fallback
+      servers:
+        - url: https://verify.notifynl.nl/api
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/VerifyRequest'
+            examples:
+              metReference:
+                summary: Verificatie met referentie
+                value:
+                  code: "123456"
+                  reference: "zaaknummer-2024-00123"
+              metEmail:
+                summary: Verificatie met e-mailadres
+                value:
+                  code: "123456"
+                  email: "burger@voorbeeld.nl"
+      responses:
+        "200":
+          description: Verificatie geslaagd
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VerifiedResponse'
+              example:
+                verified: true
+                verifiedOn: "2026-01-05T14:32:41+01:00"
+        "400":
+          description: Ongeldige code of invoer
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  verified:
+                    type: boolean
+                    example: false
+                  reason:
+                    type: string
+                    example: "Code is onjuist of verlopen"
+        "404":
+          description: Verificatieverzoek niet gevonden
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  verified:
+                    type: boolean
+                    example: false
+                  reason:
+                    type: string
+                    example: "Geen verificatieverzoek gevonden voor deze referentie"
+        "500":
+          $ref: '#/components/responses/ServerError'
+
+components:
+
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: |
+        JWT ondertekend met de geheime sleutel uit je API-sleutel.
+        Payload vereist `iss` (dienst-UUID) en `iat` (epoch-seconden, max. 30 seconden oud).
+
+  schemas:
+
+    PostSmsRequest:
+      type: object
+      required: [phone_number, template_id]
+      properties:
+        phone_number:
+          type: string
+          description: Telefoonnummer van de ontvanger (Nederlands of internationaal).
+          example: "+31612345678"
+        template_id:
+          type: string
+          format: uuid
+          description: UUID van het te gebruiken sms-template.
+        personalisation:
+          type: object
+          additionalProperties:
+            type: string
+          description: Waarden voor de placeholders in het template.
+        reference:
+          type: string
+          maxLength: 1000
+          description: Eigen referentie; mag geen persoonsgegevens bevatten.
+        sms_sender_id:
+          type: string
+          format: uuid
+          description: UUID van de sms-afzender (te vinden via Instellingen → Sms → Beheren).
+
+    PostSmsResponse:
+      type: object
+      required: [id, content, uri, template]
+      properties:
+        id:
+          type: string
+          format: uuid
+        reference:
+          type: string
+          nullable: true
+        content:
+          type: object
+          required: [body, from_number]
+          properties:
+            body:
+              type: string
+            from_number:
+              type: string
+        uri:
+          type: string
+          format: uri
+          example: "https://api.notifynl.nl/v2/notifications/740e5834-3a29-46b4-9a6f-16142fde533a"
+        template:
+          $ref: '#/components/schemas/TemplateRef'
+        scheduled_for:
+          type: string
+          nullable: true
+
+    PostEmailRequest:
+      type: object
+      required: [email_address, template_id]
+      properties:
+        email_address:
+          type: string
+          format: email
+          description: E-mailadres van de ontvanger.
+          example: "burger@voorbeeld.nl"
+        template_id:
+          type: string
+          format: uuid
+          description: UUID van het te gebruiken e-mailtemplate.
+        personalisation:
+          type: object
+          additionalProperties:
+            type: string
+          description: Waarden voor de placeholders in het template.
+        reference:
+          type: string
+          maxLength: 1000
+          description: Eigen referentie; mag geen persoonsgegevens bevatten.
+        email_reply_to_id:
+          type: string
+          format: uuid
+          description: UUID van het reply-to e-mailadres (te configureren via Instellingen).
+        one_click_unsubscribe_url:
+          type: string
+          format: uri
+          description: URL voor één-klik-uitschrijven (RFC 8058).
+
+    PostEmailResponse:
+      type: object
+      required: [id, content, uri, template]
+      properties:
+        id:
+          type: string
+          format: uuid
+        reference:
+          type: string
+          nullable: true
+        content:
+          type: object
+          required: [body, from_email, subject]
+          properties:
+            body:
+              type: string
+            from_email:
+              type: string
+              format: email
+            subject:
+              type: string
+        uri:
+          type: string
+          format: uri
+        template:
+          $ref: '#/components/schemas/TemplateRef'
+        scheduled_for:
+          type: string
+          nullable: true
+
+    PostLetterRequest:
+      type: object
+      required: [template_id, personalisation]
+      description: Brief via template (toekomstig — nog niet beschikbaar in Nederland).
+      properties:
+        template_id:
+          type: string
+          format: uuid
+        personalisation:
+          type: object
+          required: [address_line_1, address_line_2, postcode]
+          properties:
+            address_line_1:
+              type: string
+              description: Naam ontvanger
+            address_line_2:
+              type: string
+              description: Straat en huisnummer
+            address_line_3:
+              type: string
+            address_line_4:
+              type: string
+            address_line_5:
+              type: string
+            address_line_6:
+              type: string
+            postcode:
+              type: string
+        reference:
+          type: string
+          maxLength: 1000
+
+    PostPrecompiledLetterRequest:
+      type: object
+      required: [reference, content]
+      description: Vooraf samengestelde brief als PDF (toekomstig — nog niet beschikbaar in Nederland).
+      properties:
+        reference:
+          type: string
+        content:
+          type: string
+          description: Base64-gecodeerd PDF-bestand.
+        postage:
+          type: string
+          enum: [first, second, economy]
+          description: Verzendklasse. Standaard is `second`.
+
+    PostLetterResponse:
+      type: object
+      required: [id, content, uri, template]
+      properties:
+        id:
+          type: string
+          format: uuid
+        reference:
+          type: string
+          nullable: true
+        content:
+          type: object
+          required: [body, subject]
+          properties:
+            body:
+              type: string
+            subject:
+              type: string
+        uri:
+          type: string
+          format: uri
+        template:
+          $ref: '#/components/schemas/TemplateRef'
+
+    PostBerichtenboxRequest:
+      type: object
+      description: |
+        Verzoek om een berichtenbox-bericht te versturen. Alle velden zijn optioneel —
+        de berichtinhoud wordt bepaald door het berichtenbox-template van je dienst.
+      properties:
+        reference:
+          type: string
+          maxLength: 1000
+          description: Eigen referentie; mag geen persoonsgegevens bevatten.
+          example: "zaaknummer-2024-00123"
+      additionalProperties: false
+
+    PostBerichtenboxResponse:
+      type: object
+      required: [id, uri]
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: UUID van de aangemaakte notificatie.
+        organisation_id:
+          type: string
+          format: uuid
+          nullable: true
+          description: UUID van de organisatie die het bericht verstuurt.
+        uri:
+          type: string
+          format: uri
+          description: URL waarmee de status van deze notificatie kan worden opgevraagd.
+
+    GetNotificationResponse:
+      type: object
+      required: [id, reference, email_address, phone_number, type, status, template, body, created_at, sent_at, completed_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        reference:
+          type: string
+          nullable: true
+        email_address:
+          type: string
+          format: email
+          nullable: true
+        phone_number:
+          type: string
+          nullable: true
+        line_1:
+          type: string
+          nullable: true
+        line_2:
+          type: string
+          nullable: true
+        line_3:
+          type: string
+          nullable: true
+        line_4:
+          type: string
+          nullable: true
+        line_5:
+          type: string
+          nullable: true
+        line_6:
+          type: string
+          nullable: true
+        postcode:
+          type: string
+          nullable: true
+        type:
+          type: string
+          enum: [sms, email, letter, berichtenbox]
+        status:
+          type: string
+          enum:
+            - created
+            - sending
+            - pending
+            - sent
+            - delivered
+            - permanent-failure
+            - temporary-failure
+            - technical-failure
+            - accepted
+            - received
+            - cancelled
+            - failed
+            - pending-virus-check
+            - validation-failed
+            - virus-scan-failed
+            - returned-letter
+        postage:
+          type: string
+          nullable: true
+          enum: [first, second, economy]
+          description: Verzendklasse (alleen voor brieven).
+        template:
+          $ref: '#/components/schemas/TemplateRef'
+        body:
+          type: string
+        subject:
+          type: string
+          nullable: true
+        created_at:
+          type: string
+          format: date-time
+        created_by_name:
+          type: string
+          nullable: true
+          description: Naam van de gebruiker of dienst die het bericht heeft verstuurd.
+        sent_at:
+          type: string
+          format: date-time
+          nullable: true
+        completed_at:
+          type: string
+          format: date-time
+          nullable: true
+        scheduled_for:
+          type: string
+          format: date-time
+          nullable: true
+        one_click_unsubscribe:
+          type: string
+          format: uri
+          nullable: true
+          description: Één-klik-uitschrijf-URL (alleen bij e-mail).
+        is_cost_data_ready:
+          type: boolean
+          description: Of de kostendata al beschikbaar is.
+        cost_in_pounds:
+          type: number
+          format: float
+          nullable: true
+          description: >
+            Kosten van dit bericht in euro (voor sms en brief).
+            De veldnaam is historisch — de waarde is in euro's.
+        cost_details:
+          type: object
+          nullable: true
+          description: Gedetailleerde kostenopbouw.
+          properties:
+            billable_sms_fragments:
+              type: integer
+              description: Aantal factureerbare sms-fragmenten.
+            international_rate_multiplier:
+              type: number
+              description: Vermenigvuldiger voor internationale tarieven.
+            sms_rate:
+              type: number
+              description: Tarief per sms-fragment.
+            billable_sheets_of_paper:
+              type: integer
+              description: Aantal factureerbare vellen papier (brief).
+            postage:
+              type: string
+              description: Gebruikte verzendklasse (brief).
+
+    GetNotificationsResponse:
+      type: object
+      required: [notifications, links]
+      properties:
+        notifications:
+          type: array
+          items:
+            $ref: '#/components/schemas/GetNotificationResponse'
+        links:
+          $ref: '#/components/schemas/PaginationLinks'
+
+    TemplateRef:
+      type: object
+      required: [id, version, uri]
+      properties:
+        id:
+          type: string
+          format: uuid
+        version:
+          type: integer
+        uri:
+          type: string
+          format: uri
+
+    TemplateResponse:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        type:
+          type: string
+          enum: [sms, email, letter]
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+          nullable: true
+        version:
+          type: integer
+        created_by:
+          type: string
+          description: E-mailadres van de gebruiker die het template heeft aangemaakt.
+        body:
+          type: string
+        subject:
+          type: string
+          nullable: true
+          description: Onderwerpregel (alleen bij e-mail).
+        html:
+          type: string
+          nullable: true
+          description: Gerenderde HTML-inhoud (alleen bij template preview).
+        postage:
+          type: string
+          nullable: true
+          description: Verzendklasse (alleen bij brief-templates).
+        letter_contact_block:
+          type: string
+          nullable: true
+          description: Contactblok voor de brief-footer (alleen bij brief-templates).
+        personalisation:
+          type: object
+          additionalProperties:
+            type: object
+
+    CreateVerificationRequest:
+      type: object
+      description: Geef óf `email` óf `phoneNumber` mee — niet beide.
+      properties:
+        email:
+          type: string
+          format: email
+          description: E-mailadres om te verifiëren.
+        phoneNumber:
+          type: string
+          description: Telefoonnummer om te verifiëren (E.164-formaat, bijv. `+31612345678`).
+        reference:
+          type: string
+          description: Eigen referentie-ID (optioneel maar aanbevolen voor opzoeken bij verificatie).
+        apiKey:
+          type: string
+          description: NotifyNL API-sleutel (optioneel; standaard de `NOTIFYNL_API_KEY` omgevingsvariabele).
+        templateId:
+          type: string
+          description: NotifyNL template-ID (optioneel; overschrijft de standaard e-mail- of sms-template).
+      oneOf:
+        - required: [email]
+        - required: [phoneNumber]
+
+    VerifyRequest:
+      type: object
+      required: [code]
+      description: Geef `code` mee plus één van `reference`, `email` of `phoneNumber`.
+      properties:
+        code:
+          type: string
+          description: De ontvangen verificatiecode.
+        reference:
+          type: string
+          description: Referentie-ID (heeft prioriteit boven e-mail en telefoonnummer).
+        email:
+          type: string
+          format: email
+          description: E-mailadres (fallback als referentie niet gevonden wordt).
+        phoneNumber:
+          type: string
+          description: Telefoonnummer (fallback als referentie en e-mail niet gevonden worden).
+      oneOf:
+        - required: [code, reference]
+        - required: [code, email]
+        - required: [code, phoneNumber]
+
+    VerifiedResponse:
+      type: object
+      required: [verified, verifiedOn]
+      properties:
+        verified:
+          type: boolean
+          example: true
+        verifiedOn:
+          type: string
+          format: date-time
+          description: Tijdstip van succesvolle verificatie (NEN-ISO 8601).
+          example: "2026-01-05T14:32:41+01:00"
+
+    PaginationLinks:
+      type: object
+      required: [current]
+      properties:
+        current:
+          type: string
+          format: uri
+        next:
+          type: string
+          format: uri
+
+    ErrorResponse:
+      type: object
+      properties:
+        status_code:
+          type: integer
+        errors:
+          type: array
+          items:
+            type: object
+            properties:
+              error:
+                type: string
+              message:
+                type: string
+
+  responses:
+    BadRequest:
+      description: Ongeldig verzoek
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          examples:
+            invalidPhone:
+              summary: Ongeldig telefoonnummer
+              value:
+                status_code: 400
+                errors:
+                  - error: ValidationError
+                    message: "phone_number is not valid, Mobile numbers can only include: 0 1 2 3 4 5 6 7 8 9 ( ) + -"
+            teamKey:
+              summary: Team-sleutel niet toegestaan
+              value:
+                status_code: 400
+                errors:
+                  - error: BadRequestError
+                    message: "Can't send to this recipient using a team-only API key"
+
+    Forbidden:
+      description: Niet toegestaan — ongeldige of verlopen JWT, of onvoldoende rechten
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          examples:
+            invalidToken:
+              summary: Ongeldig token
+              value:
+                status_code: 403
+                errors:
+                  - error: AuthError
+                    message: "Invalid token: API key not found"
+            clockSkew:
+              summary: Systeemklok niet nauwkeurig
+              value:
+                status_code: 403
+                errors:
+                  - error: AuthError
+                    message: "Error: Your system clock must be accurate to within 30 seconds"
+
+    NotFound:
+      description: Niet gevonden
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            status_code: 404
+            errors:
+              - error: NoResultFound
+                message: "No result found"
+
+    RateLimited:
+      description: Snelheidslimiet overschreden
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          examples:
+            rateLimit:
+              summary: Te veel verzoeken per minuut
+              value:
+                status_code: 429
+                errors:
+                  - error: RateLimitError
+                    message: "Exceeded rate limit for key type LIVE of 3000 requests per 60 seconds"
+            dailyLimit:
+              summary: Dagelijkse limiet bereikt
+              value:
+                status_code: 429
+                errors:
+                  - error: TooManyRequestsError
+                    message: "Exceeded send limits (250000) for today"
+
+    ServerError:
+      description: Interne serverfout — probeer opnieuw
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            status_code: 500
+            errors:
+              - error: Exception
+                message: "Internal server error"
