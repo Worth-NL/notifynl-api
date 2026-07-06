@@ -15,7 +15,7 @@ from app.notifications.notifications_ses_callback import (
 
 @notify_celery.task(
     bind=True,
-    name="process_messagebox_client_response",
+    name="process-messagebox-client-response",
     max_retries=5,
     default_retry_delay=300,
     early_log_level=logging.DEBUG,

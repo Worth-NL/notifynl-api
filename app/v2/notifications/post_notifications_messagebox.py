@@ -4,7 +4,7 @@ from flask import current_app, jsonify, request
 from gds_metrics import Histogram
 
 from app import api_user, authenticated_service, notify_celery, signing
-from app.config import QueueNames, TaskNames
+from app.config import QueueNames, TaskNamesNL
 from app.constants import (
     KEY_TYPE_TEAM,
     KEY_TYPE_TEST,
@@ -82,25 +82,21 @@ def process_messagebox_notification(*, messagebox_data, api_key, service):
             updated_at=updated_at,
         )
 
-        filenames: list[str] = upload_messagebox_attachments(notification, messagebox_data.get("attachments"))
+        upload_messagebox_attachments(notification, messagebox_data.get("attachments"))
 
-    resp = {
-        "id": notification.id,
-        "organisation_id": template.service.organisation_id,
-        "uri": f"{request.url_root}v2/notifications/{str(notification.id)}",
-    }
+    resp = {"id": notification.id, "uri": f"{request.url_root}v2/notifications/{str(notification.id)}"}
 
-    for filename in filenames:
-        if current_app.config["ANTIVIRUS_ENABLED"]:
-            current_app.logger.info("Calling task scan-file for %s", filename)
-            notify_celery.send_task(
-                name=TaskNames.SCAN_FILE,
-                kwargs={"filename": filename},
-                queue=QueueNames.ANTIVIRUS,
-            )
-        else:
-            # stub out antivirus in dev
-            # sanitise_letter.apply_async([filename], queue=QueueNames.LETTERS)
-            current_app.logger.info("Antivirus disabled, skipping scan for %s", filename)
+    if template.service.organisation_id:
+        resp["organisation_id"] = (template.service.organisation_id,)
+
+    if current_app.config["ANTIVIRUS_ENABLED"]:
+        current_app.logger.info("Calling task scan-file for %s", notification.id)
+        notify_celery.send_task(
+            name=TaskNamesNL.SCAN_MESSAGEBOX_ATTACHMENTS,
+            kwargs={"notification_id": notification.id},
+            queue=QueueNames.ANTIVIRUS,
+        )
+    else:
+        current_app.logger.info("Antivirus disabled, skipping scan for %s", notification.id)
 
     return resp
