@@ -731,10 +731,16 @@ class Sandbox(CloudFoundryConfig):
 NL_PREFIX = "notifynl"
 
 
+class TaskNamesNL(TaskNames):
+    SCAN_MESSAGEBOX_ATTACHMENTS = "scan-messagebox-attachments"
+
+
 class ConfigNL(Config):
     """
     Overrides for NotifyNL usage
     """
+
+    TIMEZONE = os.getenv("TZ", "Europe/Amsterdam")
 
     NOTIFY_EMAIL_DOMAIN = os.environ.get("NOTIFY_EMAIL_DOMAIN", "notifynl.nl")
     FROM_NUMBER = os.environ.get("FROM_NUMBER", "NOTIFYNLD")
@@ -871,6 +877,20 @@ class DevNL(ConfigNL):
 
     FROM_NUMBER = "development"
     ASSET_PATH = "https://static.test.notifynl.nl/"
+
+    CELERY = {
+        "broker_url": "amqp://rabbitadmin:rabbitpassword@rabbitmq:5672/notifynl",
+        "broker_transport": "amqp",
+        "timezone": ConfigNL.TIMEZONE,
+        "imports": [
+            "app.celery.tasks",
+            "app.celery.scheduled_tasks",
+            "app.celery.reporting_tasks",
+            "app.celery.nightly_tasks",
+        ],
+        "task_queues": [Queue(queue, Exchange("default"), routing_key=queue) for queue in QueueNames.all_queues()],
+        "beat_schedule": ConfigNL.CELERY["beat_schedule"],
+    }
 
 
 class TestNL(ConfigNL):
