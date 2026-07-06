@@ -120,6 +120,20 @@
             }
         },
         {
+            "label": "API pre-launch (non-local)",
+            "type": "shell",
+            "command": "echo \"API pre-launch\"",
+            "dependsOn": [
+                "Deactivate Spryng provider",
+                "Install API local notifynl-utils"
+            ],
+            "problemMatcher": [],
+            "presentation": {
+                "showReuseMessage": false,
+                "close": true
+            }
+        },
+        {
             "label": "API functional test fixtures",
             "type": "shell",
             "command": ".venv/bin/python -m flask command functional-test-fixtures",
