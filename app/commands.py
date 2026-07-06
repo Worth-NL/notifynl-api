@@ -35,6 +35,7 @@ from app.dao.annual_billing_dao import (
     dao_create_or_update_annual_billing_for_year,
     set_default_free_allowance_for_service,
 )
+from app.dao.api_key_dao import save_model_api_key
 from app.dao.fact_billing_dao import (
     delete_billing_data_for_day,
     fetch_billing_data_for_day,
@@ -63,6 +64,7 @@ from app.dao.users_dao import (
 )
 from app.functional_tests_fixtures import apply_fixtures
 from app.models import (
+    ApiKey,
     Domain,
     EmailBranding,
     LetterBranding,
@@ -1012,3 +1014,157 @@ def generate_bulktest_data(user_id):
     pprint("Committing...")
     db.session.commit()
     pprint("Finished.")
+
+
+#
+# NotifyNL
+#
+@notify_command(name="create-platform-admin")
+@click.option("-e", "--email", required=True, help="Admin user email")
+@click.option("-p", "--password", required=True, help="Admin user password")
+@click.option("-m", "--mobile", required=True, help="Admin user phone number")
+def create_platform_admin(email, password, mobile):
+    """Create a platform admin user"""
+    from app.dao.users_dao import get_user_by_email, save_model_user
+    from app.models import User
+
+    try:
+        existing_user = get_user_by_email(email)
+        print(f"User with email {email} already exists. Returning existing user ID: {existing_user.id}")
+        return existing_user.id
+    except NoResultFound:
+        user = User(
+            name="Platform Admin",
+            email_address=email,
+            mobile_number=mobile,
+            auth_type="sms_auth",
+            state="active",
+            platform_admin=True,
+        )
+
+        save_model_user(user, password=password, validated_email_access=True)
+        print(f"Created new platform admin user with ID: {user.id}")
+        return user.id
+
+
+@notify_command(name="create-test-service")
+@click.option("-u", "--user-id", required=True, help="User ID who will own the service")
+@click.option("-n", "--name", default="Test service", help="Name of the test service")
+def create_test_service(user_id, name):
+    """Create a test service"""
+    user = User.query.get(user_id)
+    if not user:
+        print(f"User with ID {user_id} not found")
+        return
+
+    service = Service(
+        name=name,
+        created_by_id=user.id,
+        active=True,
+        restricted=False,
+        organisation_type="central",
+        email_message_limit=1000,
+        sms_message_limit=1000,
+        letter_message_limit=1000,
+    )
+
+    dao_create_service(service, user)
+    set_default_free_allowance_for_service(service=service, year_start=None)
+
+    print(f"Created test service with ID: {service.id}")
+    return service.id
+
+
+@notify_command(name="create-sms-template")
+@click.option("-s", "--service-id", required=True, help="Service ID to create template in")
+@click.option("-u", "--user-id", required=True, help="User ID who creates the template")
+@click.option("-n", "--name", default="Test SMS Template", help="Name of the SMS template")
+def create_sms_template(service_id, user_id, name):
+    """Create a basic SMS template in the specified service and print its ID"""
+    service = dao_fetch_service_by_id(service_id)
+    if not service:
+        print(f"Service with ID {service_id} not found")
+        return
+
+    user = User.query.get(user_id)
+    if not user:
+        print(f"User with ID {user_id} not found")
+        return
+
+    template = Template(
+        name=name,
+        service_id=service_id,
+        template_type="sms",
+        content="This is a test SMS message",
+        created_by_id=user_id,
+    )
+
+    dao_create_template(template)
+    print(f"Created SMS template with ID: {template.id}")
+    return template.id
+
+
+@notify_command(name="create-email-template")
+@click.option("-s", "--service-id", required=True, help="Service ID to create template in")
+@click.option("-u", "--user-id", required=True, help="User ID who creates the template")
+@click.option("-n", "--name", default="Test Email Template", help="Name of the email template")
+def create_email_template(service_id, user_id, name):
+    """Create a basic email template in the specified service and print its ID"""
+    service = dao_fetch_service_by_id(service_id)
+    if not service:
+        print(f"Service with ID {service_id} not found")
+        return
+
+    user = User.query.get(user_id)
+    if not user:
+        print(f"User with ID {user_id} not found")
+        return
+
+    template = Template(
+        name=name,
+        service_id=service_id,
+        template_type="email",
+        subject="Test email subject",
+        content="This is a test email message",
+        created_by_id=user_id,
+    )
+
+    dao_create_template(template)
+    print(f"Created email template with ID: {template.id}")
+    return template.id
+
+
+@notify_command(name="create-api-key")
+@click.option("-s", "--service-id", required=True, help="Service ID to create API key for")
+@click.option("-u", "--user-id", required=True, help="User ID who creates the API key")
+@click.option("-n", "--name", default="Test API Key", help="Name of the API key")
+@click.option("-t", "--key-type", default="normal", help="Type of API key (normal, team, test)")
+def create_api_key(service_id, user_id, name, key_type):
+    """Create an API key in the specified service and print it"""
+    service = dao_fetch_service_by_id(service_id)
+    if not service:
+        print(f"Service with ID {service_id} not found")
+        return
+
+    user = User.query.get(user_id)
+    if not user:
+        print(f"User with ID {user_id} not found")
+        return
+
+    api_key = ApiKey.query.filter_by(name=name, service_id=service.id, expiry_date=None).first()
+
+    if not api_key:
+        api_key = ApiKey(
+            name=name,
+            service_id=service.id,
+            created_by=user,
+            key_type=key_type,
+        )
+
+        save_model_api_key(api_key)
+
+    full_key = f"{api_key.name}-{api_key.service_id}-{api_key.secret}"
+
+    print(full_key)
+
+    return full_key
