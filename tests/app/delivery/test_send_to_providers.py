@@ -468,7 +468,9 @@ def test_get_html_email_renderer_with_branding_details_and_render_govuk_banner_o
 
 def test_get_html_email_renderer_prepends_logo_path(notify_api, hostnames):
     Service = namedtuple("Service", ["email_branding"])
-    EmailBranding = namedtuple("EmailBranding", ["brand_type", "colour", "name", "logo", "text", "alt_text"])
+    EmailBranding = namedtuple(
+        "EmailBranding", ["brand_type", "colour", "name", "logo", "text", "alt_text", "height", "alignment"]
+    )
 
     email_branding = EmailBranding(
         brand_type=BRANDING_ORG,
@@ -477,6 +479,8 @@ def test_get_html_email_renderer_prepends_logo_path(notify_api, hostnames):
         name="Justice League",
         text="League of Justice",
         alt_text=None,
+        height=None,
+        alignment="left",
     )
     service = Service(
         email_branding=email_branding,
@@ -489,7 +493,9 @@ def test_get_html_email_renderer_prepends_logo_path(notify_api, hostnames):
 
 def test_get_html_email_renderer_handles_email_branding_without_logo(notify_api):
     Service = namedtuple("Service", ["email_branding"])
-    EmailBranding = namedtuple("EmailBranding", ["brand_type", "colour", "name", "logo", "text", "alt_text"])
+    EmailBranding = namedtuple(
+        "EmailBranding", ["brand_type", "colour", "name", "logo", "text", "alt_text", "height", "alignment"]
+    )
 
     email_branding = EmailBranding(
         brand_type=BRANDING_ORG_BANNER,
@@ -498,6 +504,8 @@ def test_get_html_email_renderer_handles_email_branding_without_logo(notify_api)
         name="Justice League",
         text="League of Justice",
         alt_text=None,
+        height=None,
+        alignment="left",
     )
     service = Service(
         email_branding=email_branding,
@@ -864,6 +872,8 @@ def test_get_html_email_options_return_email_branding_from_serialised_service(sa
         "brand_logo": get_logo_url(current_app.config["ADMIN_BASE_URL"], branding.logo),
         "brand_text": branding.text,
         "brand_alt_text": branding.alt_text,
+        "brand_height": branding.height,
+        "brand_alignment": branding.alignment,
         "rebrand": True,
     }
 
@@ -880,6 +890,8 @@ def test_get_html_email_options_add_email_branding_from_service(sample_service):
         "brand_logo": get_logo_url(current_app.config["ADMIN_BASE_URL"], branding.logo),
         "brand_text": branding.text,
         "brand_alt_text": branding.alt_text,
+        "brand_height": branding.height,
+        "brand_alignment": branding.alignment,
         "rebrand": True,
     }
 

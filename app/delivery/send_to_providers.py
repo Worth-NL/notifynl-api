@@ -264,6 +264,8 @@ def get_html_email_options(service):
         "brand_logo": logo_url,
         "brand_text": branding.text,
         "brand_alt_text": branding.alt_text,
+        "brand_height": branding.height,
+        "brand_alignment": branding.alignment,
         "rebrand": True,
     }
 
