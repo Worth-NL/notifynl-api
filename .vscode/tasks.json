@@ -12,10 +12,42 @@
             }
         },
         {
+            "label": "Generate API Python requirements_nl.in",
+            "type": "shell",
+            "command": "uv pip compile requirements_nl.in -o requirements_nl.txt ",
+            "dependsOn": [],
+            "problemMatcher": [],
+            "presentation": {
+                "showReuseMessage": false,
+                "close": true
+            },
+            "options": {
+                "env": {
+                    "UV_LINK_MODE": "copy"
+                }
+            }
+        },
+        {
+            "label": "Generate API Python requirements_nl_test.in",
+            "type": "shell",
+            "command": "uv pip compile requirements_nl_test.in -o requirements_nl_test.txt ",
+            "dependsOn": ["Generate API Python requirements_nl.in"],
+            "problemMatcher": [],
+            "presentation": {
+                "showReuseMessage": false,
+                "close": true
+            },
+            "options": {
+                "env": {
+                    "UV_LINK_MODE": "copy"
+                }
+            }
+        },
+        {
             "label": "Install API Python requirements",
             "type": "shell",
             "command": "uv pip install -r requirements_nl_test.txt",
-            "dependsOn": ["Generate API version file"],
+            "dependsOn": ["Generate API version file", "Generate API Python requirements_nl_test.in"],
             "problemMatcher": [],
             "presentation": {
                 "showReuseMessage": false,
@@ -80,20 +112,6 @@
             "type": "shell",
             "command": "echo \"API pre-launch\"",
             "dependsOn": ["Deactivate Spryng provider"],
-            "problemMatcher": [],
-            "presentation": {
-                "showReuseMessage": false,
-                "close": true
-            }
-        },
-        {
-            "label": "API pre-launch (non-local)",
-            "type": "shell",
-            "command": "echo \"API pre-launch\"",
-            "dependsOn": [
-                "Deactivate Spryng provider",
-                "Install API local notifynl-utils"
-            ],
             "problemMatcher": [],
             "presentation": {
                 "showReuseMessage": false,

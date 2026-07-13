@@ -725,7 +725,7 @@ mistune==0.8.4 \
 notifications-python-client==10.0.0 \
     --hash=sha256:0f152a4d23b7f7b827dae6b45ac63568a2bc56044b1aa57b66bc68b137c40e57
     # via -r requirements_nl.in
-notifications-utils @ git+https://github.com/Worth-NL/notifynl-utils.git@1c375ec504c9828e821b76fe3fa7e9f21e7f13d3
+notifications-utils @ git+https://github.com/Worth-NL/notifynl-utils.git@f98fa08daba6a468c161a2d4b4f7a03495de7f14
     # via -r requirements_nl.in
 opentelemetry-api==1.42.1 \
     --hash=sha256:51a69edacadbc03a8950ace1c4c21099cacc538820ac2c9e36277e78cebba714 \
@@ -1548,7 +1548,6 @@ urllib3==2.6.3 \
     #   botocore
     #   celery
     #   kombu
-    #   notifications-utils
     #   requests
     #   sentry-sdk
 vine==5.1.0 \
