@@ -5,6 +5,7 @@ from flask import current_app
 
 from app import notify_celery
 from app.constants import (
+    DVLA_NOTIFICATION_REJECTED,
     DVLA_TO_NOTIFICATION_STATUS_MAP,
     NOTIFICATION_TECHNICAL_FAILURE,
 )
@@ -23,13 +24,17 @@ from app.notifications.notifications_ses_callback import (
 
 @notify_celery.task(bind=True, name="process-letter-callback")
 def process_letter_callback_data(
-    self, notification_id: uuid.UUID, page_count: int, dvla_status: str, cost_threshold: str, despatch_date: date
+    self,
+    notification_id: uuid.UUID,
+    page_count: int | None,
+    dvla_status: str,
+    cost_threshold: str | None,
+    despatch_date: date,
 ):
-    cost_threshold = LetterCostThreshold(cost_threshold)
-
     notification = dao_get_notification_or_history_by_id(notification_id)
 
-    validate_billable_units(notification, page_count)
+    if dvla_status != DVLA_NOTIFICATION_REJECTED:
+        validate_billable_units(notification, page_count)
 
     new_status = determine_new_status(dvla_status)
 
@@ -50,18 +55,25 @@ def process_letter_callback_data(
             f"Letter status received as REJECTED for notification id: {notification.id}"
         )
 
-    dao_record_letter_despatched_on_by_id(notification_id, despatch_date, cost_threshold)
+    if cost_threshold is not None:
+        cost_threshold = LetterCostThreshold(cost_threshold)
+        dao_record_letter_despatched_on_by_id(notification_id, despatch_date, cost_threshold)
 
     check_and_queue_callback_task(notification)
 
 
 def validate_billable_units(notification, dvla_page_count):
     if notification.billable_units != int(dvla_page_count):
+        extra = {
+            "notification_id": notification.id,
+            "notification_billable_units": notification.billable_units,
+            "page_count": dvla_page_count,
+        }
         current_app.logger.error(
-            "Notification with id %s has %s billable_units but DVLA says page count is %s",
-            notification.id,
-            notification.billable_units,
-            dvla_page_count,
+            "Notification with id %(notification_id)s has %(notification_billable_units)s billable_units but "
+            "DVLA says page count is %(page_count)s",
+            extra,
+            extra=extra,
         )
 
 

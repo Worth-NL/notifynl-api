@@ -51,6 +51,7 @@ def test_format_create_print_job_json_adds_despatchMethod_key_for_first_class_po
     formatted_json = dvla_client._format_create_print_job_json(
         notification_id="my_notification_id",
         reference="ABCDEFGHIJKL",
+        client_reference="",
         address=PostalAddress("A. User\nThe road\n1234AB City"),
         postage="netherlands",
         service_id="my_service_id",
@@ -72,6 +73,7 @@ def test_send_domestic_letter(dvla_client, dvla_authenticate, rmock):
     response = dvla_client.send_letter(
         notification_id="noti_id",
         reference="ABCDEFGHIJKL",
+        client_reference="",
         address=PostalAddress("recipient\naddress\n1234AB City"),
         postage="netherlands",
         service_id="service_id",
@@ -88,6 +90,7 @@ def test_send_domestic_letter(dvla_client, dvla_authenticate, rmock):
             "jobType": "NOTIFY",
             "templateReference": "NOTIFY",
             "businessIdentifier": "ABCDEFGHIJKL",
+            "clientReference": "",
             "despatchMethod": "NETHERLANDS",
             "recipientName": "recipient",
             "address": {"unstructuredAddress": {"line1": "address", "postcode": "1234 AB  CITY"}},
@@ -121,6 +124,7 @@ def test_send_bfpo_letter_returns_default(dvla_client, dvla_authenticate, rmock)
     response = dvla_client.send_letter(
         notification_id="noti_id",
         reference="ABCDEFGHIJKL",
+        client_reference="",
         address=PostalAddress("recipient\nbfpo address\n1234AB City"),
         postage="netherlands",
         service_id="service_id",
@@ -137,6 +141,7 @@ def test_send_bfpo_letter_returns_default(dvla_client, dvla_authenticate, rmock)
             "jobType": "NOTIFY",
             "templateReference": "NOTIFY",
             "businessIdentifier": "ABCDEFGHIJKL",
+            "clientReference": "",
             "despatchMethod": "NETHERLANDS",
             "recipientName": "recipient",
             "address": {"unstructuredAddress": {"line1": "bfpo address", "postcode": "1234 AB  CITY"}},
@@ -208,6 +213,7 @@ def test_format_create_print_job_json_formats_address_lines(dvla_client, address
     formatted_json = dvla_client._format_create_print_job_json(
         notification_id="my_notification_id",
         reference="ABCDEFGHIJKL",
+        client_reference="",
         address=address,
         postage="first",
         service_id="my_service_id",
@@ -234,6 +240,7 @@ def test_format_create_print_job_json_adds_despatchMethod_key_for_economy_class_
     formatted_json = dvla_client._format_create_print_job_json(
         notification_id="my_notification_id",
         reference="ABCDEFGHIJKL",
+        client_reference="",
         address=PostalAddress(address, international),
         postage=postage,
         service_id="my_service_id",

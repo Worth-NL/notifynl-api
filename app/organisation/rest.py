@@ -1,10 +1,10 @@
 from flask import Blueprint, abort, current_app, jsonify, request
 from sqlalchemy.exc import IntegrityError
 
+from app import db
 from app.config import QueueNames
 from app.constants import INVITE_PENDING, KEY_TYPE_NORMAL, NHS_ORGANISATION_TYPES, OrganisationUserPermissionTypes
 from app.dao.annual_billing_dao import set_default_free_allowance_for_service
-from app.dao.dao_utils import transaction
 from app.dao.fact_billing_dao import fetch_usage_for_organisation
 from app.dao.invited_org_user_dao import get_invited_org_users_for_organisation
 from app.dao.organisation_dao import (
@@ -86,7 +86,11 @@ def get_organisation_by_domain():
     if not domain or "@" in domain:
         abort(400)
 
-    organisation = dao_get_organisation_by_email_address("example@{}".format(request.args.get("domain")))
+    organisation = dao_get_organisation_by_email_address(
+        f"example@{domain}",
+        session=db.session_bulk,
+        retry_attempts=2,
+    )
 
     if not organisation:
         abort(404)
@@ -180,9 +184,13 @@ def link_service_to_organisation(organisation_id):
     service = dao_fetch_service_by_id(data["service_id"])
     service.organisation = None
 
-    with transaction():
-        dao_add_service_to_organisation(service, organisation_id)
-        set_default_free_allowance_for_service(service, year_start=None)
+    try:
+        dao_add_service_to_organisation(service, organisation_id, _autocommit=False)
+        set_default_free_allowance_for_service(service, year_start=None, _autocommit=False)
+        db.session.commit()
+    except Exception:
+        db.session.rollback()
+        raise
 
     return "", 204
 
@@ -200,7 +208,9 @@ def get_organisation_services_usage(organisation_id):
         year = int(request.args.get("year", "none"))
     except ValueError:
         return jsonify(result="error", message="No valid year provided"), 400
-    services, updated_at = fetch_usage_for_organisation(organisation_id, year)
+    services, updated_at = fetch_usage_for_organisation(
+        organisation_id, year, session=db.session_bulk, inner_retry_attempts=2
+    )
     list_services = services.values()
     sorted_services = sorted(list_services, key=lambda s: (-s["active"], s["service_name"].lower()))
     return jsonify(services=sorted_services, updated_at=updated_at)

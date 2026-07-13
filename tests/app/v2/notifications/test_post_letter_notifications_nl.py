@@ -48,7 +48,11 @@ def test_post_letter_notification_returns_201(api_client_request, sample_letter_
     )
     assert not resp_json["scheduled_for"]
     assert not notification.reply_to_text
-    mock.assert_called_once_with([str(notification.id)], queue=QueueNames.CREATE_LETTERS_PDF)
+    mock.assert_called_once_with(
+        [str(notification.id)],
+        queue=QueueNames.CREATE_LETTERS_PDF,
+        MessageGroupId=str(sample_letter_template.service_id),
+    )
 
 
 def test_post_letter_notification_sets_postage(api_client_request, notify_db_session, mocker):

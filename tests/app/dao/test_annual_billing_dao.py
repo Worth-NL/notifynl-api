@@ -3,6 +3,7 @@ import datetime
 import pytest
 from freezegun import freeze_time
 
+from app import db
 from app.dao.annual_billing_dao import (
     dao_create_or_update_annual_billing_for_year,
     dao_get_default_annual_allowance_for_service,
@@ -12,6 +13,28 @@ from app.dao.annual_billing_dao import (
 from app.dao.date_util import get_current_financial_year_start_year
 from app.models import AnnualBilling
 from tests.app.db import create_annual_billing, create_service
+from tests.utils import QueryRecorder
+
+
+@pytest.mark.parametrize(
+    "session,expected_bind_key",
+    (
+        (db.session, None),
+        (db.session_bulk, "bulk"),
+    ),
+    ids=("default", "bulk"),
+)
+def test_dao_get_free_sms_fragment_limit_for_year(sample_service, session, expected_bind_key):
+    dao_create_or_update_annual_billing_for_year(sample_service.id, 2500, 1999)
+
+    sample_service_id = sample_service.id
+
+    with QueryRecorder() as query_recorder:
+        annual_billing_row = dao_get_free_sms_fragment_limit_for_year(sample_service_id, 1999, session)
+
+    assert {query_info.bind_key for query_info in query_recorder.queries} == {expected_bind_key}
+    assert annual_billing_row.free_sms_fragment_limit == 2500
+    assert annual_billing_row.financial_year_start == 1999
 
 
 def test_dao_update_free_sms_fragment_limit(sample_service):
@@ -135,6 +158,7 @@ def test_dao_get_default_annual_allowance_for_service(sample_service, org_type, 
     assert default_allowance.allowance == expected_allowance
 
 
+@freeze_time("2026-04-01T01:00:00")
 @pytest.mark.parametrize(
     "org_type, year, expected_default",
     [
@@ -163,6 +187,15 @@ def test_dao_get_default_annual_allowance_for_service(sample_service, org_type, 
         ("nhs_local", 2022, 0),
         ("emergency_service", 2022, 0),
         ("central", 2023, 0),
+        ("central", 2026, 0),
+        ("local", 2026, 0),
+        ("nhs_central", 2026, 0),
+        ("nhs_local", 2026, 0),
+        ("nhs_gp", 2026, 0),
+        ("emergency_service", 2026, 0),
+        ("school_or_college", 2026, 0),
+        ("other", 2026, 0),
+        (None, 2026, 0),
         # Some test cases that will make valid assertions as time inevitably marches on
         ("central", get_current_financial_year_start_year(), 0),
         ("local", get_current_financial_year_start_year(), 0),
@@ -176,6 +209,7 @@ def test_dao_get_default_annual_allowance_for_service(sample_service, org_type, 
     ],
 )
 def test_set_default_free_allowance_for_service(notify_db_session, org_type, year, expected_default):
+    year = year() if callable(year) else year
     service = create_service(organisation_type=org_type)
 
     set_default_free_allowance_for_service(service=service, year_start=year)
@@ -219,6 +253,7 @@ def test_set_default_free_allowance_for_service_using_correct_year(sample_servic
         2020,
         high_volume_service_last_year=False,
         has_custom_allowance=False,
+        _autocommit=True,
     )
 
 
@@ -234,6 +269,7 @@ def test_set_default_free_allowance_for_high_volume_service(sample_service, mock
         2020,
         high_volume_service_last_year=True,
         has_custom_allowance=False,
+        _autocommit=True,
     )
 
 
@@ -263,6 +299,7 @@ def test_set_default_free_allowance_for_service_with_custom_allowance(
         2020,
         high_volume_service_last_year=False,
         has_custom_allowance=True,
+        _autocommit=True,
     )
 
 
@@ -278,6 +315,7 @@ def test_set_default_free_allowance_for_service_for_service_with_previous_defaul
         2020,
         high_volume_service_last_year=False,
         has_custom_allowance=False,
+        _autocommit=True,
     )
 
 

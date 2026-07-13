@@ -12,6 +12,7 @@ from app.dao.unsubscribe_request_dao import (
     get_unsubscribe_request_report_by_id_dao,
     get_unsubscribe_request_reports_dao,
 )
+from app.dao.users_dao import unsubscribe_user_from_notify_services
 from app.errors import InvalidRequest, register_errors
 from app.models import UnsubscribeRequestReport
 
@@ -26,7 +27,11 @@ def one_click_unsubscribe(notification_id, token):
 
     try:
         email_address = check_token(
-            token, current_app.config["SECRET_KEY"], current_app.config["DANGEROUS_SALT"], max_age_seconds
+            token,
+            current_app.config["SECRET_KEY"],
+            current_app.config["DANGEROUS_SALT"],
+            max_age_seconds,
+            current_app.config["TOKEN_SECRET_KEY"],
         )
     except BadData as e:
         errors = {"unsubscribe request": "This is not a valid unsubscribe link."}
@@ -46,14 +51,27 @@ def one_click_unsubscribe(notification_id, token):
     # if there is no match on both the Notifications and Notifications History tables, the unsubscribe request
     # is deemed invalid
     else:
-        errors = {"unsubscribe request": "This is not a valid unsubscribe link."}
+        errors = {"unsubscribe request": "This unsubscribe link is invalid or expired."}
         raise InvalidRequest(errors, status_code=404)
+
+    if unsubscribe_user_from_notify_services(unsubscribe_data["service_id"], unsubscribe_data["email_address"]):
+        current_app.logger.info(
+            "Unsubscribe request processed for Notify service %s and notification %s",
+            unsubscribe_data["service_id"],
+            notification_id,
+            extra={"notification_id": notification_id, "service_id": unsubscribe_data["service_id"]},
+        )
+        return jsonify(result="success", message="Unsubscribe successful"), 200
 
     create_unsubscribe_request_dao(unsubscribe_data)
     redis_store.delete(f"service-{unsubscribe_data['service_id']}-unsubscribe-request-statistics")
     redis_store.delete(f"service-{unsubscribe_data['service_id']}-unsubscribe-request-reports-summary")
 
-    current_app.logger.debug("Received unsubscribe request for notification_id: %s", notification_id)
+    current_app.logger.info(
+        "Received unsubscribe request for notification %s",
+        notification_id,
+        extra={"notification_id": notification_id},
+    )
 
     return jsonify(result="success", message="Unsubscribe successful"), 200
 

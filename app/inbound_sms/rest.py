@@ -1,5 +1,6 @@
 from flask import Blueprint, current_app, jsonify, request
 
+from app import db
 from app.dao.inbound_numbers_dao import (
     dao_get_inbound_number_for_service,
     dao_remove_inbound_sms_for_service,
@@ -37,7 +38,13 @@ def post_inbound_sms_for_service(service_id):
     inbound_data_retention = fetch_service_data_retention_by_notification_type(service_id, "sms")
     limit_days = inbound_data_retention.days_of_retention if inbound_data_retention else 7
 
-    results = dao_get_inbound_sms_for_service(service_id, user_number=user_number, limit_days=limit_days)
+    results = dao_get_inbound_sms_for_service(
+        service_id,
+        user_number=user_number,
+        limit_days=limit_days,
+        session=db.session_bulk,
+        retry_attempts=2,
+    )
     return jsonify(data=[row.serialize() for row in results])
 
 
@@ -57,8 +64,8 @@ def get_most_recent_inbound_sms_for_service(service_id):
 @inbound_sms.route("/summary")
 def get_inbound_sms_summary_for_service(service_id):
     # this is for the dashboard, so always limit to 7 days, even if they have a longer data retention
-    count = dao_count_inbound_sms_for_service(service_id, limit_days=7)
-    most_recent = dao_get_inbound_sms_for_service(service_id, limit=1)
+    count = dao_count_inbound_sms_for_service(service_id, limit_days=7, session=db.session_bulk, retry_attempts=2)
+    most_recent = dao_get_inbound_sms_for_service(service_id, limit=1, session=db.session_bulk, retry_attempts=2)
 
     return jsonify(
         count=count,
@@ -85,8 +92,10 @@ def remove_inbound_sms_for_service(service_id):
         return jsonify({}), 200
 
     except Exception as e:
-        current_app.logger.error("error removing inbound SMS for service %s: %s", service_id, e)
-        return jsonify({"message": str(e)}), 500
+        current_app.logger.error(
+            "error removing inbound SMS for service %s: %s", service_id, e, extra={"service_id": service_id}
+        )
+        return jsonify({"message": "Error occured removing inbound SMS"}), 500
 
 
 @inbound_sms.route("/most-recent-usage", methods=["GET"])

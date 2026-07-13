@@ -1,10 +1,11 @@
-from datetime import datetime
+from datetime import UTC, datetime
 from unittest.mock import ANY
 
 import boto3
 import pytest
 from flask import current_app
 from moto import mock_aws
+from notifications_utils.testing.comparisons import AnyStringMatching
 
 from app import signing
 from app.celery.letters_pdf_tasks import (
@@ -26,6 +27,7 @@ from tests.app.db import (
     create_letter_branding,
     create_service,
 )
+from tests.conftest import _with_message_group_id
 
 
 @mock_aws
@@ -218,10 +220,19 @@ def test_get_pdf_for_templated_letter_happy_path(mocker, sample_letter_notificat
         "letter_filename": "LETTER.PDF",
         "notification_id": str(sample_letter_notification.id),
         "key_type": sample_letter_notification.key_type,
+        "date": AnyStringMatching(
+            # There’s a few ms delay between calling the task and creating the datetime here.
+            # Celery evades `freeze_time` so the best we can say is the date is close enough
+            # to not be in the wrong timezone or format, for example.
+            datetime.now(UTC).strftime(r"^%Y-%m-%dT%H:\d{2}:\d{2}\.\d{6}\+00:00$")
+        ),
     }
 
     mock_celery.assert_called_once_with(
-        name=TaskNames.CREATE_PDF_FOR_TEMPLATED_LETTER, args=(ANY,), queue=QueueNames.SANITISE_LETTERS
+        name=TaskNames.CREATE_PDF_FOR_TEMPLATED_LETTER,
+        args=(ANY,),
+        queue=QueueNames.SANITISE_LETTERS,
+        MessageGroupId=str(sample_letter_notification.service_id),
     )
 
     actual_data = signing.decode(mock_celery.call_args.kwargs["args"][0])
@@ -253,7 +264,8 @@ def test_resanitise_pdf_calls_template_preview_with_letter_details(
     sample_letter_notification.created_at = datetime(2021, 2, 7, 12)
     sample_letter_notification.service = create_service(service_permissions=permissions)
 
-    resanitise_pdf(sample_letter_notification.id)
+    with _with_message_group_id(resanitise_pdf, str(sample_letter_notification.service_id)):
+        resanitise_pdf(sample_letter_notification.id)
 
     mock_celery.assert_called_once_with(
         name=TaskNames.RECREATE_PDF_FOR_PRECOMPILED_LETTER,
@@ -263,4 +275,5 @@ def test_resanitise_pdf_calls_template_preview_with_letter_details(
             "allow_international_letters": expected_international_letters_allowed,
         },
         queue=QueueNames.SANITISE_LETTERS,
+        MessageGroupId=str(sample_letter_notification.service_id),
     )

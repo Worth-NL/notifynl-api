@@ -20,6 +20,7 @@ from app.celery.research_mode_tasks import (
 from app.config import QueueNames
 
 
+@freeze_time("2017-07-17T12:14:03.646")
 def test_make_mmg_callback(notify_api, rmock):
     endpoint = "http://localhost:6011/notifications/sms/mmg"
     rmock.request("POST", endpoint, json={"status": "success"}, status_code=200)
@@ -27,7 +28,9 @@ def test_make_mmg_callback(notify_api, rmock):
 
     assert rmock.called
     assert rmock.request_history[0].url == endpoint
-    assert json.loads(rmock.request_history[0].text)["MSISDN"] == "07700900001"
+    payload = json.loads(rmock.request_history[0].text)
+    assert payload["MSISDN"] == "07700900001"
+    assert payload["deliverytime"] == "2017-07-17 13:14:03"
 
 
 def test_callback_logs_on_api_call_failure(notify_api, rmock, caplog):
@@ -42,24 +45,40 @@ def test_callback_logs_on_api_call_failure(notify_api, rmock, caplog):
     assert "API POST request on http://localhost:6011/notifications/sms/mmg failed with status 500" in caplog.messages
 
 
-@pytest.mark.parametrize("phone_number", ["07700900001", "07700900002", "07700900003", "07700900236"])
-def test_make_firetext_callback(notify_api, rmock, phone_number):
+@pytest.mark.parametrize(
+    "phone_number, number_of_calls, statuses, detailed_status_code",
+    [
+        ("07700900001", 1, ["0"], None),
+        ("07700900002", 1, ["1"], None),
+        ("07700900003", 2, ["2", "1"], "102"),
+        ("07700900236", 1, ["0"], None),
+    ],
+)
+def test_make_firetext_callback(notify_api, rmock, phone_number, number_of_calls, statuses, detailed_status_code):
     endpoint = "http://localhost:6011/notifications/sms/firetext"
     rmock.request("POST", endpoint, json="some data", status_code=200)
     send_sms_response("firetext", "1234", phone_number)
 
     assert rmock.called
+    assert len(rmock.request_history) == number_of_calls
     assert rmock.request_history[0].url == endpoint
     assert f"mobile={phone_number}" in rmock.request_history[0].text
+    for i, status in enumerate(statuses):
+        assert f"status={status}" in rmock.request_history[i].text
+
+    if detailed_status_code:
+        assert f"detailed_status_code={detailed_status_code}" in rmock.request_history[1].text
 
 
+@freeze_time("2017-11-17T12:14:03.646")
 def test_make_ses_callback(notify_api, mock_celery_task):
     mock_task = mock_celery_task(process_ses_results)
     some_ref = str(uuid.uuid4())
 
-    send_email_response(reference=some_ref, to="test@test.com")
+    service_id = uuid.uuid4()
+    send_email_response(reference=some_ref, to="test@test.com", service_id=service_id)
 
-    mock_task.assert_called_once_with(ANY, queue=QueueNames.RESEARCH_MODE)
+    mock_task.assert_called_once_with(ANY, queue=QueueNames.RESEARCH_MODE, MessageGroupId=str(service_id))
     assert mock_task.call_args[0][0][0] == ses_notification_callback(some_ref)
 
 
@@ -92,6 +111,7 @@ def test_temp_failure_mmg_callback(phone_number):
     assert data["CID"] == "1234"
 
 
+@freeze_time("2016-06-10T14:17:00")
 @pytest.mark.parametrize(
     "phone_number", ["07700900001", "+447700900001", "7700900001", "+44 7700900001", "+447700900256"]
 )
@@ -99,17 +119,18 @@ def test_delivered_firetext_callback(phone_number):
     assert firetext_callback("1234", phone_number) == {
         "mobile": phone_number,
         "status": "0",
-        "time": "2016-03-10 14:17:00",
+        "time": "2016-06-10 15:17:00",
         "reference": "1234",
     }
 
 
+@freeze_time("2016-06-10T14:17:00")
 @pytest.mark.parametrize("phone_number", ["07700900002", "+447700900002", "7700900002", "+44 7700900002"])
 def test_failure_firetext_callback(phone_number):
     assert firetext_callback("1234", phone_number) == {
         "mobile": phone_number,
         "status": "1",
-        "time": "2016-03-10 14:17:00",
+        "time": "2016-06-10 15:17:00",
         "reference": "1234",
     }
 
@@ -194,4 +215,4 @@ def test_create_fake_letter_callback_logs_if_max_retries_exceeded(notify_api, fa
     with caplog.at_level("WARN"):
         create_fake_letter_callback(uuid.UUID(fake_uuid), 2, "second")
 
-    assert f"Fake letter callback cound not be created for {fake_uuid}" in caplog.messages
+    assert f"Fake letter callback could not be created for notification {fake_uuid}" in caplog.messages

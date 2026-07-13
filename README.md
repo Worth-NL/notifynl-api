@@ -1,7 +1,7 @@
-# GOV.UK Notify API
+# NotifyNL API
 
 Contains:
-- the public-facing REST API for GOV.UK Notify, which teams can integrate with using [our clients](https://www.notifications.service.gov.uk/documentation)
+- the public-facing REST API for NotifyNL, which teams can integrate with using [our clients](https://www.notifications.service.gov.uk/documentation)
 - an internal-only REST API built using Flask to manage services, users, templates, etc (this is what the [admin app](http://github.com/alphagov/notifications-admin) talks to)
 - asynchronous workers built using Celery to put things on queues and read them off to be processed, sent to providers, updated, etc
 
@@ -9,7 +9,7 @@ Contains:
 
 ### Python version
 
-We run python 3.11 both locally and in production.
+We run python 3.13 both locally and in production.
 
 ### psycopg2
 

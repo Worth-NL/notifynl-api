@@ -1,10 +1,9 @@
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 
-import pytz
 from flask import current_app
 from notifications_utils.timezones import convert_utc_to_bst
 
-from app import notify_celery, redis_store
+from app import db, notify_celery, redis_store
 from app.config import QueueNames
 from app.constants import EMAIL_TYPE, LETTER_TYPE, SMS_TYPE, CacheKeys
 from app.cronitor import cronitor
@@ -13,7 +12,7 @@ from app.dao.fact_billing_dao import (
     update_ft_billing,
     update_ft_billing_letter_despatch,
 )
-from app.dao.fact_notification_status_dao import update_fact_notification_status
+from app.dao.fact_notification_status_dao import generate_fact_notification_status_rows, update_fact_notification_status
 from app.dao.notifications_dao import get_service_ids_with_notifications_on_date
 
 
@@ -22,7 +21,7 @@ from app.dao.notifications_dao import get_service_ids_with_notifications_on_date
 def create_nightly_billing(
     day_start=None,
     n_days=10,
-    stagger_total_period_seconds=timedelta(minutes=5).seconds,
+    stagger_total_period_seconds=timedelta(minutes=5).total_seconds(),  # noqa
 ):
     # day_start is a datetime.date() object. i.e. up to n_days days of data counting
     # back from day_start is consolidated
@@ -42,7 +41,9 @@ def create_nightly_billing(
             countdown=stagger_total_period_seconds * i / n_days,
         )
         current_app.logger.info(
-            "create-nightly-billing task: create-or-update-ft-billing-for-day task created for %s", process_day
+            "create-nightly-billing task: create-or-update-ft-billing-for-day task created for %s",
+            process_day,
+            extra={"process_day": process_day},
         )
 
         create_or_update_ft_billing_letter_despatch_for_day.apply_async(
@@ -51,6 +52,7 @@ def create_nightly_billing(
         current_app.logger.info(
             "create-nightly-billing task: create-or-update-ft-billing-letter-despatch-for-day task created for %s",
             process_day,
+            extra={"process_day": process_day},
         )
 
 
@@ -59,42 +61,67 @@ def create_nightly_billing(
 def update_ft_billing_for_today():
     process_day = convert_utc_to_bst(datetime.utcnow()).date().isoformat()
     create_or_update_ft_billing_for_day(process_day=process_day)
-    redis_store.set(CacheKeys.FT_BILLING_FOR_TODAY_UPDATED_AT_UTC_ISOFORMAT, datetime.now(tz=pytz.utc).isoformat())
+    redis_store.set(CacheKeys.FT_BILLING_FOR_TODAY_UPDATED_AT_UTC_ISOFORMAT, datetime.now(UTC).isoformat())
 
 
 @notify_celery.task(name="create-or-update-ft-billing-for-day")
 def create_or_update_ft_billing_for_day(process_day: str):
     process_date = datetime.strptime(process_day, "%Y-%m-%d").date()
-    current_app.logger.info("create-or-update-ft-billing-for-day task for %s: started", process_date)
+    current_app.logger.info(
+        "create-or-update-ft-billing-for-day task for %s: started",
+        process_date,
+        extra={"process_day": process_date},
+    )
 
     start = datetime.utcnow()
-    billing_data = fetch_billing_data_for_day(process_day=process_date)
+    billing_data = fetch_billing_data_for_day(process_day=process_date, session=db.session_bulk, inner_retry_attempts=2)
     end = datetime.utcnow()
 
+    duration = end - start
+    base_params = {
+        "process_day": process_date,
+        "duration": duration,
+    }
     current_app.logger.info(
-        "create-or-update-ft-billing-for-day task for %s: data fetched in %s seconds",
-        process_date,
-        (end - start).seconds,
+        "create-or-update-ft-billing-for-day task for %(process_day)s: data fetched in %(duration)s",
+        base_params,
+        extra={
+            **base_params,
+            "duration": duration.total_seconds(),
+        },
     )
 
     update_ft_billing(billing_data, process_date)
 
+    extra = {
+        "process_day": process_date,
+        "updated_record_count": len(billing_data),
+    }
     current_app.logger.info(
-        "create-nightly-billing-for-day task for %s: task complete. %s rows updated", process_date, len(billing_data)
+        "create-or-update-ft-billing-for-day task for %(process_day)s: task complete. "
+        "%(updated_record_count)s rows updated",
+        extra,
+        extra=extra,
     )
 
 
 @notify_celery.task(name="create-or-update-ft-billing-letter-despatch-for-day")
 def create_or_update_ft_billing_letter_despatch_for_day(process_day: str):
     process_date = datetime.strptime(process_day, "%Y-%m-%d").date()
-    current_app.logger.info("create-or-update-ft-billing-letter-despatch-for-day task for %s: started", process_date)
+    current_app.logger.info(
+        "create-or-update-ft-billing-letter-despatch-for-day task for %s: started",
+        process_date,
+        extra={"process_day": process_date},
+    )
 
     created, deleted = update_ft_billing_letter_despatch(process_date)
 
+    extra = {"process_day": process_date, "deleted_record_count": deleted, "created_record_count": created}
     current_app.logger.info(
-        "create-or-update-ft-billing-letter-despatch-for-day task for %(date)s: task complete. "
-        "%(deleted)s old row(s) deleted, and %(created)s row(s) created.",
-        {"date": process_date, "deleted": deleted, "created": created},
+        "create-or-update-ft-billing-letter-despatch-for-day task for %(process_day)s: task complete. "
+        "%(deleted_record_count)s old row(s) deleted, and %(created_record_count)s row(s) created.",
+        extra,
+        extra=extra,
     )
 
 
@@ -132,7 +159,12 @@ def create_nightly_notification_status():
         for i in range(days):
             process_day = yesterday - timedelta(days=i)
 
-            relevant_service_ids = get_service_ids_with_notifications_on_date(notification_type, process_day)
+            relevant_service_ids = get_service_ids_with_notifications_on_date(
+                notification_type,
+                process_day,
+                session=db.session_bulk,
+                retry_attempts=2,  # type: ignore
+            )
 
             for service_id in relevant_service_ids:
                 create_nightly_notification_status_for_service_and_day.apply_async(
@@ -142,6 +174,7 @@ def create_nightly_notification_status():
                         "service_id": service_id,
                     },
                     queue=QueueNames.REPORTING,
+                    MessageGroupId=str(service_id),
                 )
 
 
@@ -149,14 +182,24 @@ def create_nightly_notification_status():
 def create_nightly_notification_status_for_service_and_day(process_day, service_id, notification_type):
     process_day = datetime.strptime(process_day, "%Y-%m-%d").date()
 
-    start = datetime.utcnow()
-    update_fact_notification_status(process_day=process_day, notification_type=notification_type, service_id=service_id)
+    rows = generate_fact_notification_status_rows(
+        process_day, notification_type, service_id, session=db.session_bulk, inner_retry_attempts=2
+    )
+    deleted_rows = update_fact_notification_status(rows, process_day, notification_type, service_id)
 
-    end = datetime.utcnow()
+    extra = {
+        "service_id": service_id,
+        "notification_type": notification_type,
+        "process_day": process_day,
+        "deleted_record_count": deleted_rows,
+        "inserted_record_count": len(rows),
+    }
     current_app.logger.info(
         (
-            "create-nightly-notification-status-for-service-and-day task update for "
-            "%(service_id)s, %(type)s for %(date)s: updated in %(duration)s seconds"
+            "create-nightly-notification-status-for-service-and-day for "
+            "%(service_id)s, %(notification_type)s for %(process_day)s: replaced %(deleted_record_count)s "
+            "rows with %(inserted_record_count)s"
         ),
-        {"service_id": service_id, "type": notification_type, "date": process_day, "duration": (end - start).seconds},
+        extra,
+        extra=extra,
     )

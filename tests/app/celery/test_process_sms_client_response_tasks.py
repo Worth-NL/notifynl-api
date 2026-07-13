@@ -10,6 +10,7 @@ from app.celery.process_sms_client_response_tasks import (
 )
 from app.clients import ClientException
 from app.constants import NOTIFICATION_TECHNICAL_FAILURE
+from app.otel_metrics.notification import _callback_duration, _deliver_duration, _international_sms
 
 
 def test_process_sms_client_response_raises_error_if_reference_is_not_a_valid_uuid(client):
@@ -34,6 +35,7 @@ def test_process_sms_response_raises_client_exception_for_unknown_status(
     assert sample_notification.status == NOTIFICATION_TECHNICAL_FAILURE
 
 
+@freeze_time("2020-10-20T03:06:07.3")
 @pytest.mark.parametrize(
     "status, detailed_status_code, sms_provider, expected_notification_status, reason",
     [
@@ -52,10 +54,23 @@ def test_process_sms_client_response_updates_notification_status(
     sample_notification.status = "sending"
 
     with caplog.at_level("INFO"):
-        process_sms_client_response(status, str(sample_notification.id), sms_provider, detailed_status_code)
+        process_sms_client_response(
+            status,
+            str(sample_notification.id),
+            sms_provider,
+            detailed_status_code,
+            "2020-10-20T03:04:05.1",
+            "2020-10-20T03:05:06.2",
+        )
 
     message = f"{sms_provider} callback returned status of {expected_notification_status}({status}): {reason}({detailed_status_code}) for reference: {sample_notification.id}"  # noqa
-    assert message in caplog.messages
+    record = next(r for r in caplog.records if "callback returned status of" in r.msg)
+    assert record.message == message
+    assert record.receipt_received_at == datetime(2020, 10, 20, 3, 5, 6, 200000)
+    assert record.receipt_received_ago == 61.1
+    assert record.delivered_at == datetime(2020, 10, 20, 3, 4, 5, 100000)
+    assert record.delivered_ago == 122.2
+
     assert sample_notification.status == expected_notification_status
 
 
@@ -104,7 +119,10 @@ def test_process_sms_client_response_updates_notification_status_when_detailed_s
     with caplog.at_level("WARNING"):
         process_sms_client_response("1", str(sample_notification.id), "Firetext", "789")
 
-    assert "Failure code 789 from Firetext not recognised" in caplog.messages
+    assert (
+        f"Failure code 789 from Firetext not recognised when processing notification {sample_notification.id}"
+        in caplog.messages
+    )
     assert sample_notification.status == "temporary-failure"
 
 
@@ -116,18 +134,65 @@ def test_sms_response_does_not_send_callback_if_notification_is_not_in_the_db(sa
 
 
 @freeze_time("2001-01-01T12:00:00")
-def test_process_sms_client_response_records_statsd_metrics(sample_notification, client, mocker):
+def test_process_sms_client_response_records_metrics(sample_notification, client, mocker):
+    record_deliver_duration_mock = mocker.patch.object(_deliver_duration, "record")
+    record_callback_duration_mock = mocker.patch.object(_callback_duration, "record")
     mocker.patch("app.statsd_client.incr")
     mocker.patch("app.statsd_client.timing_with_dates")
 
     sample_notification.status = "sending"
-    sample_notification.sent_at = datetime.utcnow()
+    sample_notification.created_at = datetime.utcnow()
+    sample_notification.sent_at = sample_notification.created_at
 
-    process_sms_client_response("0", str(sample_notification.id), "Firetext")
+    process_sms_client_response(
+        "0",
+        str(sample_notification.id),
+        "Firetext",
+        delivery_iso_timestamp="2001-01-01T12:00:42",
+        receipt_iso_timestamp="2001-01-01T12:00:50",
+    )
 
     statsd_client.incr.assert_any_call("callback.firetext.delivered")
     statsd_client.timing_with_dates.assert_any_call(
         "callback.firetext.delivered.elapsed-time", datetime.utcnow(), sample_notification.sent_at
+    )
+
+    record_deliver_duration_mock.assert_called_once_with(
+        42.0,
+        {
+            "key.type": "normal",
+            "notification.status": "delivered",
+            "notification.type": "sms",
+            "notification.sms.international": "false",
+            "provider.name": "firetext",
+        },
+    )
+    record_callback_duration_mock.assert_called_once_with(
+        50.0,
+        {
+            "key.type": "normal",
+            "notification.status": "delivered",
+            "notification.type": "sms",
+            "notification.sms.international": "false",
+            "provider.name": "firetext",
+        },
+    )
+
+
+def test_process_sms_client_response_records_international_sms_metrics(sample_notification, mocker):
+    add_international_sms_mock = mocker.patch.object(_international_sms, "add")
+
+    sample_notification.international = True
+    sample_notification.phone_prefix = "852"
+
+    process_sms_client_response(status="3", provider_reference=str(sample_notification.id), client_name="MMG")
+
+    add_international_sms_mock.assert_called_once_with(
+        1,
+        {
+            "notification.status": "delivered",
+            "notification.sms.country_code": "852",
+        },
     )
 
 

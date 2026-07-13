@@ -4,7 +4,7 @@ from uuid import UUID
 from flask import current_app
 from sqlalchemy import and_, desc
 from sqlalchemy.dialects.postgresql import insert
-from sqlalchemy.orm import aliased
+from sqlalchemy.orm import Session, aliased, scoped_session
 
 from app import db
 from app.constants import SMS_TYPE
@@ -17,7 +17,7 @@ from app.models import (
     Service,
     ServiceDataRetention,
 )
-from app.utils import midnight_n_days_ago
+from app.utils import midnight_n_days_ago, retryable_query
 
 
 @autocommit
@@ -25,8 +25,17 @@ def dao_create_inbound_sms(inbound_sms):
     db.session.add(inbound_sms)
 
 
-def dao_get_inbound_sms_for_service(service_id, user_number=None, *, limit_days=None, limit=None):
-    q = InboundSms.query.filter(InboundSms.service_id == service_id).order_by(InboundSms.created_at.desc())
+@retryable_query()
+def dao_get_inbound_sms_for_service(
+    service_id,
+    user_number=None,
+    *,
+    limit_days=None,
+    limit=None,
+    session: Session | scoped_session = db.session,
+):
+    q = session.query(InboundSms).filter(InboundSms.service_id == service_id).order_by(InboundSms.created_at.desc())
+
     if limit_days is not None:
         start_date = midnight_n_days_ago(limit_days)
         q = q.filter(InboundSms.created_at >= start_date)
@@ -55,10 +64,13 @@ def dao_get_paginated_inbound_sms_for_service_for_public_api(service_id, older_t
     return query.order_by(desc(InboundSms.created_at)).paginate(per_page=page_size).items
 
 
-def dao_count_inbound_sms_for_service(service_id, limit_days):
-    return InboundSms.query.filter(
-        InboundSms.service_id == service_id, InboundSms.created_at >= midnight_n_days_ago(limit_days)
-    ).count()
+@retryable_query()
+def dao_count_inbound_sms_for_service(service_id, limit_days, session: Session | scoped_session = db.session):
+    return (
+        session.query(InboundSms)
+        .filter(InboundSms.service_id == service_id, InboundSms.created_at >= midnight_n_days_ago(limit_days))
+        .count()
+    )
 
 
 def _insert_inbound_sms_history(subquery, query_limit=10000):
@@ -109,11 +121,14 @@ def _delete_inbound_sms(datetime_to_delete_from, query_filter):
 
 @autocommit
 def delete_inbound_sms_older_than_retention():
-    current_app.logger.info("Deleting inbound sms for services with flexible data retention")
+    current_app.logger.info("Deleting inbound SMSs for services with flexible data retention")
 
     flexible_data_retention = (
-        ServiceDataRetention.query.join(ServiceDataRetention.service, Service.inbound_number)
-        .filter(ServiceDataRetention.notification_type == SMS_TYPE)
+        ServiceDataRetention.query.join(ServiceDataRetention.service)
+        .join(Service.inbound_number)
+        .filter(
+            ServiceDataRetention.notification_type == SMS_TYPE,
+        )
         .all()
     )
 
@@ -122,10 +137,23 @@ def delete_inbound_sms_older_than_retention():
     for f in flexible_data_retention:
         n_days_ago = midnight_n_days_ago(f.days_of_retention)
 
-        current_app.logger.info("Deleting inbound sms for service id: %s", f.service_id)
-        deleted += _delete_inbound_sms(n_days_ago, query_filter=[InboundSms.service_id == f.service_id])
+        deleted_for_service = _delete_inbound_sms(n_days_ago, query_filter=[InboundSms.service_id == f.service_id])
 
-    current_app.logger.info("Deleting inbound sms for services without flexible data retention")
+        extra = {
+            "service_id": f.service_id,
+            "deleted_record_count": deleted_for_service,
+            "days_of_retention": f.days_of_retention,
+        }
+        current_app.logger.info(
+            "Deleting %(deleted_record_count)s inbound SMSs for service "
+            "%(service_id)s with %(days_of_retention)s days of retention",
+            extra,
+            extra=extra,
+        )
+
+        deleted += deleted_for_service
+
+    current_app.logger.info("Deleting inbound SMSs for services without flexible data retention")
 
     seven_days_ago = midnight_n_days_ago(7)
 
@@ -136,7 +164,7 @@ def delete_inbound_sms_older_than_retention():
         ],
     )
 
-    current_app.logger.info("Deleted %s inbound sms", deleted)
+    current_app.logger.info("Deleted %s inbound SMSs in total", deleted, extra={"deleted_record_count": deleted})
 
     return deleted
 

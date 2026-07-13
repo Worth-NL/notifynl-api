@@ -1,5 +1,6 @@
 from flask import Blueprint, jsonify, request
 
+from app import db
 from app.dao.fact_notification_status_dao import (
     fetch_notification_status_for_service_for_today_and_7_previous_days,
 )
@@ -26,7 +27,7 @@ def get_template_statistics_for_service_by_day(service_id):
     if whole_days < 0 or whole_days > 7:
         raise InvalidRequest({"whole_days": ["whole_days must be between 0 and 7"]}, status_code=400)
     data = fetch_notification_status_for_service_for_today_and_7_previous_days(
-        service_id, by_template=True, limit_days=whole_days
+        service_id, by_template=True, limit_days=whole_days, session=db.session_bulk
     )
 
     return jsonify(
@@ -47,8 +48,8 @@ def get_template_statistics_for_service_by_day(service_id):
 @template_statistics.route("/last-used/<uuid:template_id>")
 def get_last_used_datetime_for_template(service_id, template_id):
     # Check the template and service exist
-    template = dao_get_template_by_id_and_service_id(template_id, service_id)
+    template = dao_get_template_by_id_and_service_id(template_id, service_id, session=db.session_bulk, retry_attempts=2)
 
-    last_date_used = dao_get_last_date_template_was_used(template)
+    last_date_used = dao_get_last_date_template_was_used(template, session=db.session_bulk, retry_attempts=2)
 
     return jsonify(last_date_used=last_date_used.strftime(DATETIME_FORMAT) if last_date_used else last_date_used)

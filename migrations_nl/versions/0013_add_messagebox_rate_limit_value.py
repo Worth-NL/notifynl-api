@@ -22,11 +22,11 @@ SVC_TABLES = ["services", "services_history"]
 
 def upgrade():
     for service_table in SVC_TABLES:
-        op.execute(f"UPDATE {service_table} SET {MBOX_MSG_LIMIT_COLUMN} = 50")
+        op.execute(sa.text(f"UPDATE {service_table} SET {MBOX_MSG_LIMIT_COLUMN} = 50"))
         op.alter_column(service_table, sa.Column(MBOX_MSG_LIMIT_COLUMN, sa.BigInteger(), nullable=False))
 
 
 def downgrade():
     for service_table in SVC_TABLES:
         op.alter_column(service_table, sa.Column(MBOX_MSG_LIMIT_COLUMN, sa.BigInteger(), nullable=True))
-        op.execute(f"UPDATE {service_table} SET {MBOX_MSG_LIMIT_COLUMN} = NULL")
+        op.execute(sa.text(f"UPDATE {service_table} SET {MBOX_MSG_LIMIT_COLUMN} = NULL"))

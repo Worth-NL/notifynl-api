@@ -1,6 +1,6 @@
-FROM python:3.11-slim-bookworm AS base
+FROM python:3.13-slim-bookworm AS base
 
-COPY --from=ghcr.io/astral-sh/uv:0.5.28 /uv /uvx /bin/
+COPY --from=ghcr.io/astral-sh/uv:0.11.8 /uv /uvx /bin/
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV PYTHONUNBUFFERED=1
@@ -123,7 +123,7 @@ COPY --from=python_build --chown=notify:notify /opt/venv /opt/venv
 COPY --from=python_build --chown=notify:notify /home/vcap/app/app/version.py app/version.py
 COPY --chown=notify:notify . .
 
-ENV SQLALCHEMY_DATABASE_URI=postgresql://postgres:postgres@localhost/
+ENV SQLALCHEMY_DATABASE_URI=postgresql+psycopg2://postgres:postgres@localhost:5432/
 
 ENV UV_CACHE_DIR='/tmp/uv-cache/'
 RUN uv pip sync requirements_nl_test.txt
@@ -144,7 +144,10 @@ RUN \
 # Add the gpg key for postgresql package repository
 RUN set -x \
     && export GNUPGHOME="$(mktemp -d)" \
-    && gpg --batch --keyserver hkps://keyserver.ubuntu.com --recv-keys "$POSTGRES_REPO_KEY" \
+    && ( \
+      gpg --batch --keyserver hkps://keyserver.ubuntu.com --recv-keys "$POSTGRES_REPO_KEY" \
+      || gpg --batch --keyserver hkps://pgp.mit.edu --recv-keys "$POSTGRES_REPO_KEY" \
+    ) \
     && gpg --batch --export "$POSTGRES_REPO_KEY" > /etc/apt/trusted.gpg.d/postgres.gpg \
     && command -v gpgconf > /dev/null && gpgconf --kill all \
     &&rm -rf "$GNUPGHOME" \

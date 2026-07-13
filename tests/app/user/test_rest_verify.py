@@ -107,7 +107,7 @@ def test_user_verify_code_expired_code_and_increments_failed_login_count(code_ty
     assert sample_user.logged_in_at is None
     assert sample_user.current_session_id is None
     assert sample_user.failed_login_count == 1
-    assert f"Rejecting 2fa code for {sample_user.id} because expired=True, used=False" in caplog.messages
+    assert f"Rejecting 2fa code for {sample_user.id} because is_expired=True, is_used=False" in caplog.messages
 
 
 @freeze_time("2016-01-01 10:00:00.000000")
@@ -211,7 +211,9 @@ def test_send_user_sms_code(client, sample_user, sms_code_template, mocker):
     assert notification.reply_to_text == notify_service.get_default_sms_sender()
 
     app.celery.provider_tasks.deliver_sms.apply_async.assert_called_once_with(
-        ([str(notification.id)]), queue="notify-internal-tasks"
+        ([str(notification.id)]),
+        queue="notify-internal-tasks",
+        MessageGroupId=str(notification.service_id),
     )
 
 
@@ -236,7 +238,9 @@ def test_send_user_code_for_sms_with_optional_to_field(client, sample_user, sms_
     notification = Notification.query.first()
     assert notification.to == to_number
     app.celery.provider_tasks.deliver_sms.apply_async.assert_called_once_with(
-        ([str(notification.id)]), queue="notify-internal-tasks"
+        ([str(notification.id)]),
+        queue="notify-internal-tasks",
+        MessageGroupId=str(notification.service_id),
     )
 
 
@@ -307,7 +311,11 @@ def test_send_new_user_email_verification(
     assert resp.status_code == 204
     notification = Notification.query.first()
     assert VerifyCode.query.count() == 0
-    mocked.assert_called_once_with(([str(notification.id)]), queue="notify-internal-tasks")
+    mocked.assert_called_once_with(
+        ([str(notification.id)]),
+        queue="notify-internal-tasks",
+        MessageGroupId=str(notification.service_id),
+    )
     assert notification.reply_to_text == notify_service.get_default_reply_to_email_address()
     assert notification.personalisation["name"] == "Test User"
     assert notification.personalisation["url"].startswith(expected_url_starts_with.format(hostnames=hostnames))
@@ -386,15 +394,15 @@ def test_reset_failed_login_count_returns_404_when_user_does_not_exist(client):
     (
         (
             {},
-            "{hostnames.admin}/email-auth/%2E",
+            "{hostnames.admin}/email-auth/gAA",
         ),
         (
             {"to": None},
-            "{hostnames.admin}/email-auth/%2E",
+            "{hostnames.admin}/email-auth/gAA",
         ),
         (
             {"to": None, "email_auth_link_host": "https://example.com"},
-            "https://example.com/email-auth/%2E",
+            "https://example.com/email-auth/gAA",
         ),
     ),
 )
@@ -413,7 +421,11 @@ def test_send_user_email_code(
     assert str(noti.template_id) == current_app.config["EMAIL_2FA_TEMPLATE_ID"]
     assert noti.personalisation["name"] == "Test User"
     assert noti.personalisation["url"].startswith(expected_auth_url.format(hostnames=hostnames))
-    deliver_email.assert_called_once_with([str(noti.id)], queue="notify-internal-tasks")
+    deliver_email.assert_called_once_with(
+        [str(noti.id)],
+        queue="notify-internal-tasks",
+        MessageGroupId=str(noti.service_id),
+    )
 
 
 def test_send_user_email_code_with_urlencoded_next_param(admin_request, mocker, sample_user, email_2fa_code_template):

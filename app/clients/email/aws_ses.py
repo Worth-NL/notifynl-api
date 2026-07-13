@@ -10,6 +10,7 @@ from app.clients.email import (
     EmailClientException,
     EmailClientNonRetryableException,
 )
+from app.otel_metrics.provider import record_request_duration
 
 ses_response_map = {
     "Permanent": {
@@ -65,6 +66,7 @@ class AwsSesClient(EmailClient):
         self._client = boto3.client("sesv2", region_name=region)
         self.statsd_client = statsd_client
 
+    @record_request_duration(notification_type="email", provider_name="ses")
     def send_email(
         self,
         *,
@@ -79,7 +81,7 @@ class AwsSesClient(EmailClient):
         reply_to_addresses = [punycode_encode_email(reply_to_address)] if reply_to_address else []
         to_addresses = [punycode_encode_email(to_address)]
 
-        body = {"Text": {"Data": body}, "Html": {"Data": html_body}}
+        email_body = {"Text": {"Data": body}, "Html": {"Data": html_body}}
 
         start_time = monotonic()
 
@@ -94,7 +96,7 @@ class AwsSesClient(EmailClient):
                 Content={
                     "Simple": {
                         "Subject": {"Data": subject},
-                        "Body": body,
+                        "Body": email_body,
                         "Headers": headers,
                     },
                 },
@@ -117,10 +119,10 @@ class AwsSesClient(EmailClient):
         else:
             elapsed_time = monotonic() - start_time
             current_app.logger.info(
-                "AWS SES request finished in %s",
+                "AWS SES request finished in %.4g seconds",
                 elapsed_time,
                 extra={
-                    "elapsed_time": elapsed_time,
+                    "duration": elapsed_time,
                 },
             )
             self.statsd_client.timing("clients.ses.request-time", elapsed_time)

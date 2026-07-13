@@ -37,6 +37,7 @@ from app.dao.users_dao import (
     save_user_attribute,
     update_user_password,
     use_user_code,
+    users_permissions_can_be_changed,
 )
 from app.dao.webauthn_credential_dao import (
     dao_get_webauthn_credential_by_user_and_id,
@@ -204,11 +205,16 @@ def verify_user_code(user_id):
 
     code = get_user_code(user_to_verify, data["code"], data["code_type"])
     if user_to_verify.failed_login_count >= current_app.config.get("MAX_FAILED_LOGIN_COUNT"):
+        extra = {
+            "user_id": user_id,
+            "failed_login_count": user_to_verify.failed_login_count,
+            "max_failed_login_count": current_app.config.get("MAX_FAILED_LOGIN_COUNT"),
+        }
         current_app.logger.warning(
-            "Too many login attempts for %s: %s attempts >= limit of %s",
-            user_id,
-            user_to_verify.failed_login_count,
-            current_app.config.get("MAX_FAILED_LOGIN_COUNT"),
+            "Too many login attempts for %(user_id)s: %(failed_login_count)s attempts >= "
+            "limit of %(max_failed_login_count)s",
+            extra,
+            extra=extra,
         )
         raise InvalidRequest("Code not found", status_code=404)
 
@@ -222,7 +228,17 @@ def verify_user_code(user_id):
     if expired or used:
         # sms and email
         increment_failed_login_count(user_to_verify)
-        current_app.logger.warning("Rejecting 2fa code for %s because expired=%s, used=%s", user_id, expired, used)
+        extra = {
+            "user_id": user_id,
+            "is_expired": expired,
+            "is_used": used,
+            "expiry_time": code.expiry_datetime,
+        }
+        current_app.logger.warning(
+            "Rejecting 2fa code for %(user_id)s because is_expired=%(is_expired)s, is_used=%(is_used)s",
+            extra,
+            extra=extra,
+        )
         raise InvalidRequest("Code has expired", status_code=400)
 
     user_to_verify.current_session_id = str(uuid.uuid4())
@@ -276,9 +292,13 @@ def complete_login_after_webauthn_authentication_attempt(user_id):
 def send_user_2fa_code(user_id, code_type):
     user_to_send_to = get_user_by_id(user_id=user_id)
 
-    if count_user_verify_codes(user_to_send_to) >= current_app.config.get("MAX_VERIFY_CODE_COUNT"):
+    if (count := count_user_verify_codes(user_to_send_to)) >= current_app.config.get("MAX_VERIFY_CODE_COUNT"):
         # Prevent more than `MAX_VERIFY_CODE_COUNT` active verify codes at a time
-        current_app.logger.warning("Too many verify codes created for user %s", user_to_send_to.id)
+        current_app.logger.warning(
+            "Too many verify codes created for user %s",
+            user_to_send_to.id,
+            extra={"user_id": user_to_send_to.id, "verify_code_count": count},
+        )
     else:
         data = request.get_json()
         if code_type == SMS_TYPE:
@@ -454,9 +474,16 @@ def set_permissions(user_id, service_id):
     data = request.get_json()
     validate(data, post_set_permissions_schema)
 
+    permissions = [p["permission"] for p in data["permissions"]]
     permission_list = [
         Permission(service_id=service_id, user_id=user_id, permission=p["permission"]) for p in data["permissions"]
     ]
+
+    if not users_permissions_can_be_changed(user, service, new_permissions=permissions):
+        raise InvalidRequest(
+            "Cannot change user permissions - service would have too few users with manage_settings",
+            400,
+        )
 
     permission_dao.set_user_service_permission(user, service, permission_list, _commit=True, replace=True)
 
@@ -607,7 +634,7 @@ def get_orgs_and_services(user):
                 "id": service.id,
                 "name": service.name,
                 "restricted": service.restricted,
-                "organisation": service.organisation.id if service.organisation else None,
+                "organisation": service.organisation_id,
             }
             for service in user.services
             if service.active

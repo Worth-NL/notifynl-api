@@ -29,7 +29,7 @@ tcr = sa.sql.table("notifications", sa.Column("notification_type", new_type, nul
 def upgrade():
     # Add new value to enum
     drop_dependant_view()
-    op.execute("ALTER TYPE notification_type ADD VALUE IF NOT EXISTS 'messagebox'")
+    op.execute(sa.text("ALTER TYPE notification_type ADD VALUE IF NOT EXISTS 'messagebox'"))
     recreate_view()
 
 def downgrade():
@@ -38,22 +38,22 @@ def downgrade():
     # Only way is to recreate the enum:
 
     # Convert 'letter' template into 'email'
-    op.execute(tcr.update().where(tcr.c.template_type == "messagebox").values(template_type="email"))
+    op.execute(sa.text(tcr.update().where(tcr.c.template_type == "messagebox").values(template_type="email")))
 
-    op.execute("ALTER TYPE " + name + " RENAME TO " + tmp_name)
+    op.execute(sa.text("ALTER TYPE " + name + " RENAME TO " + tmp_name))
     old_type.create(op.get_bind())
 
-    op.execute("ALTER TABLE notifications ALTER COLUMN notification_type TYPE notification_type USING type::text::notification_type")
-    op.execute("DROP TYPE notificationtype_tmp")
+    op.execute(sa.text("ALTER TABLE notifications ALTER COLUMN notification_type TYPE notification_type USING type::text::notification_type"))
+    op.execute(sa.text("DROP TYPE notificationtype_tmp"))
 
     recreate_view()
 
 
 def drop_dependant_view():
-  op.execute("drop view IF EXISTS notifications_all_time_view")
+  op.execute(sa.text("drop view IF EXISTS notifications_all_time_view"))
 
 def recreate_view():
-    op.execute(
+    op.execute(sa.text(
         """
         CREATE OR REPLACE VIEW notifications_all_time_view AS
         (
@@ -111,4 +111,4 @@ def recreate_view():
             FROM notification_history
         )
     """
-    )
+    ))

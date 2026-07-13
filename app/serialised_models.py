@@ -1,6 +1,4 @@
-from collections import defaultdict
 from datetime import datetime
-from functools import partial
 from threading import RLock
 from typing import Any
 
@@ -15,23 +13,33 @@ from werkzeug.utils import cached_property
 from app import db, redis_store
 from app.dao.api_key_dao import get_model_api_keys
 from app.dao.organisation_dao import dao_get_organisation_by_id
+from app.dao.provider_details_dao import get_provider_details_by_notification_type
 from app.dao.services_dao import dao_fetch_service_by_id
+from app.utils import is_classmethod
 
-caches = defaultdict(partial(cachetools.TTLCache, maxsize=1024, ttl=2))
-locks = defaultdict(RLock)
 redis_cache = RequestCache(redis_store)
 
 
-def memory_cache(func):
-    @cachetools.cached(
-        cache=caches[func.__qualname__],
-        lock=locks[func.__qualname__],
-        key=ignore_first_argument_cache_key,
-    )
-    def wrapper(*args, **kwargs):
-        return func(*args, **kwargs)
+def memory_cache(*args, ttl=2):
+    def make_cached(func):
+        @cachetools.cached(
+            cache=cachetools.TTLCache(maxsize=1024, ttl=ttl),
+            lock=RLock(),
+            key=ignore_first_argument_cache_key,
+        )
+        def wrapper(*args, **kwargs):
+            if not is_classmethod(func, args[0]):
+                raise TypeError("memory_cache can only be used on classmethods")
+            return func(*args, **kwargs)
 
-    return wrapper
+        return wrapper
+
+    if args:
+        # Decorator is being used without parentheses, eg @memory_cache
+        return make_cached(*args)
+
+    # Decorator is being used with keyword arguments, eg @memory_cache(ttl=123)
+    return make_cached
 
 
 def ignore_first_argument_cache_key(cls, *args, **kwargs):
@@ -42,16 +50,25 @@ class SerialisedTemplate(SerialisedModel):
     archived: bool
     content: str
     id: Any
+    service: Any
     postage: str
     reply_to_text: str
     subject: str
     template_type: str
     version: int
     has_unsubscribe_link: bool
+    email_files: list
 
     @classmethod
     @memory_cache
-    def from_id_and_service_id(cls, template_id, service_id, version=None):
+    def from_id_and_service_id(cls, template_id, service_id):
+        return cls(cls.get_dict(template_id, service_id, None)["data"])
+
+    @classmethod
+    @memory_cache(ttl=30)
+    def from_id_service_id_and_version(cls, template_id, service_id, version):
+        if version is None:
+            raise TypeError("version must be provided for caching")
         return cls(cls.get_dict(template_id, service_id, version)["data"])
 
     @staticmethod
@@ -74,6 +91,22 @@ class SerialisedTemplate(SerialisedModel):
         db.session.commit()
 
         return {"data": template_dict}
+
+    @cached_property
+    def email_file_objects(self):
+        return SerialisedTemplateEmailFileCollection(self.email_files)
+
+
+class SerialisedTemplateEmailFile(SerialisedModel):
+    id: Any
+    filename: str
+    link_text: str
+    retention_period: int
+    validate_users_email: bool
+
+
+class SerialisedTemplateEmailFileCollection(SerialisedModelCollection):
+    model = SerialisedTemplateEmailFile
 
 
 class SerialisedService(SerialisedModel):
@@ -136,6 +169,31 @@ class SerialisedAPIKeyCollection(SerialisedModelCollection):
         ]
         db.session.commit()
         return cls(keys)
+
+
+class SerialisedProvider(SerialisedModel):
+    identifier: str
+    priority: int
+    active: bool
+
+    def __eq__(self, other):
+        if not isinstance(other, self.__class__):
+            return False
+        return self.identifier == other.identifier
+
+
+class SerialisedProviders(SerialisedModelCollection):
+    model = SerialisedProvider
+
+    @classmethod
+    @memory_cache(ttl=10)
+    def from_notification_type(cls, notification_type, international):
+        return cls(
+            [
+                provider.serialize()
+                for provider in get_provider_details_by_notification_type(notification_type, international)
+            ]
+        )
 
 
 class SerialisedOrganisation(SerialisedModel):

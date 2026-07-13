@@ -1,3 +1,4 @@
+import uuid
 from datetime import date, datetime, timedelta
 from unittest import mock
 from uuid import UUID
@@ -5,6 +6,7 @@ from uuid import UUID
 import pytest
 from freezegun import freeze_time
 
+from app import db
 from app.constants import (
     EMAIL_TYPE,
     KEY_TYPE_TEAM,
@@ -30,6 +32,7 @@ from app.dao.fact_notification_status_dao import (
     fetch_notification_status_totals_for_all_services,
     fetch_notification_statuses_for_job,
     fetch_stats_for_all_services_by_date_range,
+    generate_fact_notification_status_rows,
     get_total_notifications_for_date_range,
     update_fact_notification_status,
 )
@@ -41,9 +44,18 @@ from tests.app.db import (
     create_service,
     create_template,
 )
+from tests.utils import QueryRecorder
 
 
-def test_fetch_notification_status_for_service_by_month(notify_db_session):
+@pytest.mark.parametrize(
+    "session,expected_bind_key",
+    (
+        (db.session, None),
+        (db.session_bulk, "bulk"),
+    ),
+    ids=("default", "bulk"),
+)
+def test_fetch_notification_status_for_service_by_month(notify_db_session, session, expected_bind_key):
     service_1 = create_service(service_name="service_1")
     service_2 = create_service(service_name="service_2")
 
@@ -63,10 +75,18 @@ def test_fetch_notification_status_for_service_by_month(notify_db_session):
     # not included - test keys
     create_ft_notification_status(date(2018, 1, 3), "sms", service_1, key_type=KEY_TYPE_TEST)
 
-    results = sorted(
-        fetch_notification_status_for_service_by_month(date(2018, 1, 1), date(2018, 2, 28), service_1.id),
-        key=lambda x: (x.month, x.notification_type, x.notification_status),
-    )
+    results = []
+    start_date = date(2018, 1, 1)
+    end_date = date(2018, 2, 28)
+    service_id = service_1.id
+
+    with QueryRecorder() as query_recorder:
+        results = sorted(
+            fetch_notification_status_for_service_by_month(start_date, end_date, service_id, session=session),
+            key=lambda x: (x.month, x.notification_type, x.notification_status),
+        )
+
+    assert {query_info.bind_key for query_info in query_recorder.queries} == {expected_bind_key}
 
     assert len(results) == 4
 
@@ -133,8 +153,17 @@ def test_fetch_notification_status_for_service_for_day(notify_db_session):
     assert results[1].count == 1
 
 
+@pytest.mark.parametrize(
+    "session,expected_bind_key",
+    (
+        (db.session, None),
+        (db.session_bulk, "bulk"),
+    ),
+)
 @freeze_time("2018-10-31T18:00:00")
-def test_fetch_notification_status_for_service_for_today_and_7_previous_days(notify_db_session):
+def test_fetch_notification_status_for_service_for_today_and_7_previous_days(
+    notify_db_session, session, expected_bind_key
+):
     service_1 = create_service(service_name="service_1")
     sms_template = create_template(service=service_1, template_type=SMS_TYPE)
     sms_template_2 = create_template(service=service_1, template_type=SMS_TYPE)
@@ -154,10 +183,14 @@ def test_fetch_notification_status_for_service_for_today_and_7_previous_days(not
     # too early, shouldn't be included
     create_notification(service_1.templates[0], created_at=datetime(2018, 10, 30, 12, 0, 0), status="delivered")
 
-    results = sorted(
-        fetch_notification_status_for_service_for_today_and_7_previous_days(service_1.id),
-        key=lambda x: (x.notification_type, x.status),
-    )
+    service_1_id = service_1.id
+    with QueryRecorder() as query_recorder:
+        results = sorted(
+            fetch_notification_status_for_service_for_today_and_7_previous_days(service_1_id, session=session),
+            key=lambda x: (x.notification_type, x.status),
+        )
+
+    assert {query_info.bind_key for query_info in query_recorder.queries} == {expected_bind_key}
 
     assert len(results) == 4
 
@@ -178,8 +211,17 @@ def test_fetch_notification_status_for_service_for_today_and_7_previous_days(not
     assert results[3].count == 19
 
 
+@pytest.mark.parametrize(
+    "session,expected_bind_key",
+    (
+        (db.session, None),
+        (db.session_bulk, "bulk"),
+    ),
+)
 @freeze_time("2018-10-31T18:00:00")
-def test_fetch_notification_status_by_template_for_service_for_today_and_7_previous_days(notify_db_session):
+def test_fetch_notification_status_by_template_for_service_for_today_and_7_previous_days(
+    notify_db_session, session, expected_bind_key
+):
     service_1 = create_service(service_name="service_1")
     sms_template = create_template(template_name="sms Template 1", service=service_1, template_type=SMS_TYPE)
     sms_template_2 = create_template(template_name="sms Template 2", service=service_1, template_type=SMS_TYPE)
@@ -203,7 +245,13 @@ def test_fetch_notification_status_by_template_for_service_for_today_and_7_previ
     # too early, shouldn't be included
     create_notification(service_1.templates[0], created_at=datetime(2018, 10, 30, 12, 0, 0), status="delivered")
 
-    results = fetch_notification_status_for_service_for_today_and_7_previous_days(service_1.id, by_template=True)
+    service_1_id = service_1.id
+    with QueryRecorder() as query_recorder:
+        results = fetch_notification_status_for_service_for_today_and_7_previous_days(
+            service_1_id, by_template=True, session=session
+        )
+
+    assert {query_info.bind_key for query_info in query_recorder.queries} == {expected_bind_key}
 
     assert [
         ("email Template Name", False, mock.ANY, "email", "delivered", 1),
@@ -484,7 +532,12 @@ def test_fetch_monthly_template_usage_for_service_does_not_include_test_notifica
 
 
 @freeze_time("2019-05-10 14:00")
-def test_fetch_monthly_notification_statuses_per_service(notify_db_session):
+@pytest.mark.parametrize(
+    "session,expected_bind_key",
+    ((db.session, None), (db.session_bulk, "bulk")),
+    ids=("default", "bulk"),
+)
+def test_fetch_monthly_notification_statuses_per_service(notify_db_session, session, expected_bind_key):
     service_one = create_service(service_name="service one", service_id=UUID("e4e34c4e-73c1-4802-811c-3dd273f21da4"))
     service_two = create_service(service_name="service two", service_id=UUID("b19d7aad-6f09-4198-8b62-f6cf126b87e5"))
 
@@ -547,7 +600,10 @@ def test_fetch_monthly_notification_statuses_per_service(notify_db_session):
         date(2019, 3, 31), notification_type="letter", service=service_one, notification_status=NOTIFICATION_DELIVERED
     )
 
-    results = fetch_monthly_notification_statuses_per_service(date(2019, 3, 1), date(2019, 4, 30))
+    with QueryRecorder() as qr:
+        results = fetch_monthly_notification_statuses_per_service(date(2019, 3, 1), date(2019, 4, 30), session=session)
+
+    assert {q.bind_key for q in qr.queries} == {expected_bind_key}
 
     assert len(results) == 6
     # column order: date, service_id, service_name, notifaction_type, count_sending, count_delivered,
@@ -561,7 +617,15 @@ def test_fetch_monthly_notification_statuses_per_service(notify_db_session):
 
 
 @freeze_time("2019-04-10 14:00")
-def test_fetch_monthly_notification_statuses_per_service_for_rows_that_should_be_excluded(notify_db_session):
+@freeze_time("2019-05-10 14:00")
+@pytest.mark.parametrize(
+    "session,expected_bind_key",
+    ((db.session, None), (db.session_bulk, "bulk")),
+    ids=("default", "bulk"),
+)
+def test_fetch_monthly_notification_statuses_per_service_for_rows_that_should_be_excluded(
+    notify_db_session, session, expected_bind_key
+):
     valid_service = create_service(service_name="valid service")
     inactive_service = create_service(service_name="inactive", active=False)
     restricted_service = create_service(service_name="restricted", restricted=True)
@@ -578,7 +642,10 @@ def test_fetch_monthly_notification_statuses_per_service_for_rows_that_should_be
     create_ft_notification_status(date(2019, 2, 28), service=valid_service)
     create_ft_notification_status(date(2019, 4, 1), service=valid_service)
 
-    results = fetch_monthly_notification_statuses_per_service(date(2019, 3, 1), date(2019, 3, 31))
+    with QueryRecorder() as qr:
+        results = fetch_monthly_notification_statuses_per_service(date(2019, 3, 1), date(2019, 3, 31), session=session)
+
+    assert {q.bind_key for q in qr.queries} == {expected_bind_key}
     assert len(results) == 0
 
 
@@ -614,27 +681,225 @@ def test_get_total_notifications_for_date_range(sample_service):
 
 @freeze_time("2022-03-31T18:00:00")
 @pytest.mark.parametrize(
-    "created_at_utc,process_day,expected_count",
+    "session,expected_bind_key",
+    (
+        (db.session, None),
+        (db.session_bulk, "bulk"),
+    ),
+)
+@pytest.mark.parametrize(
+    "created_at_utc,process_day,expected_present",
     [
         # Clocks change on the 27th of March 2022, so the query needs to look at the
         # time range 00:00 - 23:00 (UTC) thereafter.
-        ("2022-03-27T00:30", date(2022, 3, 27), 1),  # 27/03 00:30 GMT
-        ("2022-03-27T22:30", date(2022, 3, 27), 1),  # 27/03 23:30 BST
-        ("2022-03-27T23:30", date(2022, 3, 27), 0),  # 28/03 00:30 BST
-        ("2022-03-26T23:30", date(2022, 3, 26), 1),  # 26/03 23:30 GMT
+        ("2022-03-27T00:30", date(2022, 3, 27), True),  # 27/03 00:30 GMT
+        ("2022-03-27T22:30", date(2022, 3, 27), True),  # 27/03 23:30 BST
+        ("2022-03-27T23:30", date(2022, 3, 27), False),  # 28/03 00:30 BST
+        ("2022-03-26T23:30", date(2022, 3, 26), True),  # 26/03 23:30 GMT
     ],
 )
-def test_update_fact_notification_status_respects_gmt_bst(
-    sample_template,
-    sample_service,
+def test_generate_fact_notification_status_rows_respects_gmt_bst(
+    sample_job,
+    session,
+    expected_bind_key,
     created_at_utc,
     process_day,
-    expected_count,
+    expected_present,
 ):
-    create_notification(template=sample_template, created_at=created_at_utc)
-    update_fact_notification_status(process_day, SMS_TYPE, sample_service.id)
+    create_notification(job=sample_job, created_at=created_at_utc)
 
-    assert (
-        FactNotificationStatus.query.filter_by(service_id=sample_service.id, bst_date=process_day).count()
-        == expected_count
+    # importantly retrieved outside QueryRecorder
+    service_id = sample_job.service.id
+    notification_type = sample_job.template.template_type
+
+    with QueryRecorder() as query_recorder:
+        rows = generate_fact_notification_status_rows(process_day, notification_type, service_id, session=session)
+
+    assert [row._asdict() for row in rows] == (
+        [
+            {
+                "bst_date": process_day,
+                "template_id": sample_job.template.id,
+                "service_id": service_id,
+                "job_id": sample_job.id,
+                "notification_type": notification_type,
+                "key_type": "normal",
+                "notification_status": "created",
+                "notification_count": 1,
+            }
+        ]
+        if expected_present
+        else []
     )
+
+    assert {query_info.bind_key for query_info in query_recorder.queries} == {expected_bind_key}
+
+
+def _mock_row_from_dict(row_dict):
+    m = mock.Mock(spec_set=list(row_dict.keys()) + ["_asdict"])
+    m.configure_mock(**row_dict)
+    m._asdict.return_value = row_dict.copy()
+    return m
+
+
+def test_update_fact_notification_status(
+    sample_job,
+    sample_template,
+):
+    create_ft_notification_status(
+        bst_date=date(2021, 2, 27), service=sample_job.service, template=sample_job.template, job=sample_job, count=12
+    )
+    create_ft_notification_status(
+        bst_date=date(2021, 2, 28), service=sample_job.service, template=sample_job.template, job=sample_job, count=34
+    )
+    create_ft_notification_status(
+        bst_date=date(2021, 2, 28), service=sample_job.service, template=sample_job.template, count=56
+    )
+    create_ft_notification_status(
+        bst_date=date(2021, 2, 28), service=sample_template.service, template=sample_template, count=78
+    )
+    create_ft_notification_status(
+        bst_date=date(2021, 2, 28),
+        service=sample_job.service,
+        template=sample_job.template,
+        job=sample_job,
+        notification_status="sending",
+        count=99,
+    )
+
+    new_rows = [
+        _mock_row_from_dict(row_dict)
+        for row_dict in (
+            {
+                "bst_date": date(2021, 2, 28),
+                "template_id": sample_job.template.id,
+                "service_id": sample_job.service.id,
+                "job_id": sample_job.id,
+                "notification_type": sample_job.template.template_type,
+                "key_type": "normal",
+                "notification_status": "delivered",
+                "notification_count": 87,
+            },
+            {
+                "bst_date": date(2021, 2, 28),
+                "template_id": sample_template.id,
+                "service_id": sample_template.service.id,
+                "job_id": uuid.UUID(int=0),  # wat
+                "notification_type": sample_template.template_type,
+                "key_type": "normal",
+                "notification_status": "delivered",
+                "notification_count": 65,
+            },
+            {
+                "bst_date": date(2021, 2, 28),
+                "template_id": sample_template.id,
+                "service_id": sample_template.service.id,
+                "job_id": uuid.UUID(int=0),  # wat
+                "notification_type": sample_template.template_type,
+                "key_type": "normal",
+                "notification_status": "created",
+                "notification_count": 43,
+            },
+        )
+    ]
+
+    deleted_count = update_fact_notification_status(
+        new_rows, date(2021, 2, 28), sample_job.template.template_type, sample_job.service.id
+    )
+
+    assert deleted_count == 4
+    assert set(
+        db.session.query(
+            FactNotificationStatus.bst_date,
+            FactNotificationStatus.template_id,
+            FactNotificationStatus.service_id,
+            FactNotificationStatus.job_id,
+            FactNotificationStatus.notification_type,
+            FactNotificationStatus.key_type,
+            FactNotificationStatus.notification_status,
+            FactNotificationStatus.notification_count,
+        ).all()
+    ) == {
+        (
+            date(2021, 2, 27),
+            sample_job.template.id,
+            sample_job.service.id,
+            sample_job.id,
+            sample_job.template.template_type,
+            "normal",
+            "delivered",
+            12,
+        ),
+        (
+            date(2021, 2, 28),
+            sample_template.id,
+            sample_template.service.id,
+            uuid.UUID(int=0),
+            sample_template.template_type,
+            "normal",
+            "created",
+            43,
+        ),
+        (
+            date(2021, 2, 28),
+            sample_template.id,
+            sample_template.service.id,
+            uuid.UUID(int=0),
+            sample_template.template_type,
+            "normal",
+            "delivered",
+            65,
+        ),
+        (
+            date(2021, 2, 28),
+            sample_job.template.id,
+            sample_job.service.id,
+            sample_job.id,
+            sample_job.template.template_type,
+            "normal",
+            "delivered",
+            87,
+        ),
+    }
+
+
+def test_update_fact_notification_status_empty_new_rows(
+    sample_job,
+    sample_template,
+):
+    create_ft_notification_status(
+        bst_date=date(2021, 2, 27), service=sample_job.service, template=sample_job.template, job=sample_job, count=12
+    )
+    create_ft_notification_status(
+        bst_date=date(2021, 2, 28), service=sample_job.service, template=sample_job.template, job=sample_job, count=34
+    )
+
+    new_rows = []
+    deleted_count = update_fact_notification_status(
+        new_rows, date(2021, 2, 28), sample_job.template.template_type, sample_job.service.id
+    )
+
+    assert deleted_count == 1
+    assert set(
+        db.session.query(
+            FactNotificationStatus.bst_date,
+            FactNotificationStatus.template_id,
+            FactNotificationStatus.service_id,
+            FactNotificationStatus.job_id,
+            FactNotificationStatus.notification_type,
+            FactNotificationStatus.key_type,
+            FactNotificationStatus.notification_status,
+            FactNotificationStatus.notification_count,
+        ).all()
+    ) == {
+        (
+            date(2021, 2, 27),
+            sample_job.template.id,
+            sample_job.service.id,
+            sample_job.id,
+            sample_job.template.template_type,
+            "normal",
+            "delivered",
+            12,
+        ),
+    }

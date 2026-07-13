@@ -16,6 +16,7 @@ from urllib3.util.ssl_ import create_urllib3_context
 
 from app.clients import ClientException
 from app.constants import EUROPE, INTERNATIONAL_POSTAGE_TYPES, NETHERLANDS, REST_OF_WORLD
+from app.otel_metrics.provider import record_request_duration
 
 
 class DvlaException(ClientException):
@@ -54,9 +55,9 @@ def _handle_common_dvla_errors(custom_httperror_exc_handler: Callable[[requests.
         if e.response.status_code == 429:
             raise DvlaThrottlingException from e
         elif e.response.status_code >= 500:
-            raise DvlaRetryableException(f"Received {e.response.status_code} from {e.request.url}") from e
+            raise DvlaRetryableException(f"Received {e.response.status_code} from {e.request.url}") from e  # type: ignore[union-attr]
         else:
-            raise DvlaNonRetryableException(f"Received {e.response.status_code} from {e.request.url}") from e
+            raise DvlaNonRetryableException(f"Received {e.response.status_code} from {e.request.url}") from e  # type: ignore[union-attr]
 
 
 class SSMParameter:
@@ -254,11 +255,13 @@ class DVLAClient:
             "X-API-Key": self.dvla_api_key.get(),
         }
 
+    @record_request_duration(notification_type="letter", provider_name="dvla")
     def send_letter(
         self,
         *,
         notification_id: str,
         reference: str,
+        client_reference: str,
         address: PostalAddress,
         postage: Literal["netherlands", "rest-of-world", "europe"],
         service_id: str,
@@ -288,6 +291,7 @@ class DVLAClient:
                 json=self._format_create_print_job_json(
                     notification_id=notification_id,
                     reference=reference,
+                    client_reference=client_reference,
                     address=address,
                     postage=postage,
                     service_id=service_id,
@@ -300,7 +304,17 @@ class DVLAClient:
             return response.json()
 
     def _format_create_print_job_json(
-        self, *, notification_id, reference, address, postage, service_id, organisation_id, pdf_file, callback_url
+        self,
+        *,
+        notification_id,
+        reference,
+        client_reference,
+        address,
+        postage,
+        service_id,
+        organisation_id,
+        pdf_file,
+        callback_url,
     ):
         # We shouldn't need to pass the postage in, as the address has a postage field. However, at this point we've
         # recorded the postage on the notification so we should respect that rather than introduce any possible
@@ -316,6 +330,7 @@ class DVLAClient:
                 "jobType": "NOTIFY",
                 "templateReference": "NOTIFY",
                 "businessIdentifier": reference,
+                "clientReference": client_reference,
                 "recipientName": recipient,
                 "address": address_data,
             },
@@ -388,7 +403,7 @@ class DVLAClient:
 
         return recipient, {"unstructuredAddress": self._build_address(address_lines, "postcode")}
 
-    def _truncate_long_address_lines(self, address_data: dict) -> tuple[str, dict]:
+    def _truncate_long_address_lines(self, address_data: dict) -> dict[str, dict]:
         def truncate_line(key: str, value):
             if not isinstance(value, str):
                 return value
