@@ -2081,6 +2081,7 @@ urllib3==2.6.3 \
     # via
     #   -r requirements_nl.txt
     #   botocore
+    #   notifications-utils
     #   requests
     #   responses
     #   sentry-sdk

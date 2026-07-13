@@ -303,6 +303,9 @@ class EmailBranding(db.Model):
 
     active = db.Column(db.Boolean, nullable=False, default=True)
 
+    alignment = db.Column(db.String(6), nullable=False, default="left")
+    height = db.Column(db.Numeric(asdecimal=False), nullable=True)
+
     CONSTRAINT_UNIQUE_NAME = "uq_email_branding_name"
     CONSTRAINT_CHECK_ONE_OF_ALT_TEXT_TEXT_NULL = "ck_email_branding_one_of_alt_text_or_text_is_null"
     # one of alt_text or text MUST be supplied
@@ -325,8 +328,9 @@ class EmailBranding(db.Model):
             created_by=self.created_by,
             created_at=self.created_at.strftime(DATETIME_FORMAT) if self.created_at else None,
             updated_at=self.updated_at.strftime(DATETIME_FORMAT) if self.updated_at else None,
+            alignment: self.alignment,
+            height: self.height,
         )
-
 
 service_email_branding = db.Table(
     "service_email_branding",
