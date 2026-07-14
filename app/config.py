@@ -263,7 +263,7 @@ class Config:
     NOTIFY_SUPPORT_EMAIL_ADDRESS = "support@notificatie.nl"
 
     AWS_ACCOUNT_ID = os.environ.get("AWS_ACCOUNT_ID", "123456789012")
-    CELERY = {
+    CELERY: dict[str, Any] = {
         "broker_url": "https://sqs.eu-west-1.amazonaws.com",
         "broker_transport": "sqs",
         "task_ignore_result": True,
@@ -586,9 +586,7 @@ class Development(Config):
     CELERY = {
         **Config.CELERY,
         "broker_transport_options": {
-            key: value
-            for key, value in Config.CELERY["broker_transport_options"].items()  # type: ignore[union-attr,attr-defined]
-            if key != "predefined_queues"
+            key: value for key, value in Config.CELERY["broker_transport_options"].items() if key != "predefined_queues"
         },
     }
 
@@ -679,9 +677,7 @@ class Test(Development):
         "broker_url": "you-forgot-to-mock-celery-in-your-tests://",
         "broker_transport": None,
         "broker_transport_options": {
-            key: value
-            for key, value in Config.CELERY["broker_transport_options"].items()  # type: ignore[union-attr,attr-defined]
-            if key != "predefined_queues"
+            key: value for key, value in Config.CELERY["broker_transport_options"].items() if key != "predefined_queues"
         },
     }
 
