@@ -328,9 +328,10 @@ class EmailBranding(db.Model):
             created_by=self.created_by,
             created_at=self.created_at.strftime(DATETIME_FORMAT) if self.created_at else None,
             updated_at=self.updated_at.strftime(DATETIME_FORMAT) if self.updated_at else None,
-            alignment: self.alignment,
-            height: self.height,
+            alignment=self.alignment,
+            height=self.height,
         )
+
 
 service_email_branding = db.Table(
     "service_email_branding",
