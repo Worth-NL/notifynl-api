@@ -717,6 +717,8 @@ def test_email_branding_serializes_with_all_fields(notify_db_session):
         "created_by": user_id,
         "created_at": created_at.strftime(DATETIME_FORMAT),
         "updated_at": updated_at.strftime(DATETIME_FORMAT),
+        "alignment": None,
+        "height": None,
     }
 
 
@@ -741,6 +743,8 @@ def test_email_branding_serializes_with_minimal_fields(notify_db_session):
         "created_by": None,
         "created_at": None,
         "updated_at": None,
+        "alignment": None,
+        "height": None,
     }
 
 

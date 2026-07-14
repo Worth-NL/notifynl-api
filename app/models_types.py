@@ -44,6 +44,8 @@ class SerializedEmailBranding(TypedDict):
     created_by: Any | None
     created_at: str | None
     updated_at: str | None
+    alignment: str
+    height: float | None
 
 
 class SerializedLetterBranding(TypedDict):
