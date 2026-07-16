@@ -7,5 +7,19 @@
             "envManager": "ms-python.python:venv",
             "packageManager": "ms-python.python:pip"
         }
-    ]
+    ],
+    "emeraldwalk.runonsave": {
+        "commands": [
+            {
+                "match": "requirements_nl_test\\.in$",
+                "cmd": "cd ${workspaceFolder} && uv pip compile requirements_nl_test.in -o requirements_nl_test.txt",
+                "isAsync": false
+            },
+            {
+                "match": "requirements_nl\\.in$",
+                "cmd": "cd ${workspaceFolder} && uv pip compile requirements_nl.in -o requirements_nl.txt && uv pip compile requirements_nl_test.in -o requirements_nl_test.txt",
+                "isAsync": false
+            }
+        ]
+    }
 }

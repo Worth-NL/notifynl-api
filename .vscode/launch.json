@@ -50,10 +50,7 @@
         "run_celery.notify_celery",
         "beat",
         "-l",
-        "DEBUG",
-        "--without-gossip",
-        "--without-mingle",
-        "--without-heartbeat"
+        "DEBUG"
       ],
       "consoleName": "Celery beat",
       "preLaunchTask": "API pre-launch"

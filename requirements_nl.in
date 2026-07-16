@@ -1,6 +1,5 @@
 ### From requirements.in
 
-
 celery[sqs]==5.6.0
 # Pin kombu to merge of PR #2342 (SQS fair queue / MessageGroupId support) until kombu 5.7 is released
 kombu @ git+https://github.com/celery/kombu.git@860e40a6c904c4d8551577d9f4e8c00f03b6e06c
@@ -54,3 +53,5 @@ opentelemetry-instrumentation-requests
 opentelemetry-instrumentation-sqlalchemy
 opentelemetry-instrumentation-system-metrics
 opentelemetry-instrumentation-urllib3
+
+-e ../ebms-adapter-client
