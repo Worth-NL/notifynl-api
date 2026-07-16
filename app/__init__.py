@@ -40,6 +40,7 @@ from app.clients.document_download import DocumentDownloadClient
 from app.clients.email.aws_ses import AwsSesClient
 from app.clients.email.aws_ses_stub import AwsSesStubClient
 from app.clients.letter.dvla import DVLAClient
+from app.clients.messagebox.ebms_adapter import EbmsAdapterClient
 from app.clients.sms.firetext import FiretextClient
 from app.clients.sms.mmg import MMGClient
 from app.clients.sms.spryng import SpryngClient
@@ -121,6 +122,15 @@ get_aws_ses_stub_client: LazyLocalGetter[AwsSesStubClient] = LazyLocalGetter(
 )
 memo_resetters.append(lambda: get_aws_ses_stub_client.clear())
 aws_ses_stub_client = LocalProxy(get_aws_ses_stub_client)
+
+_ebms_adapter_client_context_var: ContextVar[EbmsAdapterClient] = ContextVar("ebms_adapter_client")
+get_ebms_adapter_client: LazyLocalGetter[EbmsAdapterClient] = LazyLocalGetter(
+    _ebms_adapter_client_context_var,
+    lambda: EbmsAdapterClient(current_app, statsd_client=statsd_client),
+    expected_type=EbmsAdapterClient,
+)
+memo_resetters.append(lambda: get_ebms_adapter_client.clear())
+ebms_adapter_client = LocalProxy(get_ebms_adapter_client)
 
 _notification_provider_clients_context_var: ContextVar[NotificationProviderClients] = ContextVar(
     "notification_provider_clients"

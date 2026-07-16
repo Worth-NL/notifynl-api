@@ -27,7 +27,6 @@ class QueueNames:
     LETTERS = "letter-tasks"
     SES_CALLBACKS = "ses-callbacks"
     SMS_CALLBACKS = "sms-callbacks"
-    MESSAGEBOX_CALLBACKS = "messagebox-callbacks"
     LETTER_CALLBACKS = "letter-callbacks"
     ANTIVIRUS = "antivirus-tasks"
     SANITISE_LETTERS = "sanitise-letter-tasks"
@@ -53,7 +52,6 @@ class QueueNames:
             QueueNames.LETTERS,
             QueueNames.SES_CALLBACKS,
             QueueNames.SMS_CALLBACKS,
-            QueueNames.MESSAGEBOX_CALLBACKS,
             QueueNames.LETTER_CALLBACKS,
             QueueNames.REPORT_REQUESTS_NOTIFICATIONS,
         ]
@@ -731,8 +729,31 @@ class Sandbox(CloudFoundryConfig):
 NL_PREFIX = "notifynl"
 
 
+class QueueNamesNL(QueueNames):
+    MESSAGEBOX = "messagebox-tasks"
+    MESSAGEBOX_CALLBACKS = "messagebox-callbacks"
+
+    @staticmethod
+    def all_queues():
+        return QueueNames.all_queues() + [QueueNamesNL.MESSAGEBOX, QueueNamesNL.MESSAGEBOX_CALLBACKS]
+
+    @staticmethod
+    def predefined_queues(prefix, aws_region, aws_account_id):
+        return {
+            f"{prefix}{queue}": {"url": f"https://sqs.{aws_region}.amazonaws.com/{aws_account_id}/{prefix}{queue}"}
+            for queue in list(set(QueueNamesNL.all_queues() + QueueNamesNL.external_queues()))
+        }
+
+
 class TaskNamesNL(TaskNames):
-    SCAN_MESSAGEBOX_ATTACHMENTS = "scan-messagebox-attachments"
+    MESSAGEBOX_DELIVER = "messagebox.deliver"
+    MESSAGEBOX_PROCESS_CALLBACKS = "messagebox.process-callbacks"
+    MESSAGEBOX_SCAN_ATTACHMENTS = "messagebox.virus-scan"
+    MESSAGEBOX_VIRUS_SCAN_SUCCESS = "messagebox.virus-scan-success"
+    MESSAGEBOX_VIRUS_SCAN_ERROR = "messagebox.virus-scan-error"
+    MESSAGEBOX_VIRUS_SCAN_FAILED = "messagebox.virus-scan-failed"
+    MESSAGEBOX_PROCESS_UNPROCESSED = "messagebox.process-unprocessed"
+    MESSAGEBOX_CHECK_STILL_PENDING = "messagebox.check-still-pending"
 
 
 class ConfigNL(Config):
@@ -768,10 +789,34 @@ class ConfigNL(Config):
     BEAT_SCHEDULE["check-time-to-collate-letters"] = {
         "task": "check-time-to-collate-letters",
         "schedule": crontab(minute=LETTER_COLLATION_FREQUENCY),  # every 5 minutes, adjust as needed
-        "options": {"queue": QueueNames.PERIODIC},
+        "options": {"queue": QueueNamesNL.PERIODIC},
     }
 
-    CELERY = {**Config.CELERY, "broker_transport_options": BROKER_TRANSPORT_OPTIONS, "beat_schedule": BEAT_SCHEDULE}
+    # The ebms-adapter has no true push callback -- delivery status is retrieved by polling the ebms-adapter for
+    # unprocessed messages. 5 minutes matches the existing tend-providers-back-to-middle cadence and balances adapter
+    # load against citizen-facing delivery-status latency.
+    MESSAGEBOX_POLL_FREQUENCY = os.getenv("MESSAGEBOX_POLL_FREQUENCY", "*/5")
+
+    BEAT_SCHEDULE["messagebox-process-unprocessed"] = {
+        "task": TaskNamesNL.MESSAGEBOX_PROCESS_UNPROCESSED,
+        "schedule": crontab(minute=MESSAGEBOX_POLL_FREQUENCY),
+        "options": {"queue": QueueNamesNL.PERIODIC},
+    }
+
+    BEAT_SCHEDULE["messagebox-check-still-pending"] = {
+        "task": TaskNamesNL.MESSAGEBOX_CHECK_STILL_PENDING,
+        "schedule": crontab(minute=0),  # hourly
+        "options": {"queue": QueueNamesNL.PERIODIC},
+    }
+
+    CELERY_IMPORTS = Config.CELERY["imports"] + ["app.celery.messagebox_tasks", "app.celery.messagebox_scheduled_tasks"]
+
+    CELERY = {
+        **Config.CELERY,
+        "broker_transport_options": BROKER_TRANSPORT_OPTIONS,
+        "beat_schedule": BEAT_SCHEDULE,
+        "imports": CELERY_IMPORTS,
+    }
 
     # Client-side SSL setup
     # NOTE: For mTLS setup, trusted certificates should be added to the system certificates.
@@ -810,6 +855,23 @@ class ConfigNL(Config):
     S3_BUCKET_MESSAGEBOX_SCAN = ""
     S3_BUCKET_MESSAGEBOX_ATTACHMENTS = ""
     S3_BUCKET_MESSAGEBOX_INVALID = ""
+
+    # EbMS adapter
+    EBMS_ADAPTER_URL = os.getenv("EBMS_ADAPTER_URL", "http://localhost:8080")
+    # MijnOverheid Berichtenbox 2.0 GLOBE-R-BV contract constants.
+    # NotifyNL connects to Logius as an intermediary (one CPA, sending on
+    # behalf of many client organisations -- see Logius's "Technische
+    # Aansluithandleiding MijnOverheid Berichtenbox", section 1.2). The ebMS
+    # envelope's fromPartyId/toPartyId are therefore the two fixed parties
+    # named in that CPA (Worth Ventures and Logius), the same for every
+    # message -- NOT derived from the notification's recipient or service.
+    # The per-client-organisation OIN (e.g. Gemeente Den Haag) is carried in
+    # the message body's BerichtLeverancierID instead (see service.oin usage
+    # in app/clients/messagebox/ebms_adapter.py).
+    EBMS_BERICHTENBOX_CPA_ID = os.getenv("EBMS_BERICHTENBOX_CPA_ID")
+    EBMS_BERICHTENBOX_ACTION = os.getenv("EBMS_BERICHTENBOX_ACTION", "GLOBE-R-BV-Request")
+    EBMS_BERICHTENBOX_FROM_PARTY_ID = os.getenv("EBMS_BERICHTENBOX_FROM_PARTY_ID")
+    EBMS_BERICHTENBOX_TO_PARTY_ID = os.getenv("EBMS_BERICHTENBOX_TO_PARTY_ID")
 
 
 class DevNL(ConfigNL):
@@ -887,8 +949,9 @@ class DevNL(ConfigNL):
             "app.celery.scheduled_tasks",
             "app.celery.reporting_tasks",
             "app.celery.nightly_tasks",
+            "app.celery.messagebox_tasks",
         ],
-        "task_queues": [Queue(queue, Exchange("default"), routing_key=queue) for queue in QueueNames.all_queues()],
+        "task_queues": [Queue(queue, Exchange("default"), routing_key=queue) for queue in QueueNamesNL.all_queues()],
         "beat_schedule": ConfigNL.CELERY["beat_schedule"],
     }
 
@@ -912,6 +975,7 @@ class TestNL(ConfigNL):
     S3_BUCKET_MESSAGEBOX_ATTACHMENTS = f"{NL_PREFIX}-{NOTIFY_ENVIRONMENT}-messagebox-attachments"
     S3_BUCKET_MESSAGEBOX_INVALID = f"{NL_PREFIX}-{NOTIFY_ENVIRONMENT}-messagebox-invalid"
     ASSET_PATH = "https://static.test.notifynl.nl/"
+    API_RATE_LIMIT_ENABLED = True
 
 
 class AccNL(ConfigNL):
@@ -934,6 +998,7 @@ class AccNL(ConfigNL):
     S3_BUCKET_MESSAGEBOX_INVALID = f"{NL_PREFIX}-{NOTIFY_ENVIRONMENT}-messagebox-invalid"
 
     REGISTER_FUNCTIONAL_TESTING_BLUEPRINT = False
+    API_RATE_LIMIT_ENABLED = True
 
 
 class ProdNL(ConfigNL):
@@ -958,6 +1023,7 @@ class ProdNL(ConfigNL):
     S3_BUCKET_MESSAGEBOX_INVALID = f"{NL_PREFIX}-{NOTIFY_ENVIRONMENT}-messagebox-invalid"
 
     REGISTER_FUNCTIONAL_TESTING_BLUEPRINT = False
+    API_RATE_LIMIT_ENABLED = True
 
 
 configs = {"development": DevNL, "test": Test, "testnl": TestNL, "acceptance": AccNL, "production": ProdNL}

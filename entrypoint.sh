@@ -73,6 +73,11 @@ case "$1" in
   api-worker-report-requests-notifications)
     exec $COMMON_CMD report-requests-notifications-tasks
     ;;
+  # === NotifyNL
+  api-worker-messagebox)
+    exec $COMMON_CMD messagebox-tasks
+    ;;
+  # ============
   celery-beat)
     exec celery --quiet -A run_celery.notify_celery beat
     ;;

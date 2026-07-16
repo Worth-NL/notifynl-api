@@ -1,7 +1,7 @@
 import base64
 
 from flask import current_app
-from notifications_utils.s3 import s3upload
+from notifications_utils.s3 import s3_download_all_files_from_folder, s3upload
 
 from app.models import Notification
 
@@ -10,13 +10,12 @@ MESSAGEBOX_FILE_LOCATION_STRUCTURE = "{folder}/{filename}"
 
 def upload_messagebox_attachments(notification: Notification, attachments: list[dict]) -> list[str]:
     current_app.logger.info(
-        "Messagebox attachments [%s] for notification %s, created at %s ",
+        "Messagebox attachments [%s] for notification %s :: UPLOAD",
         len(attachments),
         notification.id,
-        notification.created_at,
     )
 
-    bucket_name = current_app.config["S3_BUCKET_MESSAGEBOX_ATTACHMENTS"]
+    bucket_name = current_app.config["S3_BUCKET_MESSAGEBOX_SCAN"]
 
     uploads = []
 
@@ -43,3 +42,13 @@ def upload_messagebox_attachments(notification: Notification, attachments: list[
         uploads.append(upload_file_name)
 
     return uploads
+
+
+def get_messagebox_attachments(notification: Notification) -> list[dict]:
+    current_app.logger.info("Messagebox attachments for notification %s :: GET", notification.id)
+
+    bucket_attachment = current_app.config["S3_BUCKET_MESSAGEBOX_ATTACHMENTS"]
+
+    files_data = s3_download_all_files_from_folder(bucket_attachment, str(notification.id))
+
+    return [{"filename": filename, "content": content} for filename, content in files_data.items()]
