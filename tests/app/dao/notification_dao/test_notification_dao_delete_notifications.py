@@ -245,6 +245,44 @@ def test_move_notifications_does_not_delete_letters_not_yet_in_final_state(sampl
     mock_s3_object.assert_not_called()
 
 
+@pytest.mark.parametrize("notification_status", ["pending-virus-check", "created", "sending"])
+def test_move_notifications_does_not_delete_messagebox_not_yet_in_final_state(sample_service, notification_status):
+    # This is the compliance-critical case: a messagebox notification's BSN
+    # destination must never be purged while still in flight -- we need to
+    # know there was a definitive success or failure first, to respect
+    # messagebox_deliver's retry logic.
+    messagebox_template = create_template(service=sample_service, template_type="messagebox")
+    create_notification(
+        template=messagebox_template,
+        status=notification_status,
+        created_at=datetime.utcnow() - timedelta(days=8),
+    )
+    assert Notification.query.count() == 1
+    assert NotificationHistory.query.count() == 0
+
+    move_notifications_to_notification_history("messagebox", sample_service.id, datetime.utcnow())
+
+    assert Notification.query.count() == 1
+    assert NotificationHistory.query.count() == 0
+
+
+@pytest.mark.parametrize("notification_status", ["delivered", "permanent-failure", "technical-failure"])
+def test_move_notifications_deletes_messagebox_in_final_state(sample_service, notification_status):
+    messagebox_template = create_template(service=sample_service, template_type="messagebox")
+    create_notification(
+        template=messagebox_template,
+        status=notification_status,
+        created_at=datetime.utcnow() - timedelta(days=8),
+    )
+    assert Notification.query.count() == 1
+    assert NotificationHistory.query.count() == 0
+
+    move_notifications_to_notification_history("messagebox", sample_service.id, datetime.utcnow())
+
+    assert Notification.query.count() == 0
+    assert NotificationHistory.query.count() == 1
+
+
 def test_move_notifications_only_moves_notifications_older_than_provided_timestamp(sample_template):
     delete_time = datetime(2020, 6, 1, 12)
     one_second_before = delete_time - timedelta(seconds=1)

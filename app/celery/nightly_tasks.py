@@ -27,6 +27,7 @@ from app.constants import (
     EMAIL_TYPE,
     KEY_TYPE_NORMAL,
     LETTER_TYPE,
+    MESSAGEBOX_TYPE,
     NOTIFICATION_SENDING,
     SMS_TYPE,
 )
@@ -131,6 +132,7 @@ def delete_notifications_older_than_retention():
     delete_email_notifications_older_than_retention.apply_async(queue=QueueNames.REPORTING)
     delete_sms_notifications_older_than_retention.apply_async(queue=QueueNames.REPORTING)
     delete_letter_notifications_older_than_retention.apply_async(queue=QueueNames.REPORTING)
+    delete_messagebox_notifications_older_than_retention.apply_async(queue=QueueNames.REPORTING)
 
 
 @notify_celery.task(name="delete-sms-notifications")
@@ -149,6 +151,12 @@ def delete_email_notifications_older_than_retention():
 @cronitor("delete-letter-notifications")
 def delete_letter_notifications_older_than_retention():
     _delete_notifications_older_than_retention_by_type("letter")
+
+
+@notify_celery.task(name="delete-messagebox-notifications")
+@cronitor("delete-messagebox-notifications")
+def delete_messagebox_notifications_older_than_retention():
+    _delete_notifications_older_than_retention_by_type(MESSAGEBOX_TYPE)
 
 
 def _delete_notifications_older_than_retention_by_type(
