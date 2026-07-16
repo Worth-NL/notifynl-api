@@ -195,3 +195,33 @@ def test_service_schema_only_returns_both_delivery_status_and_returned_letter_ca
             "callback_type": service_returned_letter_callback_api.callback_type,
         },
     ]
+
+
+@pytest.mark.parametrize("oin", [None, "", "01234567890123456789"])
+def test_service_schema_accepts_blank_or_valid_oin(sample_service, oin):
+    from app.schemas import service_schema
+
+    data = dict(service_schema.dump(sample_service))
+    data["oin"] = oin
+
+    service = service_schema.load(data, instance=sample_service, partial=True)
+
+    assert service.oin == oin
+
+
+@pytest.mark.parametrize(
+    "oin",
+    [
+        "1234567890123456789",  # 19 digits
+        "123456789012345678901",  # 21 digits
+        "abcdefghijklmnopqrst",  # non-digit, 20 chars
+    ],
+)
+def test_service_schema_rejects_invalid_oin(sample_service, oin):
+    from app.schemas import service_schema
+
+    data = dict(service_schema.dump(sample_service))
+    data["oin"] = oin
+
+    with pytest.raises(ValidationError):
+        service_schema.load(data, instance=sample_service, partial=True)

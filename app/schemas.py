@@ -339,6 +339,11 @@ class ServiceSchema(BaseSchema, UUIDsAsStringsMixin):
             duplicates = list({x for x in permissions if permissions.count(x) > 1})
             raise ValidationError(f"Duplicate Service Permission: {duplicates}")
 
+    @validates("oin")
+    def validate_oin(self, value):
+        if value and not (len(value) == 20 and value.isdigit()):
+            raise ValidationError("OIN must be exactly 20 digits")
+
     @pre_load()
     def format_for_data_model(self, in_data, **kwargs):
         if isinstance(in_data, dict) and "permissions" in in_data:
