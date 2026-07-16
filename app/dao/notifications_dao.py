@@ -31,6 +31,7 @@ from app.constants import (
     KEY_TYPE_NORMAL,
     KEY_TYPE_TEST,
     LETTER_TYPE,
+    MESSAGEBOX_TYPE,
     NOTIFICATION_CREATED,
     NOTIFICATION_DELIVERED,
     NOTIFICATION_PENDING,
@@ -86,6 +87,8 @@ FIELDS_TO_TRANSFER_TO_NOTIFICATION_HISTORY = [
     "created_by_id",
     "postage",
     "document_download_count",
+    "detailed_status_code",
+    "messagebox_stadium",
 ]
 
 
@@ -188,17 +191,23 @@ def country_records_delivery(phone_prefix):
     return dlr and dlr.lower() == "yes"
 
 
-def _update_notification_status(notification, status, detailed_status_code=None):
+def _update_notification_status(notification, status, detailed_status_code=None, messagebox_stadium=None):
     status = _decide_permanent_temporary_failure(
         status=status, notification=notification, detailed_status_code=detailed_status_code
     )
     notification.status = status
+    if detailed_status_code is not None:
+        notification.detailed_status_code = detailed_status_code
+    if messagebox_stadium is not None:
+        notification.messagebox_stadium = messagebox_stadium
     dao_update_notification(notification)
     return notification
 
 
 @autocommit
-def update_notification_status_by_id(notification_id, status, sent_by=None, detailed_status_code=None):
+def update_notification_status_by_id(
+    notification_id, status, sent_by=None, detailed_status_code=None, messagebox_stadium=None
+):
     notification = Notification.query.with_for_update().filter(Notification.id == notification_id).first()
 
     if not notification:
@@ -232,7 +241,10 @@ def update_notification_status_by_id(notification_id, status, sent_by=None, deta
     if not notification.sent_by and sent_by:
         notification.sent_by = sent_by
     return _update_notification_status(
-        notification=notification, status=status, detailed_status_code=detailed_status_code
+        notification=notification,
+        status=status,
+        detailed_status_code=detailed_status_code,
+        messagebox_stadium=messagebox_stadium,
     )
 
 
@@ -422,7 +434,13 @@ def insert_notification_history_delete_notifications(
         ORDER BY created_at
         limit :qry_limit
         """
-    select_into_temp_table_for_letters = f"""
+    # Letters and messagebox notifications must never be purged while still in
+    # flight (unlike email/sms, which purge purely by age) -- for messagebox
+    # this is what guarantees a BSN is never removed before we know whether
+    # delivery ultimately succeeded or definitively failed, respecting retry
+    # logic (messagebox_deliver retries, and a stuck "sending" notification is
+    # alerted on, never silently purged out from under an in-flight retry).
+    select_into_temp_table_excluding_in_flight = f"""
          CREATE TEMP TABLE NOTIFICATION_ARCHIVE ON COMMIT DROP AS
          SELECT {fields_to_transfer_to_notification_history}
           FROM notifications
@@ -452,7 +470,11 @@ def insert_notification_history_delete_notifications(
         "qry_limit": qry_limit,
     }
 
-    select_to_use = select_into_temp_table_for_letters if notification_type == "letter" else select_into_temp_table
+    select_to_use = (
+        select_into_temp_table_excluding_in_flight
+        if notification_type in (LETTER_TYPE, MESSAGEBOX_TYPE)
+        else select_into_temp_table
+    )
     db.session.execute(text(select_to_use), input_params)
 
     result = db.session.execute(text("SELECT COUNT(*) FROM NOTIFICATION_ARCHIVE")).fetchone()[0]
@@ -1021,6 +1043,41 @@ def dao_precompiled_letters_still_pending_virus_check(max_minutes_ago_to_check):
         .all()
     )
     return notifications
+
+
+def dao_messagebox_notifications_still_pending(cutoff_time):
+    """Messagebox notifications stuck in pending-virus-check or created for
+    longer than expected -- these require different recovery actions per
+    status (see check_if_messagebox_still_pending). Deliberately excludes
+    `sending`: that status means ebms-core already accepted the message and
+    we're only waiting on its async result (no fixed SLA), so it must never
+    be blindly resent -- see dao_messagebox_notifications_stuck_sending."""
+    return (
+        Notification.query.filter(
+            Notification.notification_type == MESSAGEBOX_TYPE,
+            Notification.status.in_([NOTIFICATION_PENDING_VIRUS_CHECK, NOTIFICATION_CREATED]),
+            Notification.created_at < cutoff_time,
+        )
+        .order_by(Notification.created_at)
+        .all()
+    )
+
+
+def dao_messagebox_notifications_stuck_sending(cutoff_time):
+    """Messagebox notifications that have been `sending` for longer than
+    expected -- ebms-core already accepted these, so they must never be
+    resent (see dao_messagebox_notifications_still_pending); this is purely
+    an alerting signal that messagebox_process_unprocessed_messages may have
+    stopped draining the unprocessed envelope queue."""
+    return (
+        Notification.query.filter(
+            Notification.notification_type == MESSAGEBOX_TYPE,
+            Notification.status == NOTIFICATION_SENDING,
+            Notification.created_at < cutoff_time,
+        )
+        .order_by(Notification.created_at)
+        .all()
+    )
 
 
 def _duplicate_update_warning(notification, status):

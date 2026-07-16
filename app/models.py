@@ -633,6 +633,8 @@ class Service(db.Model, Versioned):
         backref=db.backref("services", lazy="dynamic"),
     )
 
+    oin = db.Column(db.String(20), nullable=True)
+
     @hybrid_property  # a hybrid_property enables us to still use it in queries
     def name(self):
         return self._name
@@ -1579,6 +1581,14 @@ class Notification(db.Model):
 
     unsubscribe_link = db.Column(db.String, nullable=True)
 
+    # NL: the provider's raw detailed status/reason code -- e.g. a Firetext SMS
+    # failure code, or a messagebox VerwerkingsCode (Verwerkt/BerichtBestaatAl/...).
+    detailed_status_code = db.Column(db.String, nullable=True)
+    # NL, messagebox-only: the Stadium value from a BerichtVerwerkResponse --
+    # which processing phase a failure was detected in. No other channel has
+    # an equivalent concept.
+    messagebox_stadium = db.Column(db.String, nullable=True)
+
     __table_args__ = (
         db.ForeignKeyConstraint(
             ["template_id", "template_version"],
@@ -1999,6 +2009,9 @@ class NotificationHistory(db.Model):
     postage = db.Column(db.String, nullable=True)
 
     document_download_count = db.Column(db.Integer, nullable=True)
+
+    detailed_status_code = db.Column(db.String, nullable=True)
+    messagebox_stadium = db.Column(db.String, nullable=True)
 
     __table_args__ = (
         db.ForeignKeyConstraint(
