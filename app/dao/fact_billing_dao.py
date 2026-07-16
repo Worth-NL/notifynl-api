@@ -17,9 +17,11 @@ from app.constants import (
     KEY_TYPE_NORMAL,
     KEY_TYPE_TEAM,
     LETTER_TYPE,
+    MESSAGEBOX_TYPE,
     NOTIFICATION_STATUS_TYPES_BILLABLE_FOR_LETTERS,
     NOTIFICATION_STATUS_TYPES_BILLABLE_SMS,
     NOTIFICATION_STATUS_TYPES_SENT_EMAILS,
+    NOTIFICATION_STATUS_TYPES_SENT_MESSAGEBOX,
     SMS_TYPE,
 )
 from app.dao.date_util import (
@@ -306,6 +308,7 @@ def fetch_usage_for_service_annual(
                         _fetch_usage_for_service_sms(service_id, year, session=session).subquery(),
                         _fetch_usage_for_service_email(service_id, year, session=session).subquery(),
                         _fetch_usage_for_service_letter(service_id, year, session=session).subquery(),
+                        _fetch_usage_for_service_messagebox(service_id, year, session=session).subquery(),
                     ]
                 ]
             ).subquery()
@@ -367,6 +370,7 @@ def fetch_usage_for_service_by_month(service_id, year):
                         _fetch_usage_for_service_sms(service_id, year).subquery(),
                         _fetch_usage_for_service_email(service_id, year).subquery(),
                         _fetch_usage_for_service_letter(service_id, year).subquery(),
+                        _fetch_usage_for_service_messagebox(service_id, year).subquery(),
                     ]
                 ]
             ).subquery()
@@ -420,6 +424,27 @@ def _fetch_usage_for_service_letter(service_id, year, session=db.session):
         FactBilling.bst_date >= year_start,
         FactBilling.bst_date <= year_end,
         FactBilling.notification_type == LETTER_TYPE,
+    )
+
+
+def _fetch_usage_for_service_messagebox(service_id, year, session=db.session):
+    year_start, year_end = get_financial_year_dates(year)
+
+    return session.query(
+        FactBilling.bst_date,
+        FactBilling.postage,  # should always be "none"
+        FactBilling.notifications_sent,
+        FactBilling.billable_units.label("chargeable_units"),
+        FactBilling.rate,
+        FactBilling.notification_type,
+        literal(0).label("cost"),
+        literal(0).label("free_allowance_used"),
+        FactBilling.billable_units.label("charged_units"),
+    ).filter(
+        FactBilling.service_id == service_id,
+        FactBilling.bst_date >= year_start,
+        FactBilling.bst_date <= year_end,
+        FactBilling.notification_type == MESSAGEBOX_TYPE,
     )
 
 
@@ -543,7 +568,7 @@ def fetch_billing_data_for_day(
 
     chunk_start_dt = start_dt
     while chunk_start_dt < end_dt:
-        for notification_type in (SMS_TYPE, EMAIL_TYPE, LETTER_TYPE):
+        for notification_type in (SMS_TYPE, EMAIL_TYPE, LETTER_TYPE, MESSAGEBOX_TYPE):
             partial_billing_data = _query_for_billing_data(
                 notification_type=notification_type,
                 start_dt=chunk_start_dt,
@@ -607,6 +632,35 @@ def _query_for_billing_data(notification_type, start_dt, end_dt, service_ids, ch
                 NotificationAllTimeView.key_type.in_((KEY_TYPE_NORMAL, KEY_TYPE_TEAM)),
                 NotificationAllTimeView.created_at >= start_dt,
                 NotificationAllTimeView.created_at < end_dt,
+                NotificationAllTimeView.notification_type == notification_type,
+                *(() if service_ids is None else (NotificationAllTimeView.service_id.in_(service_ids),)),
+            )
+            .group_by(
+                Service.id,
+                NotificationAllTimeView.template_id,
+            )
+        )
+
+    def _messagebox_query():
+        return (
+            base_query.with_entities(
+                NotificationAllTimeView.template_id,
+                Service.crown.label("crown"),
+                Service.id.label("service_id"),
+                literal(notification_type).label("notification_type"),
+                literal("ebms-adapter").label("sent_by"),
+                literal(0).label("rate_multiplier"),
+                literal(False).label("international"),
+                literal(None).label("letter_page_count"),
+                literal("none").label("postage"),
+                literal(0).label("billable_units"),
+                func.count().label("notifications_sent"),
+            )
+            .filter(
+                NotificationAllTimeView.status.in_(NOTIFICATION_STATUS_TYPES_SENT_MESSAGEBOX),
+                NotificationAllTimeView.key_type.in_((KEY_TYPE_NORMAL, KEY_TYPE_TEAM)),
+                NotificationAllTimeView.created_at >= start_date,
+                NotificationAllTimeView.created_at < end_date,
                 NotificationAllTimeView.notification_type == notification_type,
                 *(() if service_ids is None else (NotificationAllTimeView.service_id.in_(service_ids),)),
             )
@@ -686,7 +740,12 @@ def _query_for_billing_data(notification_type, start_dt, end_dt, service_ids, ch
             )
         )
 
-    query_funcs = {SMS_TYPE: _sms_query, EMAIL_TYPE: _email_query, LETTER_TYPE: _letter_query}
+    query_funcs = {
+        SMS_TYPE: _sms_query,
+        EMAIL_TYPE: _email_query,
+        LETTER_TYPE: _letter_query,
+        MESSAGEBOX_TYPE: _messagebox_query,
+    }
     query = query_funcs[notification_type]()
     return query.all()
 
