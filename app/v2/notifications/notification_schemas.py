@@ -298,7 +298,7 @@ post_messagebox_request = {
     "type": "object",
     "title": "POST v2/notifications/messagebox",
     "properties": {
-        "sender": {"type": "string", "minLength": 20, "maxLength": 20},
+        "sender": {"type": "string", "minLength": 32, "maxLength": 32},
         "recipient": {"type": "string", "minLength": 9, "maxLength": 9},
         "subject": {"type": "string", "default": "Berichtenboxbericht"},
         "message": {"type": "string"},

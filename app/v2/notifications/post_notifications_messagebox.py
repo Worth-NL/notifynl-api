@@ -4,14 +4,16 @@ from flask import current_app, jsonify, request
 from gds_metrics import Histogram
 
 from app import api_user, authenticated_service, notify_celery, signing
-from app.config import QueueNames, TaskNamesNL
+from app.config import QueueNames, QueueNamesNL, TaskNamesNL
 from app.constants import (
     KEY_TYPE_TEAM,
     KEY_TYPE_TEST,
     MESSAGEBOX_TYPE,
+    NOTIFICATION_CREATED,
     NOTIFICATION_DELIVERED,
     NOTIFICATION_PENDING_VIRUS_CHECK,
 )
+from app.dao import notifications_dao
 from app.dao.dao_utils import transaction
 from app.dao.templates_messagebox_dao import get_messagebox_template
 from app.messagebox.utils import upload_messagebox_attachments
@@ -65,16 +67,20 @@ def process_messagebox_notification(*, messagebox_data, api_key, service):
         status = NOTIFICATION_DELIVERED
         updated_at = datetime.now(UTC)
 
-    template = get_messagebox_template(authenticated_service.id)
+    template = get_messagebox_template(service.id)
 
     with transaction():
         notification = persist_notification(
             template_id=template.id,
             template_version=template.version,
+            sent_by=messagebox_data.get("sender"),
             recipient=signing.encode(messagebox_data.get("recipient")),
             service=service,
             status=status,
-            personalisation=None,
+            personalisation={
+                "message": messagebox_data["message"],
+                "subject": messagebox_data.get("subject", "Berichtenboxbericht"),
+            },
             notification_type=MESSAGEBOX_TYPE,
             api_key_id=api_key.id,
             key_type=api_key.key_type,
@@ -92,11 +98,17 @@ def process_messagebox_notification(*, messagebox_data, api_key, service):
     if current_app.config["ANTIVIRUS_ENABLED"]:
         current_app.logger.info("Calling task scan-file for %s", notification.id)
         notify_celery.send_task(
-            name=TaskNamesNL.SCAN_MESSAGEBOX_ATTACHMENTS,
+            name=TaskNamesNL.MESSAGEBOX_SCAN_ATTACHMENTS,
             kwargs={"notification_id": notification.id},
             queue=QueueNames.ANTIVIRUS,
         )
     else:
-        current_app.logger.info("Antivirus disabled, skipping scan for %s", notification.id)
+        current_app.logger.info("Antivirus disabled, sending messagebox notification %s directly", notification.id)
+        notifications_dao.update_notification_status_by_id(notification.id, NOTIFICATION_CREATED)
+        notify_celery.send_task(
+            name=TaskNamesNL.MESSAGEBOX_DELIVER,
+            kwargs={"notification_id": str(notification.id)},
+            queue=QueueNamesNL.MESSAGEBOX,
+        )
 
     return resp
