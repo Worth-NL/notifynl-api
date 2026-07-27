@@ -3,11 +3,12 @@ from datetime import UTC, datetime
 from flask import current_app, jsonify, request
 from gds_metrics import Histogram
 
-from app import api_user, authenticated_service, notify_celery, signing
+from app import api_user, authenticated_service, encryption, notify_celery
 from app.config import QueueNames, QueueNamesNL, TaskNamesNL
 from app.constants import (
     KEY_TYPE_TEAM,
     KEY_TYPE_TEST,
+    MESSAGEBOX_TERMINAL_STATUSES,
     MESSAGEBOX_TYPE,
     NOTIFICATION_CREATED,
     NOTIFICATION_DELIVERED,
@@ -20,7 +21,12 @@ from app.messagebox.utils import upload_messagebox_attachments
 from app.notifications.process_notifications import (
     persist_notification,
 )
-from app.notifications.validators import check_rate_limiting, check_service_has_permission
+from app.notifications.validators import (
+    check_messagebox_attachments_within_size_limit,
+    check_rate_limiting,
+    check_service_has_oin,
+    check_service_has_permission,
+)
 from app.schema_validation import validate
 from app.v2.errors import BadRequestError
 from app.v2.notifications import v2_notification_blueprint
@@ -60,6 +66,9 @@ def process_messagebox_notification(*, messagebox_data, api_key, service):
     if service.restricted and not test_key:
         raise BadRequestError(message="Cannot send messagebox messages when service is in trial mode", status_code=403)
 
+    check_service_has_oin(service)
+    check_messagebox_attachments_within_size_limit(messagebox_data["attachments"])
+
     status = NOTIFICATION_PENDING_VIRUS_CHECK
     updated_at = None
 
@@ -73,8 +82,7 @@ def process_messagebox_notification(*, messagebox_data, api_key, service):
         notification = persist_notification(
             template_id=template.id,
             template_version=template.version,
-            sent_by=messagebox_data.get("sender"),
-            recipient=signing.encode(messagebox_data.get("recipient")),
+            recipient=encryption.encrypt(messagebox_data.get("recipient")),
             service=service,
             status=status,
             personalisation={
@@ -87,6 +95,14 @@ def process_messagebox_notification(*, messagebox_data, api_key, service):
             client_reference=messagebox_data.get("reference", None),
             updated_at=updated_at,
         )
+
+        if status in MESSAGEBOX_TERMINAL_STATUSES:
+            # Test-key sends are created already-delivered (see `status` above)
+            # and never pass through _update_notification_status, so the BSN
+            # must be wiped here instead -- the retention guarantee is
+            # unconditional, not just for real (non-test-key) sends.
+            notification.to = None
+            notification.normalised_to = None
 
         upload_messagebox_attachments(notification, messagebox_data.get("attachments"))
 

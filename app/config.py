@@ -27,6 +27,7 @@ class QueueNames:
     LETTERS = "letter-tasks"
     SES_CALLBACKS = "ses-callbacks"
     SMS_CALLBACKS = "sms-callbacks"
+    MESSAGEBOX_CALLBACKS = "messagebox-callbacks"
     LETTER_CALLBACKS = "letter-callbacks"
     ANTIVIRUS = "antivirus-tasks"
     SANITISE_LETTERS = "sanitise-letter-tasks"
@@ -52,6 +53,7 @@ class QueueNames:
             QueueNames.LETTERS,
             QueueNames.SES_CALLBACKS,
             QueueNames.SMS_CALLBACKS,
+            QueueNames.MESSAGEBOX_CALLBACKS,
             QueueNames.LETTER_CALLBACKS,
             QueueNames.REPORT_REQUESTS_NOTIFICATIONS,
         ]
@@ -64,9 +66,10 @@ class QueueNames:
         ]
 
     @staticmethod
-    def predefined_queues(prefix, aws_region, aws_account_id):
+    def predefined_queues(prefix, aws_region, aws_account_id, endpoint_url=None):
+        base = endpoint_url or f"https://sqs.{aws_region}.amazonaws.com"
         return {
-            f"{prefix}{queue}": {"url": f"https://sqs.{aws_region}.amazonaws.com/{aws_account_id}/{prefix}{queue}"}
+            f"{prefix}{queue}": {"url": f"{base}/{aws_account_id}/{prefix}{queue}"}
             for queue in list(set(QueueNames.all_queues() + QueueNames.external_queues()))
         }
 
@@ -106,10 +109,17 @@ class Config:
         INTERNATIONAL_SMS_TYPE: 100,
     }
 
-    # encyption secret/salt
+    # signing secret/salt (itsdangerous) -- this is NOT encryption, it only
+    # provides tamper-evidence: anything signed via notifications_utils'
+    # Signing client is still recoverable by anyone via base64 decoding alone.
     SECRET_KEY = os.getenv("SECRET_KEY")
     TOKEN_SECRET_KEY = os.getenv("TOKEN_SECRET_KEY")
     DANGEROUS_SALT = os.getenv("DANGEROUS_SALT")
+
+    # Fernet encryption key for fields that need genuine confidentiality
+    # (currently: the messagebox BSN). Deliberately a separate secret from
+    # SECRET_KEY/DANGEROUS_SALT above -- must be a Fernet.generate_key() value.
+    ENCRYPTION_SECRET_KEY = os.getenv("BSN_ENCRYPTION_KEY")
 
     # DB conection string
     SQLALCHEMY_DATABASE_URI = os.getenv("SQLALCHEMY_DATABASE_URI")
@@ -615,6 +625,7 @@ class Development(Config):
     SECRET_KEY = "dev-notify-secret-key"
     TOKEN_SECRET_KEY = "5YNWU0e_pN5ZyaSZvBd5uZb_sZlrVDFeOjiea6dq4zQ="
     DANGEROUS_SALT = "dev-notify-salt"
+    ENCRYPTION_SECRET_KEY = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
 
     MMG_INBOUND_SMS_AUTH = ["testkey"]
     MMG_INBOUND_SMS_USERNAME = ["username"]
@@ -731,16 +742,16 @@ NL_PREFIX = "notifynl"
 
 class QueueNamesNL(QueueNames):
     MESSAGEBOX = "messagebox-tasks"
-    MESSAGEBOX_CALLBACKS = "messagebox-callbacks"
 
     @staticmethod
     def all_queues():
-        return QueueNames.all_queues() + [QueueNamesNL.MESSAGEBOX, QueueNamesNL.MESSAGEBOX_CALLBACKS]
+        return QueueNames.all_queues() + [QueueNamesNL.MESSAGEBOX]
 
     @staticmethod
-    def predefined_queues(prefix, aws_region, aws_account_id):
+    def predefined_queues(prefix, aws_region, aws_account_id, endpoint_url=None):
+        base = endpoint_url or f"https://sqs.{aws_region}.amazonaws.com"
         return {
-            f"{prefix}{queue}": {"url": f"https://sqs.{aws_region}.amazonaws.com/{aws_account_id}/{prefix}{queue}"}
+            f"{prefix}{queue}": {"url": f"{base}/{aws_account_id}/{prefix}{queue}"}
             for queue in list(set(QueueNamesNL.all_queues() + QueueNamesNL.external_queues()))
         }
 
@@ -754,6 +765,14 @@ class TaskNamesNL(TaskNames):
     MESSAGEBOX_VIRUS_SCAN_FAILED = "messagebox.virus-scan-failed"
     MESSAGEBOX_PROCESS_UNPROCESSED = "messagebox.process-unprocessed"
     MESSAGEBOX_CHECK_STILL_PENDING = "messagebox.check-still-pending"
+    # Precompiled letters submitted as multiple PDFs, merged into one letter before delivery -
+    # own dedicated task flow, parallel to (and independent of) the single-PDF SCAN_FILE/
+    # SANITISE_LETTER/PROCESS_VIRUS_SCAN_* flow above.
+    SCAN_LETTER_PARTS = "scan-letter-parts"
+    SANITISE_LETTER_PARTS = "sanitise-letter-parts"
+    SANITISE_AND_MERGE_LETTER_PARTS = "sanitise-and-merge-letter-parts"
+    PROCESS_VIRUS_SCAN_FAILED_LETTER_PARTS = "process-virus-scan-failed-letter-parts"
+    PROCESS_VIRUS_SCAN_ERROR_LETTER_PARTS = "process-virus-scan-error-letter-parts"
 
 
 class ConfigNL(Config):
@@ -872,6 +891,12 @@ class ConfigNL(Config):
     EBMS_BERICHTENBOX_ACTION = os.getenv("EBMS_BERICHTENBOX_ACTION", "GLOBE-R-BV-Request")
     EBMS_BERICHTENBOX_FROM_PARTY_ID = os.getenv("EBMS_BERICHTENBOX_FROM_PARTY_ID")
     EBMS_BERICHTENBOX_TO_PARTY_ID = os.getenv("EBMS_BERICHTENBOX_TO_PARTY_ID")
+    # Literal BerichtType name -- must match a message type pre-configured and
+    # activated for this OIN in Logius's Berichtenbox Leveranciersportaal (a
+    # separate admin portal from the CPA/ebMS transport setup); it is not
+    # free text, and the generic ebms_adapter_client default ("bericht") is
+    # not itself a registered type in any known environment.
+    EBMS_BERICHTENBOX_MESSAGE_TYPE = os.getenv("EBMS_BERICHTENBOX_MESSAGE_TYPE", "bericht")
 
 
 class DevNL(ConfigNL):
@@ -919,6 +944,7 @@ class DevNL(ConfigNL):
 
     SECRET_KEY = "dev-notify-secret-key"
     DANGEROUS_SALT = "dev-notify-salt"
+    ENCRYPTION_SECRET_KEY = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
 
     MMG_INBOUND_SMS_AUTH = ["testkey"]
     MMG_INBOUND_SMS_USERNAME = ["username"]
@@ -941,16 +967,24 @@ class DevNL(ConfigNL):
     ASSET_PATH = "https://static.test.notifynl.nl/"
 
     CELERY = {
-        "broker_url": "amqp://rabbitadmin:rabbitpassword@rabbitmq:5672/notifynl",
-        "broker_transport": "amqp",
+        "broker_url": "http://ministack:4566",
+        "broker_transport": "sqs",
+        "broker_transport_options": {
+            "region": Config.AWS_REGION,
+            "queue_name_prefix": Config.NOTIFICATION_QUEUE_PREFIX,
+            "is_secure": False,
+            # ministack's default test account ID (000000000000), not
+            # Config.AWS_ACCOUNT_ID's real-AWS-shaped default -- confirmed
+            # against a live ministack container.
+            "predefined_queues": QueueNamesNL.predefined_queues(
+                Config.NOTIFICATION_QUEUE_PREFIX,
+                Config.AWS_REGION,
+                "000000000000",
+                endpoint_url="http://ministack:4566",
+            ),
+        },
         "timezone": ConfigNL.TIMEZONE,
-        "imports": [
-            "app.celery.tasks",
-            "app.celery.scheduled_tasks",
-            "app.celery.reporting_tasks",
-            "app.celery.nightly_tasks",
-            "app.celery.messagebox_tasks",
-        ],
+        "imports": ConfigNL.CELERY_IMPORTS,
         "task_queues": [Queue(queue, Exchange("default"), routing_key=queue) for queue in QueueNamesNL.all_queues()],
         "beat_schedule": ConfigNL.CELERY["beat_schedule"],
     }

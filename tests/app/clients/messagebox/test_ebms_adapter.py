@@ -4,9 +4,13 @@ import pytest
 from ebms_adapter_client.exceptions import EbmsBadRequestError, EbmsServerError
 from flask import current_app
 
-from app import signing
+from app import encryption
 from app.clients.messagebox import MessageboxClientException, MessageboxClientNonRetryableException
-from app.clients.messagebox.ebms_adapter import EbmsAdapterClient
+from app.clients.messagebox.ebms_adapter import (
+    EbmsAdapterClient,
+    get_messagebox_failure_reason,
+    get_messagebox_responses,
+)
 from app.constants import MESSAGEBOX_TYPE
 from app.dao.templates_messagebox_dao import get_messagebox_template
 from tests.app.db import create_notification, create_service
@@ -26,7 +30,7 @@ def messagebox_notification(notify_db_session, notify_user):
     template = get_messagebox_template(service.id)
     notification = create_notification(
         template=template,
-        to_field=signing.encode("123456789"),
+        to_field=encryption.encrypt("123456789"),
         personalisation={"message": "Hello & welcome", "subject": "Test subject"},
         status="created",
     )
@@ -37,6 +41,7 @@ def _client(app, statsd_client=None):
     app.config["EBMS_BERICHTENBOX_CPA_ID"] = "MIJNOVERHEID-EBMS-BB-2-0_example"
     app.config["EBMS_BERICHTENBOX_FROM_PARTY_ID"] = FROM_PARTY_ID
     app.config["EBMS_BERICHTENBOX_TO_PARTY_ID"] = TO_PARTY_ID
+    app.config["EBMS_BERICHTENBOX_MESSAGE_TYPE"] = "test-123"
     app.config.setdefault("EBMS_ADAPTER_URL", "http://localhost:8080")
     return EbmsAdapterClient(app, statsd_client)
 
@@ -78,6 +83,15 @@ def test_try_send_messagebox_builds_and_sends_message_request(mocker, messagebox
     xml_content = base64.b64decode(payload["dataSources"][0]["content"]).decode("utf-8")
     assert CLIENT_ORG_OIN in xml_content
     assert "123456789" in xml_content
+    assert "<bericht:BerichtType>test-123</bericht:BerichtType>" in xml_content
+
+    # notifynl-api reuses the notification id as both BatchID and BerichtID (one
+    # notification == one batch always), so messagebox_scheduled_tasks can fall back to
+    # BatchID when Logius echoes back a nil BerichtID -- see MESSAGEBOX_NIL_BERICHT_ID.
+    notification_id = str(messagebox_notification.id)
+    assert f"<BatchID>{notification_id}</BatchID>" in xml_content
+    assert f"<bericht:BatchID>{notification_id}</bericht:BatchID>" in xml_content
+    assert f"<bericht:BerichtID>{notification_id}</bericht:BerichtID>" in xml_content
 
 
 def test_try_send_messagebox_wraps_bad_request_as_non_retryable(mocker, messagebox_notification):
@@ -106,3 +120,33 @@ def test_try_send_messagebox_wraps_server_error_as_retryable(mocker, messagebox_
 
     with pytest.raises(MessageboxClientException):
         client.try_send_messagebox(str(messagebox_notification.id))
+
+
+def test_get_messagebox_responses_maps_status_and_reason():
+    status, reason = get_messagebox_responses("20", "OinInCPAKomtNietOvereenMetOinInBericht")
+    assert status == "permanent-failure"
+    assert reason == "OIN uit CPA komt niet overeen met OID in het bericht"
+
+
+def test_get_messagebox_responses_reason_none_for_unknown_code():
+    status, reason = get_messagebox_responses("10", "SomeUnknownCode")
+    assert status == "delivered"
+    assert reason is None
+
+
+def test_get_messagebox_failure_reason_known_code():
+    assert (
+        get_messagebox_failure_reason("OinInCPAKomtNietOvereenMetOinInBericht")
+        == "OIN uit CPA komt niet overeen met OID in het bericht"
+    )
+
+
+def test_get_messagebox_failure_reason_matches_across_status_entries():
+    # Verwerkt is nested under the "10" entry, not "20" -- confirms the
+    # helper searches every status entry's reasoncode, not just one.
+    assert get_messagebox_failure_reason("Verwerkt") == "No error"
+
+
+@pytest.mark.parametrize("code", [None, "", "SomeUnknownCode"])
+def test_get_messagebox_failure_reason_none_for_unknown_or_absent_code(code):
+    assert get_messagebox_failure_reason(code) is None

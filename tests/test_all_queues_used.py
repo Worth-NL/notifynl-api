@@ -1,4 +1,4 @@
-from app.config import QueueNames
+from app.config import QueueNamesNL
 
 
 def test_queue_names_set_entrypoint_wrapper():
@@ -15,4 +15,4 @@ def test_queue_names_set_entrypoint_wrapper():
 
         # ses-callbacks isn't used in api (only used in SNS lambda)
         ignored_queues = {"ses-callbacks"}
-        assert watched_queues == set(QueueNames.all_queues()) | ignored_queues
+        assert watched_queues == set(QueueNamesNL.all_queues()) | ignored_queues

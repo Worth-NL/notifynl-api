@@ -9,7 +9,7 @@ from notifications_utils.timezones import convert_bst_to_utc, convert_utc_to_bst
 from app import notify_celery, signing
 from app.aws import s3
 from app.celery.provider_tasks import deliver_letter
-from app.config import QueueNames, TaskNames
+from app.config import QueueNames, TaskNames, TaskNamesNL
 from app.constants import (
     INTERNATIONAL_LETTERS,
     INTERNATIONAL_POSTAGE_TYPES,
@@ -310,6 +310,53 @@ def sanitise_letter(self, filename):
             raise NotificationTechnicalFailureException(message) from e
 
 
+@notify_celery.task(bind=True, name=TaskNamesNL.SANITISE_LETTER_PARTS, max_retries=15, default_retry_delay=300)
+def sanitise_letter_parts(self, filenames):
+    """
+    [NOTIFYNL] Precompiled letters submitted as multiple PDFs (up to 3), to be merged into one
+    letter before delivery - own dedicated task, parallel to (not a branch of) sanitise_letter
+    above. See app.celery.letters_pdf_tasks (template-preview repo)
+    .sanitise_and_merge_letter_parts for where the actual merge happens.
+    """
+    try:
+        reference = get_reference_from_filename(filenames[0])
+        notification = dao_get_notification_by_reference(reference)
+
+        current_app.logger.info("Notification ID %s Virus scan passed: %s", notification.id, filenames)
+
+        if notification.status != NOTIFICATION_PENDING_VIRUS_CHECK:
+            current_app.logger.info(
+                "Sanitise letter parts called for notification %s which is in %s state",
+                notification.id,
+                notification.status,
+            )
+            return
+
+        notify_celery.send_task(
+            name=TaskNamesNL.SANITISE_AND_MERGE_LETTER_PARTS,
+            kwargs={
+                "notification_id": str(notification.id),
+                "filenames": filenames,
+                "allow_international_letters": notification.service.has_permission(INTERNATIONAL_LETTERS),
+            },
+            queue=QueueNames.SANITISE_LETTERS,
+        )
+    except Exception:
+        try:
+            current_app.logger.exception(
+                "RETRY: calling sanitise_letter_parts task for notification %s failed", notification.id
+            )
+            self.retry(queue=QueueNames.RETRY)
+        except self.MaxRetriesExceededError as e:
+            message = (
+                "RETRY FAILED: Max retries reached. "
+                f"The task sanitise_letter_parts failed for notification {notification.id}. "
+                "Notification has been updated to technical-failure"
+            )
+            update_notification_status_by_id(notification.id, NOTIFICATION_TECHNICAL_FAILURE)
+            raise NotificationTechnicalFailureException(message) from e
+
+
 @notify_celery.task(bind=True, name="process-sanitised-letter", max_retries=15, default_retry_delay=300)
 def process_sanitised_letter(self, sanitise_data):
     letter_details = signing.decode(sanitise_data)
@@ -484,6 +531,43 @@ def process_virus_scan_error(filename):
         extra={"notification_id": notification.id, "file_name": filename},
     )
     raise VirusScanError(f"notification id {notification.id} Virus scan error: {filename}")
+
+
+@notify_celery.task(name=TaskNamesNL.PROCESS_VIRUS_SCAN_FAILED_LETTER_PARTS)
+def process_virus_scan_failed_letter_parts(filenames):
+    # [NOTIFYNL] mirrors process_virus_scan_failed above, looping over every part's raw
+    # scan-bucket object rather than a single filename.
+    for filename in filenames:
+        move_failed_pdf(filename, ScanErrorType.FAILURE)
+    reference = get_reference_from_filename(filenames[0])
+    notification = dao_get_notification_by_reference(reference)
+    updated_count = update_letter_pdf_status(reference, NOTIFICATION_VIRUS_SCAN_FAILED, billable_units=0)
+
+    if updated_count != 1:
+        raise Exception(
+            f"There should only be one letter notification for each reference. Found {updated_count} notifications"
+        )
+
+    error = VirusScanError(f"notification id {notification.id} Virus scan failed: {filenames}")
+    raise error
+
+
+@notify_celery.task(name=TaskNamesNL.PROCESS_VIRUS_SCAN_ERROR_LETTER_PARTS)
+def process_virus_scan_error_letter_parts(filenames):
+    # [NOTIFYNL] mirrors process_virus_scan_error above, looping over every part's raw
+    # scan-bucket object rather than a single filename.
+    for filename in filenames:
+        move_failed_pdf(filename, ScanErrorType.ERROR)
+    reference = get_reference_from_filename(filenames[0])
+    notification = dao_get_notification_by_reference(reference)
+    updated_count = update_letter_pdf_status(reference, NOTIFICATION_TECHNICAL_FAILURE, billable_units=0)
+
+    if updated_count != 1:
+        raise Exception(
+            f"There should only be one letter notification for each reference. Found {updated_count} notifications"
+        )
+    current_app.logger.error("notification id %s Virus scan error: %s", notification.id, filenames)
+    raise VirusScanError(f"notification id {notification.id} Virus scan error: {filenames}")
 
 
 def update_letter_pdf_status(reference, status, billable_units, recipient_address=None):

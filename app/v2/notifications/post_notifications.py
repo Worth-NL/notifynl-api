@@ -19,9 +19,10 @@ from app import (
 from app.celery.letters_pdf_tasks import (
     get_pdf_for_templated_letter,
     sanitise_letter,
+    sanitise_letter_parts,
 )
 from app.celery.research_mode_tasks import create_fake_letter_callback
-from app.config import QueueNames, TaskNames
+from app.config import QueueNames, TaskNames, TaskNamesNL
 from app.constants import (
     DEFAULT_DOCUMENT_DOWNLOAD_RETENTION_PERIOD,
     EMAIL_TYPE,
@@ -35,7 +36,7 @@ from app.constants import (
     SMS_TYPE,
 )
 from app.dao.templates_dao import get_precompiled_letter_template
-from app.letters.utils import upload_letter_pdf
+from app.letters.utils import upload_letter_pdf, upload_letter_pdf_parts
 from app.notifications.process_letter_notifications import (
     create_letter_notification,
 )
@@ -84,7 +85,7 @@ def post_precompiled_letter_notification():
     check_rate_limiting(authenticated_service, api_user, notification_type=LETTER_TYPE)
 
     request_json = get_valid_json()
-    if "content" not in (request_json or {}):
+    if "content" not in (request_json or {}) and "contents" not in (request_json or {}):
         return post_notification(LETTER_TYPE)
 
     form = validate(request_json, post_precompiled_letter_request)
@@ -361,6 +362,16 @@ def process_letter_notification(
         raise BadRequestError(message="Cannot send letters when service is in trial mode", status_code=403)
 
     if precompiled:
+        # [NOTIFYNL] `contents` (multi-part precompiled letters, merged before delivery) gets its
+        # own dedicated processing/task flow, entirely separate from the single-PDF `content` path.
+        if "contents" in letter_data:
+            return process_multi_part_precompiled_letter_notifications(
+                letter_data=letter_data,
+                api_key=api_key,
+                service=service,
+                template=template,
+                reply_to_text=reply_to_text,
+            )
         return process_precompiled_letter_notifications(
             letter_data=letter_data, api_key=api_key, service=service, template=template, reply_to_text=reply_to_text
         )
@@ -462,6 +473,48 @@ def process_precompiled_letter_notifications(*, letter_data, api_key, service, t
             queue=QueueNames.LETTERS,
             MessageGroupId=str(service.id),
         )
+
+    return resp
+
+
+def process_multi_part_precompiled_letter_notifications(*, letter_data, api_key, service, template, reply_to_text):
+    """
+    [NOTIFYNL] Precompiled letters submitted as multiple PDFs (`contents`, up to 3), to be merged
+    (in submission order) into a single letter before delivery. This mirrors
+    process_precompiled_letter_notifications above, but runs through its own dedicated antivirus/
+    sanitisation task flow (scan-letter-parts / sanitise-letter-parts / sanitise-and-merge-letter-
+    parts) rather than branching the single-PDF flow - see [[Multi-PDF precompiled letter merge]].
+    """
+    try:
+        status = NOTIFICATION_PENDING_VIRUS_CHECK
+        letter_contents = [base64.b64decode(content) for content in letter_data["contents"]]
+    except ValueError as e:
+        raise BadRequestError(message="Cannot decode letter content (invalid base64 encoding)", status_code=400) from e
+
+    with transaction():
+        notification = create_letter_notification(
+            letter_data=letter_data,
+            service=service,
+            template=template,
+            api_key=api_key,
+            status=status,
+            reply_to_text=reply_to_text,
+        )
+        filenames = upload_letter_pdf_parts(notification, letter_contents, precompiled=True)
+
+    resp = {"id": notification.id, "reference": notification.client_reference, "postage": notification.postage}
+
+    # call task to add the filenames to the anti virus queue
+    if current_app.config["ANTIVIRUS_ENABLED"]:
+        current_app.logger.info("Calling task scan-letter-parts for %s", filenames)
+        notify_celery.send_task(
+            name=TaskNamesNL.SCAN_LETTER_PARTS,
+            kwargs={"filenames": filenames},
+            queue=QueueNames.ANTIVIRUS,
+        )
+    else:
+        # stub out antivirus in dev
+        sanitise_letter_parts.apply_async([filenames], queue=QueueNames.LETTERS)
 
     return resp
 

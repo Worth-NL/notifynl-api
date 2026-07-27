@@ -31,6 +31,7 @@ from app.constants import (
     KEY_TYPE_NORMAL,
     KEY_TYPE_TEST,
     LETTER_TYPE,
+    MESSAGEBOX_TERMINAL_STATUSES,
     MESSAGEBOX_TYPE,
     NOTIFICATION_CREATED,
     NOTIFICATION_DELIVERED,
@@ -200,6 +201,12 @@ def _update_notification_status(notification, status, detailed_status_code=None,
         notification.detailed_status_code = detailed_status_code
     if messagebox_stadium is not None:
         notification.messagebox_stadium = messagebox_stadium
+    if notification.notification_type == MESSAGEBOX_TYPE and status in MESSAGEBOX_TERMINAL_STATUSES:
+        # Once a messagebox notification's outcome is definitive (delivered, or
+        # a non-retryable failure), the BSN is no longer needed -- retention is
+        # only justified while a retry is still possible.
+        notification.to = None
+        notification.normalised_to = None
     dao_update_notification(notification)
     return notification
 
@@ -1051,12 +1058,38 @@ def dao_messagebox_notifications_still_pending(cutoff_time):
     status (see check_if_messagebox_still_pending). Deliberately excludes
     `sending`: that status means ebms-core already accepted the message and
     we're only waiting on its async result (no fixed SLA), so it must never
-    be blindly resent -- see dao_messagebox_notifications_stuck_sending."""
+    be blindly resent -- see dao_messagebox_notifications_stuck_sending.
+
+    The two statuses use different cutoff columns, deliberately:
+
+    - `created`: COALESCE(updated_at, created_at). messagebox_deliver touches
+      updated_at on every retry attempt while it cycles through its own
+      bounded retries, so this reflects time since the notification was last
+      actually attempted -- not just time since it was created. Without this,
+      a notification actively retrying within its own budget (up to 4h: 48
+      retries x 300s) would still look "stuck" to this query after 60 minutes
+      and get a duplicate messagebox_deliver dispatched on top of the one
+      already in flight, every hour this check runs.
+    - `pending-virus-check`: created_at alone, deliberately NOT updated_at.
+      messagebox_virus_scan_error reschedules the scan (and so touches
+      updated_at) indefinitely while the antivirus service has an ongoing
+      technical issue -- that auto-retry must not silence the Zendesk alert
+      this status's branch of check_if_messagebox_still_pending sends once
+      it's been stuck for over an hour; a human needs that signal regardless
+      of how many auto-rescans have happened underneath it."""
     return (
         Notification.query.filter(
             Notification.notification_type == MESSAGEBOX_TYPE,
-            Notification.status.in_([NOTIFICATION_PENDING_VIRUS_CHECK, NOTIFICATION_CREATED]),
-            Notification.created_at < cutoff_time,
+            or_(
+                and_(
+                    Notification.status == NOTIFICATION_CREATED,
+                    func.coalesce(Notification.updated_at, Notification.created_at) < cutoff_time,
+                ),
+                and_(
+                    Notification.status == NOTIFICATION_PENDING_VIRUS_CHECK,
+                    Notification.created_at < cutoff_time,
+                ),
+            ),
         )
         .order_by(Notification.created_at)
         .all()

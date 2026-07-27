@@ -7,19 +7,25 @@ from freezegun import freeze_time
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm.exc import NoResultFound
 
-from app import db
+from app import db, encryption
 from app.constants import (
     JOB_STATUS_IN_PROGRESS,
     KEY_TYPE_NORMAL,
     KEY_TYPE_TEAM,
     KEY_TYPE_TEST,
+    MESSAGEBOX_TYPE,
+    NOTIFICATION_CREATED,
     NOTIFICATION_DELIVERED,
     NOTIFICATION_PENDING,
+    NOTIFICATION_PENDING_VIRUS_CHECK,
+    NOTIFICATION_PERMANENT_FAILURE,
     NOTIFICATION_SENDING,
     NOTIFICATION_SENT,
     NOTIFICATION_STATUS_TYPES,
     NOTIFICATION_STATUS_TYPES_FAILED,
+    NOTIFICATION_TECHNICAL_FAILURE,
     NOTIFICATION_TEMPORARY_FAILURE,
+    NOTIFICATION_VIRUS_SCAN_FAILED,
     SMS_TYPE,
 )
 from app.dao.notifications_dao import (
@@ -49,6 +55,7 @@ from app.dao.notifications_dao import (
     notifications_not_yet_sent,
     update_notification_status_by_id,
 )
+from app.dao.templates_messagebox_dao import get_messagebox_template
 from app.models import Job, LetterCostThreshold, Notification, NotificationHistory, NotificationLetterDespatch
 from tests.app.db import (
     create_ft_notification_status,
@@ -120,6 +127,61 @@ def test_should_update_status_by_id_and_set_sent_by(sample_template):
     updated = update_notification_status_by_id(notification.id, "delivered", sent_by="mmg")
     assert updated.status == "delivered"
     assert updated.sent_by == "mmg"
+
+
+def _messagebox_notification(status=NOTIFICATION_SENDING):
+    service = create_service(service_permissions=[MESSAGEBOX_TYPE])
+    template = get_messagebox_template(service.id)
+    return create_notification(
+        template=template,
+        to_field=encryption.encrypt("123456789"),
+        normalised_to=None,
+        status=status,
+    )
+
+
+@pytest.mark.parametrize(
+    "terminal_status",
+    [
+        NOTIFICATION_DELIVERED,
+        NOTIFICATION_PERMANENT_FAILURE,
+        NOTIFICATION_TECHNICAL_FAILURE,
+        NOTIFICATION_VIRUS_SCAN_FAILED,
+    ],
+)
+def test_update_notification_status_by_id_wipes_bsn_for_messagebox_terminal_states(notify_user, terminal_status):
+    notification = _messagebox_notification(status=NOTIFICATION_SENDING)
+
+    update_notification_status_by_id(notification.id, terminal_status)
+
+    updated = Notification.query.get(notification.id)
+    assert updated.status == terminal_status
+    assert updated.to is None
+    assert updated.normalised_to is None
+
+
+@pytest.mark.parametrize("non_terminal_status", [NOTIFICATION_SENDING, NOTIFICATION_PENDING_VIRUS_CHECK])
+def test_update_notification_status_by_id_does_not_wipe_bsn_for_messagebox_non_terminal_states(
+    notify_user, non_terminal_status
+):
+    notification = _messagebox_notification(status=NOTIFICATION_CREATED)
+
+    update_notification_status_by_id(notification.id, non_terminal_status)
+
+    updated = Notification.query.get(notification.id)
+    assert updated.status == non_terminal_status
+    assert updated.to is not None
+    assert encryption.decrypt(updated.to) == "123456789"
+
+
+def test_update_notification_status_by_id_does_not_wipe_to_for_non_messagebox_notifications(sample_template):
+    notification = create_notification(template=sample_template, status="sending")
+
+    update_notification_status_by_id(notification.id, "delivered")
+
+    updated = Notification.query.get(notification.id)
+    assert updated.status == "delivered"
+    assert updated.to == notification.to
 
 
 def test_should_not_update_status_by_id_if_sent_to_country_with_unknown_delivery_receipts(sample_template):

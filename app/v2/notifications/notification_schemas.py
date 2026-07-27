@@ -1,3 +1,9 @@
+from ebms_adapter_client.berichtenbox import (
+    MAX_BERICHTTEKST_LENGTH,
+    MAX_OMSCHRIJVING_LENGTH,
+    MAX_ONDERWERP_LENGTH,
+)
+
 from app.constants import (
     NOTIFICATION_STATUS_LETTER_ACCEPTED,
     NOTIFICATION_STATUS_LETTER_RECEIVED,
@@ -260,10 +266,28 @@ post_precompiled_letter_request = {
     "properties": {
         "reference": {"type": "string"},
         "content": {"type": "string"},
+        # [NOTIFYNL] `contents` accepts up to 3 precompiled PDFs (base64), merged in submission
+        # order into a single letter - see app.v2.notifications.post_notifications
+        # .process_multi_part_precompiled_letter_notifications
+        "contents": {
+            "type": "array",
+            "items": {"type": "string"},
+            "minItems": 1,
+            "maxItems": 3,
+        },
         "postage": {"type": "string", "format": "postage"},
     },
-    "required": ["reference", "content"],
+    "required": ["reference"],
     "additionalProperties": False,
+    "allOf": [
+        {
+            "oneOf": [
+                {"required": ["content"]},
+                {"required": ["contents"]},
+            ],
+            "validationMessage": "You must provide exactly one of `content` or `contents`.",
+        }
+    ],
 }
 
 letter_content = {
@@ -298,17 +322,16 @@ post_messagebox_request = {
     "type": "object",
     "title": "POST v2/notifications/messagebox",
     "properties": {
-        "sender": {"type": "string", "minLength": 32, "maxLength": 32},
-        "recipient": {"type": "string", "minLength": 9, "maxLength": 9},
-        "subject": {"type": "string", "default": "Berichtenboxbericht"},
-        "message": {"type": "string"},
+        "recipient": {"type": "string", "pattern": "^[0-9]{9}$"},
+        "subject": {"type": "string", "default": "Berichtenboxbericht", "maxLength": MAX_ONDERWERP_LENGTH},
+        "message": {"type": "string", "maxLength": MAX_BERICHTTEKST_LENGTH},
         "attachments": {
             "type": "array",
             "items": {
                 "type": "object",
                 "properties": {
                     "file": {"type": "string"},
-                    "filename": {"type": "string"},
+                    "filename": {"type": "string", "maxLength": MAX_OMSCHRIJVING_LENGTH},
                 },
                 "required": ["file", "filename"],
                 "additionalProperties": False,
@@ -318,7 +341,7 @@ post_messagebox_request = {
         },
         "reference": {"type": "string", "maxLength": 1_000},
     },
-    "required": ["sender", "recipient", "message", "attachments"],
+    "required": ["recipient", "message", "attachments"],
     "additionalProperties": False,
 }
 

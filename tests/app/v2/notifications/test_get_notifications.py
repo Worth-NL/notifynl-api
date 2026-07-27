@@ -3,6 +3,7 @@ import datetime
 import pytest
 from flask import url_for
 
+from app.constants import MESSAGEBOX_TYPE
 from app.utils import DATETIME_FORMAT
 from tests import create_service_authorization_header
 from tests.app.db import create_letter_rate, create_notification, create_template
@@ -153,6 +154,26 @@ def test_get_notification_by_id_returns_created_by_name_if_notification_created_
     )
 
     assert json_response["created_by_name"] == "Test User"
+
+
+def test_get_notification_by_id_returns_200_for_messagebox_notification(api_client_request, sample_service):
+    messagebox_template = create_template(
+        sample_service,
+        template_type=MESSAGEBOX_TYPE,
+        subject="Berichtenbox bericht",
+        content="Notify heeft geen toegang tot de inhoud van berichtenbox berichten.",
+        hidden=True,
+    )
+    messagebox_notification = create_notification(template=messagebox_template)
+
+    json_response = api_client_request.get(
+        messagebox_notification.service_id,
+        "v2_notifications.get_notification_by_id",
+        notification_id=messagebox_notification.id,
+    )
+
+    assert json_response["body"] == "Notify heeft geen toegang tot de inhoud van berichtenbox berichten."
+    assert json_response["subject"] == "Berichtenbox bericht"
 
 
 def test_get_notification_by_reference_nonexistent_reference_returns_no_notifications(

@@ -104,6 +104,7 @@
                 "Install API local notifynl-utils",
                 "Run NOTIFYNL migrations"
             ],
+            "dependsOrder": "sequence",
             "problemMatcher": [],
             "presentation": {
                 "showReuseMessage": false,
@@ -116,7 +117,9 @@
             "command": "echo \"API pre-launch\"",
             "dependsOn": [
                 "Install API Python requirements",
+                "Run NOTIFYNL migrations"
             ],
+            "dependsOrder": "sequence",
             "problemMatcher": [],
             "presentation": {
                 "showReuseMessage": false,

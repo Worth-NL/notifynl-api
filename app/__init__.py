@@ -23,6 +23,7 @@ from gds_metrics import GDSMetrics
 from gds_metrics.metrics import Gauge, Histogram
 from notifications_utils import request_helper
 from notifications_utils.celery import NotifyCelery
+from notifications_utils.clients.encryption.encryption_client import Encryption
 from notifications_utils.clients.redis.redis_client import RedisClient
 from notifications_utils.clients.signing.signing_client import Signing
 from notifications_utils.clients.statsd.statsd_client import StatsdClient
@@ -56,6 +57,7 @@ migrate = Migrate()
 ma = Marshmallow()
 notify_celery = NotifyCelery()
 signing = Signing()
+encryption = Encryption()
 statsd_client = StatsdClient()
 redis_store = RedisClient()
 metrics = GDSMetrics()
@@ -203,6 +205,7 @@ def create_app(application):
 
     notify_celery.init_app(application)
     signing.init_app(application)
+    encryption.init_app(application)
     redis_store.init_app(application)
 
     register_blueprint(application)

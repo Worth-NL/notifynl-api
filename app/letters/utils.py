@@ -136,6 +136,60 @@ def upload_letter_pdf(notification, pdf_data, precompiled=False):
     return upload_file_name
 
 
+def build_letter_part_filename(base_filename, part_index):
+    """
+    [NOTIFYNL] part_index is 0-based. Part 0 (the primary/address-bearing PDF) keeps the
+    canonical filename unchanged, for full backward compatibility with single-PDF requests and
+    with get_reference_from_filename (which reads filename.split(".")[1] - untouched by this,
+    since the reference is always the second dot-separated segment regardless of what's appended
+    before the final extension). Parts 1 and 2 get a `.PARTn` marker inserted before the file
+    extension so they get distinct S3 keys without colliding with the canonical one.
+    """
+    if part_index == 0:
+        return base_filename
+    stem, _, ext = base_filename.rpartition(".")
+    return f"{stem}.PART{part_index + 1}.{ext}"
+
+
+def upload_letter_pdf_parts(notification, pdf_data_list, precompiled=True):
+    """
+    [NOTIFYNL] Uploads an ordered list of precompiled letter PDFs (up to 3, to be merged into a
+    single letter downstream - see app.celery.letters_pdf_tasks.sanitise_letter_parts) to the
+    letters-scan bucket. filenames[0] is byte-for-byte identical to what upload_letter_pdf would
+    produce for the same notification, so the rest of the pipeline can keep addressing "the"
+    canonical filename exactly as it does for a single-PDF letter.
+    """
+    base_filename = generate_letter_pdf_filename(
+        reference=notification.reference,
+        created_at=notification.created_at,
+        ignore_folder=precompiled or notification.key_type == KEY_TYPE_TEST,
+        postage=notification.postage,
+    )
+    bucket_name = current_app.config["S3_BUCKET_LETTERS_SCAN"]
+
+    filenames = []
+    for part_index, pdf_data in enumerate(pdf_data_list):
+        filename = build_letter_part_filename(base_filename, part_index)
+        s3upload(
+            filedata=pdf_data,
+            region=current_app.config["AWS_REGION"],
+            bucket_name=bucket_name,
+            file_location=filename,
+        )
+        filenames.append(filename)
+
+    current_app.logger.info(
+        "PDF Letter %s reference %s created at %s, uploaded %s part(s): %s",
+        notification.id,
+        notification.reference,
+        notification.created_at,
+        len(filenames),
+        filenames,
+    )
+
+    return filenames
+
+
 def move_failed_pdf(source_filename, scan_error_type):
     scan_bucket = current_app.config["S3_BUCKET_LETTERS_SCAN"]
 

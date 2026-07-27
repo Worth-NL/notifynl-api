@@ -9,9 +9,10 @@ from freezegun import freeze_time
 from sqlalchemy import func, literal_column, select, table
 from sqlalchemy.exc import IntegrityError
 
-from app import signing
+from app import encryption, signing
 from app.constants import (
     EMAIL_TYPE,
+    MESSAGEBOX_TYPE,
     MOBILE_TYPE,
     NOTIFICATION_CREATED,
     NOTIFICATION_DELIVERED,
@@ -26,6 +27,7 @@ from app.constants import (
     SMS_TYPE,
 )
 from app.dao.services_dao import dao_add_user_to_service
+from app.dao.templates_messagebox_dao import get_messagebox_template
 from app.models import (
     AnnualBilling,
     ApiKey,
@@ -178,6 +180,12 @@ def test_notification_for_csv_returns_correct_job_row_number(sample_job):
         ("letter", "technical-failure", "Technical failure"),
         ("letter", "permanent-failure", "Permanent failure"),
         ("letter", "delivered", "Received"),
+        ("messagebox", "created", "Sending"),
+        ("messagebox", "delivered", "Delivered"),
+        ("messagebox", "technical-failure", "Technical failure"),
+        ("messagebox", "permanent-failure", "Permanent failure"),
+        ("messagebox", "pending-virus-check", "Pending virus check"),
+        ("messagebox", "virus-scan-failed", "Virus scan failed"),
     ],
 )
 def test_notification_for_csv_returns_formatted_status(sample_service, template_type, status, expected_status):
@@ -186,6 +194,21 @@ def test_notification_for_csv_returns_formatted_status(sample_service, template_
 
     serialized = notification.serialize_for_csv()
     assert serialized["status"] == expected_status
+
+
+def test_notification_for_csv_returns_id_not_bsn_for_messagebox(notify_db_session, notify_user):
+    service = create_service(service_permissions=[MESSAGEBOX_TYPE])
+    template = get_messagebox_template(service.id)
+    notification = create_notification(
+        template=template,
+        to_field=encryption.encrypt("123456789"),
+        normalised_to=None,
+        status="delivered",
+    )
+
+    serialized = notification.serialize_for_csv()
+
+    assert serialized["recipient"] == str(notification.id)
 
 
 @freeze_time("2017-03-26 23:01:53.321312")

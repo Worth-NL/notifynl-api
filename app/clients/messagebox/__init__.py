@@ -13,7 +13,7 @@ class MessageboxClientException(ClientException):
     """Base Exception for MessageboxClient"""
 
 
-class MessageboxClientNonRetryableException(ClientException):
+class MessageboxClientNonRetryableException(MessageboxClientException):
     """
     Represents an error returned from the email client API with a 4xx response
     code that should not be retried and should instead be marked as technical

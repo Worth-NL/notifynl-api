@@ -4,12 +4,26 @@ from celery.exceptions import MaxRetriesExceededError
 from moto import mock_aws
 
 from app.celery import messagebox_tasks
-from app.celery.messagebox_tasks import messagebox_deliver, messagebox_virus_scan_success
+from app.celery.messagebox_tasks import (
+    MESSAGEBOX_VIRUS_SCAN_ERROR_RETRY_DELAY,
+    messagebox_deliver,
+    messagebox_virus_scan_error,
+    messagebox_virus_scan_failed,
+    messagebox_virus_scan_success,
+)
 from app.clients.messagebox import MessageboxClientNonRetryableException
-from app.config import QueueNamesNL, TaskNamesNL
-from app.constants import MESSAGEBOX_TYPE, NOTIFICATION_CREATED, NOTIFICATION_SENDING, NOTIFICATION_TECHNICAL_FAILURE
+from app.config import QueueNames, QueueNamesNL, TaskNamesNL
+from app.constants import (
+    MESSAGEBOX_TYPE,
+    NOTIFICATION_CREATED,
+    NOTIFICATION_PENDING_VIRUS_CHECK,
+    NOTIFICATION_SENDING,
+    NOTIFICATION_TECHNICAL_FAILURE,
+    NOTIFICATION_VIRUS_SCAN_FAILED,
+)
 from app.dao import notifications_dao
 from app.dao.templates_messagebox_dao import get_messagebox_template
+from app.errors import VirusScanError
 from app.exceptions import NotificationTechnicalFailureException
 from tests.app.db import create_notification, create_service
 
@@ -54,6 +68,51 @@ def test_messagebox_virus_scan_success_moves_files_and_dispatches_deliver(mocker
         kwargs={"notification_id": str(messagebox_notification.id)},
         queue=QueueNamesNL.MESSAGEBOX,
     )
+
+
+@mock_aws
+def test_messagebox_virus_scan_failed_sets_permanent_failure(mocker, messagebox_notification):
+    # A confirmed virus match is final -- unlike a scan error, it must never be retried.
+    scan_bucket = "notifynl-test-messagebox-scan"
+    invalid_bucket = "notifynl-test-messagebox-invalid"
+    messagebox_tasks.current_app.config["S3_BUCKET_MESSAGEBOX_SCAN"] = scan_bucket
+    messagebox_tasks.current_app.config["S3_BUCKET_MESSAGEBOX_INVALID"] = invalid_bucket
+
+    s3 = boto3.client("s3", region_name="eu-west-1")
+    s3.create_bucket(Bucket=scan_bucket, CreateBucketConfiguration={"LocationConstraint": "eu-west-1"})
+    s3.create_bucket(Bucket=invalid_bucket, CreateBucketConfiguration={"LocationConstraint": "eu-west-1"})
+    s3.put_object(Bucket=scan_bucket, Key=f"{messagebox_notification.id}/file.pdf", Body=b"content")
+
+    with pytest.raises(VirusScanError):
+        messagebox_virus_scan_failed(messagebox_notification.id)
+
+    assert messagebox_notification.status == NOTIFICATION_VIRUS_SCAN_FAILED
+
+
+def test_messagebox_virus_scan_error_reschedules_scan(mocker, messagebox_notification):
+    # A scan error is a transient infra issue (e.g. clamd unreachable), not a virus verdict --
+    # it must be retried later, not treated as a permanent failure.
+    mock_send_task = mocker.patch("app.celery.messagebox_tasks.notify_celery.send_task")
+
+    messagebox_virus_scan_error(messagebox_notification.id)
+
+    assert messagebox_notification.status == NOTIFICATION_PENDING_VIRUS_CHECK
+    mock_send_task.assert_called_once_with(
+        name=TaskNamesNL.MESSAGEBOX_SCAN_ATTACHMENTS,
+        kwargs={"notification_id": str(messagebox_notification.id)},
+        queue=QueueNames.ANTIVIRUS,
+        countdown=MESSAGEBOX_VIRUS_SCAN_ERROR_RETRY_DELAY,
+    )
+
+
+def test_messagebox_virus_scan_error_skips_reschedule_when_not_pending(mocker, messagebox_notification):
+    notifications_dao.update_notification_status_by_id(messagebox_notification.id, NOTIFICATION_CREATED)
+    mock_send_task = mocker.patch("app.celery.messagebox_tasks.notify_celery.send_task")
+
+    messagebox_virus_scan_error(messagebox_notification.id)
+
+    mock_send_task.assert_not_called()
+    assert messagebox_notification.status == NOTIFICATION_CREATED
 
 
 def test_messagebox_deliver_success_sets_sending_and_stores_reference(mocker, messagebox_notification):

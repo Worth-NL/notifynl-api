@@ -3,6 +3,7 @@ from unittest.mock import ANY
 
 import boto3
 import pytest
+from celery.exceptions import MaxRetriesExceededError
 from flask import current_app
 from moto import mock_aws
 from notifications_utils.testing.comparisons import AnyStringMatching
@@ -11,9 +12,12 @@ from app import signing
 from app.celery.letters_pdf_tasks import (
     get_pdf_for_templated_letter,
     process_sanitised_letter,
+    process_virus_scan_error_letter_parts,
+    process_virus_scan_failed_letter_parts,
     resanitise_pdf,
+    sanitise_letter_parts,
 )
-from app.config import QueueNames, TaskNames
+from app.config import QueueNames, TaskNames, TaskNamesNL
 from app.constants import (
     INTERNATIONAL_LETTERS,
     KEY_TYPE_NORMAL,
@@ -22,7 +26,12 @@ from app.constants import (
     NOTIFICATION_CREATED,
     NOTIFICATION_DELIVERED,
     NOTIFICATION_PENDING_VIRUS_CHECK,
+    NOTIFICATION_TECHNICAL_FAILURE,
+    NOTIFICATION_VIRUS_SCAN_FAILED,
 )
+from app.errors import VirusScanError
+from app.exceptions import NotificationTechnicalFailureException
+from app.letters.utils import ScanErrorType
 from tests.app.db import (
     create_letter_branding,
     create_service,
@@ -277,3 +286,96 @@ def test_resanitise_pdf_calls_template_preview_with_letter_details(
         queue=QueueNames.SANITISE_LETTERS,
         MessageGroupId=str(sample_letter_notification.service_id),
     )
+
+
+@pytest.mark.parametrize(
+    "permissions, expected_international_letters_allowed",
+    (
+        ([LETTER_TYPE], False),
+        ([LETTER_TYPE, INTERNATIONAL_LETTERS], True),
+    ),
+)
+def test_sanitise_letter_parts_calls_template_preview_sanitise_task(
+    mocker,
+    sample_letter_notification,
+    permissions,
+    expected_international_letters_allowed,
+):
+    mock_celery = mocker.patch("app.celery.letters_pdf_tasks.notify_celery.send_task")
+    reference = sample_letter_notification.reference
+    filenames = [f"NOTIFY.{reference}", f"NOTIFY.{reference}.PART2"]
+    sample_letter_notification.service = create_service(service_permissions=permissions)
+    sample_letter_notification.status = NOTIFICATION_PENDING_VIRUS_CHECK
+
+    sanitise_letter_parts(filenames)
+
+    mock_celery.assert_called_once_with(
+        name=TaskNamesNL.SANITISE_AND_MERGE_LETTER_PARTS,
+        kwargs={
+            "notification_id": str(sample_letter_notification.id),
+            "filenames": filenames,
+            "allow_international_letters": expected_international_letters_allowed,
+        },
+        queue=QueueNames.SANITISE_LETTERS,
+    )
+
+
+def test_sanitise_letter_parts_does_not_call_template_preview_sanitise_task_if_notification_in_wrong_state(
+    mocker,
+    sample_letter_notification,
+):
+    mock_celery = mocker.patch("app.celery.letters_pdf_tasks.notify_celery.send_task")
+    filenames = [f"NOTIFY.{sample_letter_notification.reference}"]
+
+    sanitise_letter_parts(filenames)
+
+    assert not mock_celery.called
+
+
+def test_sanitise_letter_parts_puts_letter_into_technical_failure_if_max_retries_exceeded(
+    sample_letter_notification, mocker
+):
+    mocker.patch("app.celery.letters_pdf_tasks.notify_celery.send_task", side_effect=Exception())
+    mocker.patch("app.celery.letters_pdf_tasks.sanitise_letter_parts.retry", side_effect=MaxRetriesExceededError())
+
+    filenames = [f"NOTIFY.{sample_letter_notification.reference}"]
+    sample_letter_notification.status = NOTIFICATION_PENDING_VIRUS_CHECK
+
+    with pytest.raises(NotificationTechnicalFailureException):
+        sanitise_letter_parts(filenames)
+
+    assert sample_letter_notification.status == NOTIFICATION_TECHNICAL_FAILURE
+
+
+def test_process_virus_scan_failed_letter_parts_moves_all_parts(sample_letter_notification, mocker):
+    reference = sample_letter_notification.reference
+    filenames = [f"NOTIFY.{reference}", f"NOTIFY.{reference}.PART2"]
+    sample_letter_notification.status = NOTIFICATION_PENDING_VIRUS_CHECK
+    mock_move_failed_pdf = mocker.patch("app.celery.letters_pdf_tasks.move_failed_pdf")
+
+    with pytest.raises(VirusScanError) as e:
+        process_virus_scan_failed_letter_parts(filenames)
+
+    assert "Virus scan failed:" in str(e.value)
+    assert mock_move_failed_pdf.call_args_list == [
+        mocker.call(filenames[0], ScanErrorType.FAILURE),
+        mocker.call(filenames[1], ScanErrorType.FAILURE),
+    ]
+    assert sample_letter_notification.status == NOTIFICATION_VIRUS_SCAN_FAILED
+
+
+def test_process_virus_scan_error_letter_parts_moves_all_parts(sample_letter_notification, mocker):
+    reference = sample_letter_notification.reference
+    filenames = [f"NOTIFY.{reference}", f"NOTIFY.{reference}.PART2"]
+    sample_letter_notification.status = NOTIFICATION_PENDING_VIRUS_CHECK
+    mock_move_failed_pdf = mocker.patch("app.celery.letters_pdf_tasks.move_failed_pdf")
+
+    with pytest.raises(VirusScanError) as e:
+        process_virus_scan_error_letter_parts(filenames)
+
+    assert "Virus scan error:" in str(e.value)
+    assert mock_move_failed_pdf.call_args_list == [
+        mocker.call(filenames[0], ScanErrorType.ERROR),
+        mocker.call(filenames[1], ScanErrorType.ERROR),
+    ]
+    assert sample_letter_notification.status == NOTIFICATION_TECHNICAL_FAILURE

@@ -54,60 +54,6 @@
       ],
       "consoleName": "Celery beat",
       "preLaunchTask": "API pre-launch"
-    },
-    {
-      "name": "API (non-local)",
-      "type": "debugpy",
-      "request": "launch",
-      "envFile": "${workspaceFolder}/.env",
-      "module": "flask",
-      "args": [
-        "run",
-        "--port",
-        "6011",
-        "--debug"
-      ],
-      "consoleName": "API",
-      "autoStartBrowser": false,
-      "preLaunchTask": "API pre-launch (non-local)"
-    },
-    {
-      "name": "Worker (non-local)",
-      "type": "debugpy",
-      "request": "launch",
-      "envFile": "${workspaceFolder}/.env",
-      "module": "celery",
-      "args": [
-        "-A",
-        "run_celery.notify_celery",
-        "worker",
-        "-l",
-        "DEBUG",
-        "-E",
-        "-P",
-        "solo",
-        "--without-gossip",
-        "--without-mingle",
-        "--without-heartbeat"
-      ],
-      "consoleName": "API worker",
-      "preLaunchTask": "API pre-launch (non-local)"
-    },
-    {
-      "name": "Beat (non-local)",
-      "type": "debugpy",
-      "request": "launch",
-      "envFile": "${workspaceFolder}/.env",
-      "module": "celery",
-      "args": [
-        "-A",
-        "run_celery.notify_celery",
-        "beat",
-        "-l",
-        "DEBUG"
-      ],
-      "consoleName": "Celery beat",
-      "preLaunchTask": "API pre-launch (non-local)"
     }
   ],
   "compounds": [
@@ -117,15 +63,6 @@
             "API",
             "Worker",
             "Beat"
-        ],
-        "stopAll": true
-    },
-    {
-        "name": "Notify API (non-local)",
-        "configurations": [
-            "API (non-local)",
-            "Worker (non-local)",
-            "Beat (non-local)"
         ],
         "stopAll": true
     }

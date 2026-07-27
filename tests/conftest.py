@@ -23,6 +23,17 @@ from tests.routes import test_admin_auth_blueprint, test_no_auth_blueprint
 freezegun.configure(extend_ignore_list=["prompt_toolkit"])
 
 
+def pytest_configure(config):
+    # .env sets AWS_ENDPOINT_URL so local Celery can reach the devcontainer's ministack
+    # service. pytest-dotenv loads .env, and botocore honours that env var even inside
+    # moto's mock_aws() context -- so without this, every "mocked" AWS call in the test
+    # suite silently hits (and pollutes) the real, persistent ministack container instead
+    # of an isolated in-memory mock. Cleared in pytest_configure (rather than at module
+    # import time) since it must run after pytest-dotenv/pytest-env have set it, and
+    # their relative load order isn't guaranteed.
+    os.environ.pop("AWS_ENDPOINT_URL", None)
+
+
 @pytest.fixture(scope="session")
 def notify_api():
     app = NotifyApiFlaskApp("test")

@@ -47,6 +47,20 @@ NOTIFICATION_STATUS_TYPES_BILLABLE = [
     NOTIFICATION_PERMANENT_FAILURE,
     NOTIFICATION_RETURNED_LETTER,
 ]
+
+# Statuses that are a permanent end state for a messagebox notification (either
+# a confirmed delivery or a non-retryable failure). Deliberately a dedicated
+# list rather than reusing NOTIFICATION_STATUS_TYPES_COMPLETED above, which
+# omits NOTIFICATION_VIRUS_SCAN_FAILED and includes statuses that don't apply
+# to messagebox (e.g. NOTIFICATION_RETURNED_LETTER). Used to wipe the BSN
+# (Notification.to) once a messagebox notification's outcome is definitive --
+# see app/dao/notifications_dao.py::_update_notification_status.
+MESSAGEBOX_TERMINAL_STATUSES = [
+    NOTIFICATION_DELIVERED,
+    NOTIFICATION_PERMANENT_FAILURE,
+    NOTIFICATION_TECHNICAL_FAILURE,
+    NOTIFICATION_VIRUS_SCAN_FAILED,
+]
 NOTIFICATION_STATUS_TYPES_BILLABLE_SMS = [
     NOTIFICATION_SENDING,
     NOTIFICATION_SENT,  # internationally
