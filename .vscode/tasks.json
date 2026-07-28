@@ -171,6 +171,20 @@
             }
         },
         {
+            "label": "Make Service Live",
+            "type": "shell",
+            "command": ".venv/bin/python -m flask command make-service-live -s \"${input:serviceId}\" -u \"${input:userId}\"",
+            "problemMatcher": [],
+            "presentation": {
+                "showReuseMessage": false
+            },
+            "options": {
+                "env": {
+                    "FLASK_APP": "application.py"
+                }
+            }
+        },
+        {
             "label": "Create SMS Template",
             "type": "shell",
             "command": ".venv/bin/python -m flask command create-sms-template -s \"${input:serviceId}\" -u \"${input:userId}\" -n \"${input:smsTemplateName}\"",

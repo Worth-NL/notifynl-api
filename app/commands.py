@@ -1075,6 +1075,38 @@ def create_test_service(user_id, name):
     return service.id
 
 
+@notify_command(name="make-service-live")
+@click.option("-s", "--service-id", required=True, help="ID of the service to go live")
+@click.option("-u", "--user-id", required=True, help="User ID recorded as having requested go-live")
+def make_service_live(service_id, user_id):
+    """Take a trial-mode service out of restricted mode, for local dev use.
+
+    Skips the checklist/organisation-approval steps and the go-live
+    notification email that the real request-to-go-live flow enforces.
+    """
+    service = dao_fetch_service_by_id(service_id)
+    if not service:
+        print(f"Service with ID {service_id} not found")
+        return
+
+    user = User.query.get(user_id)
+    if not user:
+        print(f"User with ID {user_id} not found")
+        return
+
+    service.restricted = False
+    service.go_live_at = datetime.utcnow()
+    service.go_live_user = user
+    service.email_message_limit = 1000
+    service.sms_message_limit = 1000
+    service.letter_message_limit = 1000
+
+    dao_update_service(service)
+    db.session.commit()
+
+    print(f"Service {service.id} is now live")
+
+
 @notify_command(name="create-sms-template")
 @click.option("-s", "--service-id", required=True, help="Service ID to create template in")
 @click.option("-u", "--user-id", required=True, help="User ID who creates the template")
