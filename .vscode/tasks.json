@@ -62,7 +62,8 @@
         {
             "label": "Install API local notifynl-utils",
             "type": "shell",
-            "command": "uv pip uninstall notifynl-utils && uv pip install -e ../notifynl-utils",
+            "command": "CHOICE=$(cat /workspace/.local-editables-choice 2>/dev/null || echo No); if [ \"$CHOICE\" = \"Yes\" ]; then uv pip uninstall notifications-utils && uv pip install -e ../notifynl-utils; fi",
+            "dependsOn": ["Deactivate Spryng provider"],
             "problemMatcher": [],
             "presentation": {
                 "showReuseMessage": false,
@@ -111,7 +112,7 @@
             "label": "API pre-launch",
             "type": "shell",
             "command": "echo \"API pre-launch\"",
-            "dependsOn": ["Deactivate Spryng provider"],
+            "dependsOn": ["Install API local notifynl-utils"],
             "problemMatcher": [],
             "presentation": {
                 "showReuseMessage": false,
