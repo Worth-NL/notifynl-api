@@ -806,6 +806,18 @@ class DevNL(ConfigNL):
 
     CELERY_WORKER_LOG_LEVEL = "INFO"
 
+    # kombu's SQS transport builds its boto3 endpoint_url straight from broker_url +
+    # is_secure, ignoring AWS_ENDPOINT_URL entirely, so the ministack endpoint has to be
+    # set here explicitly rather than relying on the env var like other AWS clients do.
+    CELERY = {
+        **ConfigNL.CELERY,
+        "broker_url": os.getenv("AWS_ENDPOINT_URL", "http://ministack:4566"),
+        "broker_transport_options": {
+            **ConfigNL.CELERY["broker_transport_options"],
+            "is_secure": False,
+        },
+    }
+
     SERVER_NAME = os.getenv("SERVER_NAME")
 
     REDIS_ENABLED = os.getenv("REDIS_ENABLED") == "1"
