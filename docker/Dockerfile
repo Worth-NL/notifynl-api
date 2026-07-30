@@ -131,7 +131,7 @@ RUN uv pip sync requirements_nl_test.txt
 USER root
 
 ENV POSTGRES_VERSION=15 \
-    POSTGRES_REPO_KEY=B97B0AFCAA1A47F044F244A07FCC7D46ACCC4CF8
+    POSTGRES_REPO_FINGERPRINT=B97B0AFCAA1A47F044F244A07FCC7D46ACCC4CF8
 
 RUN \
     apt-get update \
@@ -145,10 +145,10 @@ RUN \
 RUN set -x \
     && export GNUPGHOME="$(mktemp -d)" \
     && ( \
-      gpg --batch --keyserver hkps://keyserver.ubuntu.com --recv-keys "$POSTGRES_REPO_KEY" \
-      || gpg --batch --keyserver hkps://pgp.mit.edu --recv-keys "$POSTGRES_REPO_KEY" \
+      gpg --batch --keyserver hkps://keyserver.ubuntu.com --recv-keys "$POSTGRES_REPO_FINGERPRINT" \
+      || gpg --batch --keyserver hkps://pgp.mit.edu --recv-keys "$POSTGRES_REPO_FINGERPRINT" \
     ) \
-    && gpg --batch --export "$POSTGRES_REPO_KEY" > /etc/apt/trusted.gpg.d/postgres.gpg \
+    && gpg --batch --export "$POSTGRES_REPO_FINGERPRINT" > /etc/apt/trusted.gpg.d/postgres.gpg \
     && command -v gpgconf > /dev/null && gpgconf --kill all \
     &&rm -rf "$GNUPGHOME" \
     && apt-key list
