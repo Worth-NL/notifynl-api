@@ -190,6 +190,46 @@ def upload_letter_pdf_parts(notification, pdf_data_list, precompiled=True):
     return filenames
 
 
+def upload_letter_attachments(notification, attachments: list[bytes]) -> list[str]:
+    """
+    [NOTIFYNL] Uploads 1-2 ad-hoc PDFs submitted alongside a templated-letter send to the
+    letters-scan bucket, keyed by notification id rather than the filename scheme
+    upload_letter_pdf_parts uses - a templated letter has no canonical letter_filename yet
+    at send time (that's only computed later, in get_pdf_for_templated_letter).
+    """
+    bucket_name = current_app.config["S3_BUCKET_LETTERS_SCAN"]
+
+    keys = []
+    for index, attachment in enumerate(attachments, start=1):
+        key = f"{notification.id}/attachment-{index}.pdf"
+        s3upload(
+            filedata=attachment,
+            region=current_app.config["AWS_REGION"],
+            bucket_name=bucket_name,
+            file_location=key,
+        )
+        keys.append(key)
+
+    current_app.logger.info("Letter %s uploaded %s ad-hoc attachment(s): %s", notification.id, len(keys), keys)
+
+    return keys
+
+
+def get_letter_attachment_keys(notification_id) -> list[str]:
+    """
+    [NOTIFYNL] Lists any ad-hoc attachments uploaded by upload_letter_attachments for a given
+    notification - used both to populate the payload get_pdf_for_templated_letter sends to
+    notifynl-template-preview, and by the stuck-notification recovery check in
+    check_if_letters_still_pending_virus_check (existence there is just bool(keys)).
+    """
+    bucket_name = current_app.config["S3_BUCKET_LETTERS_SCAN"]
+
+    s3 = boto3.resource("s3")
+    files = s3.Bucket(bucket_name).objects.filter(Prefix=f"{notification_id}/")
+
+    return sorted(f.key for f in files if not f.key.endswith("/"))
+
+
 def move_failed_pdf(source_filename, scan_error_type):
     scan_bucket = current_app.config["S3_BUCKET_LETTERS_SCAN"]
 

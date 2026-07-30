@@ -1,6 +1,8 @@
+import base64
 from unittest.mock import ANY
 
 import pytest
+from flask import current_app
 
 from app.config import QueueNames, TaskNamesNL
 from app.constants import (
@@ -10,9 +12,13 @@ from app.constants import (
 )
 from app.models import Job, Notification
 from app.notifications.process_letter_notifications import create_letter_notification
+from app.notifications.validators import MAX_LETTER_ATTACHMENT_BYTES
 from app.schema_validation import validate
 from app.v2.notifications.notification_schemas import post_letter_response
 from tests.app.db import create_service, create_template
+
+VALID_ATTACHMENT = base64.b64encode(b"pdf-bytes-1").decode()
+VALID_ATTACHMENT_2 = base64.b64encode(b"pdf-bytes-2").decode()
 
 
 @pytest.mark.parametrize("reference", [None, "reference_from_client"])
@@ -156,6 +162,150 @@ def test_post_precompiled_letter_notification_rejects_more_than_3_contents(api_c
         sample_service.id, "v2_notifications.post_precompiled_letter_notification", _data=data, _expected_status=400
     )
 
+    assert not Notification.query.first()
+
+
+def _letter_data(template_id, **extra):
+    return {
+        "template_id": str(template_id),
+        "personalisation": {
+            "address_line_1": "Recipient",
+            "address_line_2": "StreetName",
+            "postcode": "1234 AB City",
+            "name": "Lizzie",
+        },
+        **extra,
+    }
+
+
+@pytest.mark.parametrize(
+    "attachments,expected_decoded",
+    [
+        ([VALID_ATTACHMENT], [b"pdf-bytes-1"]),
+        ([VALID_ATTACHMENT, VALID_ATTACHMENT_2], [b"pdf-bytes-1", b"pdf-bytes-2"]),
+    ],
+)
+def test_post_letter_notification_with_attachments_returns_201_and_dispatches_scan(
+    api_client_request, sample_letter_template, mocker, attachments, expected_decoded
+):
+    mock_get_pdf = mocker.patch("app.celery.letters_pdf_tasks.get_pdf_for_templated_letter.apply_async")
+    mock_upload = mocker.patch("app.v2.notifications.post_notifications.upload_letter_attachments")
+    mock_send_task = mocker.patch("app.v2.notifications.post_notifications.notify_celery.send_task")
+
+    resp_json = api_client_request.post(
+        sample_letter_template.service_id,
+        "v2_notifications.post_notification",
+        notification_type="letter",
+        _data=_letter_data(sample_letter_template.id, attachments=attachments),
+    )
+
+    assert validate(resp_json, post_letter_response) == resp_json
+    notification = Notification.query.one()
+    assert notification.status == NOTIFICATION_PENDING_VIRUS_CHECK
+
+    mock_upload.assert_called_once_with(ANY, expected_decoded)
+    mock_send_task.assert_called_once_with(
+        name=TaskNamesNL.SCAN_LETTER_ATTACHMENTS,
+        kwargs={"notification_id": str(notification.id)},
+        queue=QueueNames.ANTIVIRUS,
+    )
+    assert not mock_get_pdf.called
+
+
+def test_post_letter_notification_with_attachments_for_test_key_skips_antivirus(
+    api_client_request, sample_letter_template, mocker
+):
+    mock_get_pdf = mocker.patch("app.celery.letters_pdf_tasks.get_pdf_for_templated_letter.apply_async")
+    mock_upload = mocker.patch("app.v2.notifications.post_notifications.upload_letter_attachments")
+    mock_send_task = mocker.patch("app.v2.notifications.post_notifications.notify_celery.send_task")
+
+    api_client_request.post(
+        sample_letter_template.service_id,
+        "v2_notifications.post_notification",
+        notification_type="letter",
+        _api_key_type="test",
+        _data=_letter_data(sample_letter_template.id, attachments=[VALID_ATTACHMENT]),
+    )
+
+    notification = Notification.query.one()
+    mock_upload.assert_called_once_with(ANY, [b"pdf-bytes-1"])
+    mock_get_pdf.assert_called_once_with([str(notification.id)], queue=QueueNames.RESEARCH_MODE)
+    # test-key sends skip AV entirely for ad-hoc attachments - the fake-delivery-callback
+    # machinery fires its own unrelated send_task call, so assert on the specific task name
+    # rather than on send_task not being called at all.
+    assert all(call.kwargs.get("name") != TaskNamesNL.SCAN_LETTER_ATTACHMENTS for call in mock_send_task.call_args_list)
+
+
+def test_post_letter_notification_with_attachments_antivirus_disabled_dispatches_success_directly(
+    api_client_request, sample_letter_template, mocker
+):
+    current_app.config["ANTIVIRUS_ENABLED"] = False
+    mocker.patch("app.v2.notifications.post_notifications.upload_letter_attachments")
+    mock_success_task = mocker.patch(
+        "app.v2.notifications.post_notifications.process_virus_scan_success_letter_attachments.apply_async"
+    )
+
+    api_client_request.post(
+        sample_letter_template.service_id,
+        "v2_notifications.post_notification",
+        notification_type="letter",
+        _data=_letter_data(sample_letter_template.id, attachments=[VALID_ATTACHMENT]),
+    )
+
+    notification = Notification.query.one()
+    assert notification.status == NOTIFICATION_PENDING_VIRUS_CHECK
+    mock_success_task.assert_called_once_with([str(notification.id)], queue=QueueNames.LETTERS)
+
+
+def test_post_letter_notification_rejects_more_than_2_attachments(api_client_request, sample_letter_template):
+    api_client_request.post(
+        sample_letter_template.service_id,
+        "v2_notifications.post_notification",
+        notification_type="letter",
+        _data=_letter_data(
+            sample_letter_template.id, attachments=[VALID_ATTACHMENT, VALID_ATTACHMENT_2, VALID_ATTACHMENT]
+        ),
+        _expected_status=400,
+    )
+    assert not Notification.query.first()
+
+
+def test_post_letter_notification_rejects_empty_attachments_array(api_client_request, sample_letter_template):
+    api_client_request.post(
+        sample_letter_template.service_id,
+        "v2_notifications.post_notification",
+        notification_type="letter",
+        _data=_letter_data(sample_letter_template.id, attachments=[]),
+        _expected_status=400,
+    )
+    assert not Notification.query.first()
+
+
+def test_post_letter_notification_rejects_invalid_base64_attachment(api_client_request, sample_letter_template):
+    resp_json = api_client_request.post(
+        sample_letter_template.service_id,
+        "v2_notifications.post_notification",
+        notification_type="letter",
+        _data=_letter_data(sample_letter_template.id, attachments=["not-valid-base64!!"]),
+        _expected_status=400,
+    )
+
+    assert resp_json["errors"][0]["message"] == "Cannot decode letter attachment (invalid base64 encoding)"
+    assert not Notification.query.first()
+
+
+def test_post_letter_notification_rejects_oversized_attachment(api_client_request, sample_letter_template):
+    oversized_attachment = base64.b64encode(b"x" * (MAX_LETTER_ATTACHMENT_BYTES + 1)).decode()
+
+    resp_json = api_client_request.post(
+        sample_letter_template.service_id,
+        "v2_notifications.post_notification",
+        notification_type="letter",
+        _data=_letter_data(sample_letter_template.id, attachments=[oversized_attachment]),
+        _expected_status=400,
+    )
+
+    assert "must be at most" in resp_json["errors"][0]["message"]
     assert not Notification.query.first()
 
 

@@ -49,7 +49,7 @@ from app.clients.letter.dvla import (
     DvlaNonRetryableException,
     DvlaThrottlingException,
 )
-from app.config import Config, QueueNames, TaskNames
+from app.config import Config, QueueNames, TaskNames, TaskNamesNL
 from app.constants import (
     JOB_STATUS_ERROR,
     JOB_STATUS_FINISHED,
@@ -597,6 +597,52 @@ def test_check_if_letters_still_pending_virus_check_raises_zendesk_if_files_cant
     assert f"{(str(notification_1.id), notification_1.reference)}" in mock_create_ticket.call_args.kwargs["message"]
     assert f"{(str(notification_2.id), notification_2.reference)}" in mock_create_ticket.call_args.kwargs["message"]
     mock_send_ticket_to_zendesk.assert_called_once()
+
+
+@freeze_time("2019-05-30 14:00:00")
+def test_check_if_letters_still_pending_virus_check_restarts_scan_for_stuck_letter_attachments(
+    mocker, sample_letter_template
+):
+    # generate_letter_pdf_filename is mocked out here (rather than exercised for real) to
+    # sidestep the unrelated postage-resolution issue the two tests above are skipped for -
+    # this test is only exercising the new ad-hoc-attachments branch, not that lookup.
+    mocker.patch("app.celery.scheduled_tasks.generate_letter_pdf_filename", return_value="LETTER.PDF")
+    mocker.patch("app.aws.s3.file_exists", return_value=False)
+    mock_create_ticket = mocker.spy(NotifySupportTicket, "__init__")
+    mock_celery = mocker.patch("app.celery.scheduled_tasks.notify_celery.send_task")
+    mocker.patch("app.celery.scheduled_tasks.zendesk_client.send_ticket_to_zendesk", autospec=True)
+
+    stuck_with_attachments = create_notification(
+        template=sample_letter_template,
+        status=NOTIFICATION_PENDING_VIRUS_CHECK,
+        created_at=datetime.utcnow() - timedelta(minutes=10, seconds=1),
+        reference="has-attachments",
+    )
+    stuck_without_attachments = create_notification(
+        template=sample_letter_template,
+        status=NOTIFICATION_PENDING_VIRUS_CHECK,
+        created_at=datetime.utcnow() - timedelta(minutes=10, seconds=1),
+        reference="no-attachments",
+    )
+
+    def fake_get_letter_attachment_keys(notification_id):
+        if str(notification_id) == str(stuck_with_attachments.id):
+            return [f"{notification_id}/attachment-1.pdf"]
+        return []
+
+    mocker.patch("app.celery.scheduled_tasks.get_letter_attachment_keys", side_effect=fake_get_letter_attachment_keys)
+
+    check_if_letters_still_pending_virus_check()
+
+    mock_celery.assert_called_once_with(
+        name=TaskNamesNL.SCAN_LETTER_ATTACHMENTS,
+        kwargs={"notification_id": str(stuck_with_attachments.id)},
+        queue=QueueNames.ANTIVIRUS,
+    )
+    # the notification with no ad-hoc attachments still falls through to the Zendesk alert,
+    # not an auto-retry - only stuck_with_attachments.id got a SCAN_LETTER_ATTACHMENTS redispatch
+    assert mock_create_ticket.called is True
+    assert str(stuck_without_attachments.id) in mock_create_ticket.call_args.kwargs["message"]
 
 
 @freeze_time("2019-05-30 14:00:00")

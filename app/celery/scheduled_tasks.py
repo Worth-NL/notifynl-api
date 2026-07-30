@@ -29,7 +29,7 @@ from app.celery.tasks import (
     process_job_row,
 )
 from app.clients.letter.dvla import DvlaRetryableException
-from app.config import QueueNames, TaskNames
+from app.config import QueueNames, TaskNames, TaskNamesNL
 from app.constants import (
     EMAIL_TYPE,
     JOB_STATUS_ERROR,
@@ -78,7 +78,7 @@ from app.dao.services_dao import (
 from app.dao.template_email_files_dao import dao_get_template_email_files_by_template_id
 from app.dao.templates_dao import dao_get_template_by_id
 from app.dao.users_dao import delete_codes_older_created_more_than_a_day_ago, get_users_for_research
-from app.letters.utils import generate_letter_pdf_filename
+from app.letters.utils import generate_letter_pdf_filename, get_letter_attachment_keys
 from app.models import (
     AnnualBilling,
     EmailBranding,
@@ -369,6 +369,21 @@ def check_if_letters_still_pending_virus_check(max_minutes_ago_to_check: int = 3
                 kwargs={"filename": filename},
                 queue=QueueNames.ANTIVIRUS,
                 MessageGroupId=str(letter.service_id),
+            )
+        elif get_letter_attachment_keys(letter.id):
+            # [NOTIFYNL] a templated letter with ad-hoc attachments has no single canonical
+            # scan-bucket file to check above - it's keyed by notification id instead (see
+            # upload_letter_attachments/get_letter_attachment_keys). Without this branch,
+            # such a letter would always miss the check above and fall straight into the
+            # Zendesk alert below with no auto-retry, unlike every other letter type.
+            current_app.logger.warning(
+                "Letter id %s got stuck in pending-virus-check (ad-hoc attachments). Sending off for scan again.",
+                letter.id,
+            )
+            notify_celery.send_task(
+                name=TaskNamesNL.SCAN_LETTER_ATTACHMENTS,
+                kwargs={"notification_id": str(letter.id)},
+                queue=QueueNames.ANTIVIRUS,
             )
         else:
             current_app.logger.warning(

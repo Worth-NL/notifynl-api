@@ -253,6 +253,15 @@ post_letter_request = {
         "reference": {"type": "string", "maxLength": 1_000},
         "template_id": uuid,
         "personalisation": personalisation,
+        # [NOTIFYNL] up to 2 ad-hoc PDFs (base64), merged into the generated letter after
+        # the template's fixed letter_attachment (if any) - see app.v2.notifications
+        # .post_notifications.process_letter_notification
+        "attachments": {
+            "type": "array",
+            "items": {"type": "string"},
+            "minItems": 1,
+            "maxItems": 2,
+        },
     },
     "required": ["template_id", "personalisation"],
     "additionalProperties": False,

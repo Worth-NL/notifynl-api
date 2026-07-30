@@ -18,6 +18,7 @@ from app import (
 )
 from app.celery.letters_pdf_tasks import (
     get_pdf_for_templated_letter,
+    process_virus_scan_success_letter_attachments,
     sanitise_letter,
     sanitise_letter_parts,
 )
@@ -36,7 +37,7 @@ from app.constants import (
     SMS_TYPE,
 )
 from app.dao.templates_dao import get_precompiled_letter_template
-from app.letters.utils import upload_letter_pdf, upload_letter_pdf_parts
+from app.letters.utils import upload_letter_attachments, upload_letter_pdf, upload_letter_pdf_parts
 from app.notifications.process_letter_notifications import (
     create_letter_notification,
 )
@@ -48,6 +49,7 @@ from app.notifications.process_notifications import (
 from app.notifications.validators import (
     check_if_service_can_send_files_by_email,
     check_is_message_too_long,
+    check_letter_attachments_within_size_limit,
     check_rate_limiting,
     check_service_email_reply_to_id,
     check_service_has_permission,
@@ -352,6 +354,30 @@ def process_document_uploads(personalisation_data, service, send_to: str, simula
     return personalisation_data, len(file_keys)
 
 
+def _decode_letter_attachments(attachments):
+    check_letter_attachments_within_size_limit(attachments)
+    try:
+        return [base64.b64decode(attachment) for attachment in attachments]
+    except ValueError as e:
+        raise BadRequestError(
+            message="Cannot decode letter attachment (invalid base64 encoding)", status_code=400
+        ) from e
+
+
+def _dispatch_templated_letter_pdf(notification, *, test_key, attachments, queue):
+    if test_key or not attachments:
+        get_pdf_for_templated_letter.apply_async([str(notification.id)], queue=queue)
+    elif current_app.config["ANTIVIRUS_ENABLED"]:
+        notify_celery.send_task(
+            name=TaskNamesNL.SCAN_LETTER_ATTACHMENTS,
+            kwargs={"notification_id": str(notification.id)},
+            queue=QueueNames.ANTIVIRUS,
+        )
+    else:
+        # stub out antivirus in dev
+        process_virus_scan_success_letter_attachments.apply_async([str(notification.id)], queue=QueueNames.LETTERS)
+
+
 def process_letter_notification(
     *, letter_data, api_key, service, template, template_with_content, reply_to_text, precompiled=False
 ):
@@ -380,6 +406,14 @@ def process_letter_notification(
 
     test_key = api_key.key_type == KEY_TYPE_TEST
 
+    # [NOTIFYNL] ad-hoc PDF(s) submitted alongside a templated-letter send, merged into the
+    # generated letter after the template's fixed letter_attachment (if any) - see
+    # app.celery.letters_pdf_tasks.get_pdf_for_templated_letter. This is a request-shape
+    # guard, not a security scan, so it runs unconditionally, unlike the AV/sanitisation
+    # skip below which only applies to test-key sends.
+    attachments = letter_data.get("attachments")
+    decoded_attachments = _decode_letter_attachments(attachments) if attachments else None
+
     status = NOTIFICATION_CREATED
     updated_at = None
     if test_key:
@@ -390,25 +424,29 @@ def process_letter_notification(
         else:
             status = NOTIFICATION_DELIVERED
             updated_at = datetime.utcnow()
+    elif attachments:
+        # test-key sends skip AV/sanitisation for ad-hoc attachments entirely (mirroring how
+        # the template's fixed letter_attachment is never re-validated at send time either),
+        # so only a real key with attachments needs the virus-check hold.
+        status = NOTIFICATION_PENDING_VIRUS_CHECK
 
     queue = QueueNames.CREATE_LETTERS_PDF if not test_key else QueueNames.RESEARCH_MODE
 
-    notification = create_letter_notification(
-        letter_data=letter_data,
-        service=service,
-        template=template,
-        api_key=api_key,
-        status=status,
-        reply_to_text=reply_to_text,
-        updated_at=updated_at,
-        postage=postage,
-    )
+    with transaction():
+        notification = create_letter_notification(
+            letter_data=letter_data,
+            service=service,
+            template=template,
+            api_key=api_key,
+            status=status,
+            reply_to_text=reply_to_text,
+            updated_at=updated_at,
+            postage=postage,
+        )
+        if attachments:
+            upload_letter_attachments(notification, decoded_attachments)
 
-    get_pdf_for_templated_letter.apply_async(
-        [str(notification.id)],
-        queue=queue,
-        MessageGroupId=str(service.id),
-    )
+    _dispatch_templated_letter_pdf(notification, test_key=test_key, attachments=attachments, queue=queue)
 
     if test_key and current_app.config["TEST_LETTERS_FAKE_DELIVERY"]:
         create_fake_letter_callback.apply_async(

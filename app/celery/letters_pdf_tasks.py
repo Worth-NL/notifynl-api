@@ -4,6 +4,7 @@ from botocore.exceptions import ClientError as BotoClientError
 from flask import current_app
 from notifications_utils.letter_timings import LETTER_PROCESSING_DEADLINE
 from notifications_utils.recipient_validation.notifynl.postal_address import PostalAddress
+from notifications_utils.s3 import s3_move_folder_between_buckets
 from notifications_utils.timezones import convert_bst_to_utc, convert_utc_to_bst
 
 from app import notify_celery, signing
@@ -41,6 +42,7 @@ from app.letters.utils import (
     get_billable_units_for_letter_page_count,
     get_file_names_from_error_bucket,
     get_folder_name,
+    get_letter_attachment_keys,
     get_reference_from_filename,
     move_error_pdf_to_scan_bucket,
     move_failed_pdf,
@@ -84,6 +86,11 @@ def get_pdf_for_templated_letter(self, notification_id):
             "notification_id": str(notification_id),
             "key_type": notification.key_type,
             "date": notification.created_at.replace(tzinfo=UTC).isoformat(),
+            # [NOTIFYNL] populates the ad-hoc attachments (if any) uploaded by
+            # upload_letter_attachments at send time - empty for the common no-attachment
+            # case, which keeps this a safe no-op for every pre-existing call site.
+            "attachments": get_letter_attachment_keys(notification_id),
+            "allow_international_letters": notification.service.has_permission(INTERNATIONAL_LETTERS),
         }
 
         encoded_data = signing.encode(letter_data)
@@ -147,6 +154,80 @@ def update_validation_failed_for_templated_letter(self, notification_id, page_co
         "Validation failed: letter is too long %(page_count)s for letter with id: %(notification_id)s",
         extra,
         extra=extra,
+    )
+
+
+# [NOTIFYNL] Three-way virus-scan callback split for ad-hoc letter attachments, mirroring
+# app.celery.messagebox_tasks's messagebox_virus_scan_{success,failed,error}. Unlike that
+# sibling flow, success here doesn't move the attachments to a separate long-lived bucket -
+# they stay in the scan bucket for notifynl-template-preview to pick up moments later
+# (see get_pdf_for_templated_letter, dispatched below).
+
+LETTER_ATTACHMENTS_VIRUS_SCAN_ERROR_RETRY_DELAY = 900
+
+
+@notify_celery.task(name=TaskNamesNL.PROCESS_VIRUS_SCAN_SUCCESS_LETTER_ATTACHMENTS, bind=True)
+def process_virus_scan_success_letter_attachments(self, notification_id: str):
+    current_app.logger.info("[%s] [%s]", self.name, notification_id)
+    notification = get_notification_by_id(notification_id, _raise=True)
+
+    if notification.status != NOTIFICATION_PENDING_VIRUS_CHECK:
+        current_app.logger.info(
+            "[%s] [%s] notification already in status %s, not proceeding",
+            self.name,
+            notification_id,
+            notification.status,
+        )
+        return
+
+    update_notification_status_by_id(notification.id, NOTIFICATION_CREATED)
+
+    get_pdf_for_templated_letter.apply_async([str(notification.id)], queue=QueueNames.CREATE_LETTERS_PDF)
+
+
+@notify_celery.task(name=TaskNamesNL.PROCESS_VIRUS_SCAN_FAILED_LETTER_ATTACHMENTS, bind=True)
+def process_virus_scan_failed_letter_attachments(self, notification_id: str):
+    current_app.logger.info("[%s] [%s]", self.name, notification_id)
+    notification = get_notification_by_id(notification_id, _raise=True)
+
+    s3_move_folder_between_buckets(
+        source_bucket=current_app.config["S3_BUCKET_LETTERS_SCAN"],
+        dest_bucket=current_app.config["S3_BUCKET_INVALID_PDF"],
+        folder_name=str(notification.id),
+        dest_folder_name=f"FAILURE/{notification.id}",
+    )
+
+    update_notification_status_by_id(notification.id, NOTIFICATION_VIRUS_SCAN_FAILED)
+
+    raise VirusScanError(f"notification id {notification.id} Virus scan failed")
+
+
+@notify_celery.task(name=TaskNamesNL.PROCESS_VIRUS_SCAN_ERROR_LETTER_ATTACHMENTS, bind=True)
+def process_virus_scan_error_letter_attachments(self, notification_id: str):
+    current_app.logger.info("[%s] [%s]", self.name, notification_id)
+    notification = get_notification_by_id(notification_id, _raise=True)
+
+    if notification.status != NOTIFICATION_PENDING_VIRUS_CHECK:
+        current_app.logger.info(
+            "[%s] [%s] notification already in status %s, not rescheduling scan",
+            self.name,
+            notification_id,
+            notification.status,
+        )
+        return
+
+    current_app.logger.warning(
+        "[%s] [%s] virus scan errored, rescheduling scan in %ss",
+        self.name,
+        notification_id,
+        LETTER_ATTACHMENTS_VIRUS_SCAN_ERROR_RETRY_DELAY,
+    )
+
+    notify_celery.send_task(
+        name=TaskNamesNL.SCAN_LETTER_ATTACHMENTS,
+        kwargs={"notification_id": str(notification.id)},
+        queue=QueueNames.ANTIVIRUS,
+        countdown=LETTER_ATTACHMENTS_VIRUS_SCAN_ERROR_RETRY_DELAY,
     )
 
 

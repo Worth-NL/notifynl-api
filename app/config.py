@@ -773,6 +773,15 @@ class TaskNamesNL(TaskNames):
     SANITISE_AND_MERGE_LETTER_PARTS = "sanitise-and-merge-letter-parts"
     PROCESS_VIRUS_SCAN_FAILED_LETTER_PARTS = "process-virus-scan-failed-letter-parts"
     PROCESS_VIRUS_SCAN_ERROR_LETTER_PARTS = "process-virus-scan-error-letter-parts"
+    # Ad-hoc PDF attachments submitted alongside a templated-letter send (distinct from the
+    # template's own fixed letter_attachment, and from the SCAN_LETTER_PARTS flow above,
+    # which is precompiled-letter-specific) - names must match notifications-antivirus's
+    # TaskNames entries of the same name exactly, since celery routes on these literal
+    # strings across services.
+    SCAN_LETTER_ATTACHMENTS = "scan-letter-attachments"
+    PROCESS_VIRUS_SCAN_SUCCESS_LETTER_ATTACHMENTS = "process-virus-scan-success-letter-attachments"
+    PROCESS_VIRUS_SCAN_FAILED_LETTER_ATTACHMENTS = "process-virus-scan-failed-letter-attachments"
+    PROCESS_VIRUS_SCAN_ERROR_LETTER_ATTACHMENTS = "process-virus-scan-error-letter-attachments"
 
 
 class ConfigNL(Config):

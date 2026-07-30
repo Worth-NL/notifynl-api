@@ -10,10 +10,14 @@ from notifications_utils.testing.comparisons import AnyStringMatching
 
 from app import signing
 from app.celery.letters_pdf_tasks import (
+    LETTER_ATTACHMENTS_VIRUS_SCAN_ERROR_RETRY_DELAY,
     get_pdf_for_templated_letter,
     process_sanitised_letter,
+    process_virus_scan_error_letter_attachments,
     process_virus_scan_error_letter_parts,
+    process_virus_scan_failed_letter_attachments,
     process_virus_scan_failed_letter_parts,
+    process_virus_scan_success_letter_attachments,
     resanitise_pdf,
     sanitise_letter_parts,
 )
@@ -29,6 +33,7 @@ from app.constants import (
     NOTIFICATION_TECHNICAL_FAILURE,
     NOTIFICATION_VIRUS_SCAN_FAILED,
 )
+from app.dao import notifications_dao
 from app.errors import VirusScanError
 from app.exceptions import NotificationTechnicalFailureException
 from app.letters.utils import ScanErrorType
@@ -210,6 +215,7 @@ def test_get_pdf_for_templated_letter_happy_path(mocker, sample_letter_notificat
     mock_generate_letter_pdf_filename = mocker.patch(
         "app.celery.letters_pdf_tasks.generate_letter_pdf_filename", return_value="LETTER.PDF"
     )
+    mocker.patch("app.celery.letters_pdf_tasks.get_letter_attachment_keys", return_value=[])
     get_pdf_for_templated_letter(sample_letter_notification.id)
 
     letter_data = {
@@ -235,6 +241,9 @@ def test_get_pdf_for_templated_letter_happy_path(mocker, sample_letter_notificat
             # to not be in the wrong timezone or format, for example.
             datetime.now(UTC).strftime(r"^%Y-%m-%dT%H:\d{2}:\d{2}\.\d{6}\+00:00$")
         ),
+        "attachments": [],
+        # sample_letter_template's service has full permissions (incl. INTERNATIONAL_LETTERS)
+        "allow_international_letters": True,
     }
 
     mock_celery.assert_called_once_with(
@@ -253,6 +262,114 @@ def test_get_pdf_for_templated_letter_happy_path(mocker, sample_letter_notificat
         ignore_folder=False,
         postage="netherlands",
     )
+
+
+@pytest.mark.parametrize(
+    "attachment_keys",
+    [
+        [],
+        ["{notification_id}/attachment-1.pdf"],
+        ["{notification_id}/attachment-1.pdf", "{notification_id}/attachment-2.pdf"],
+    ],
+)
+def test_get_pdf_for_templated_letter_includes_adhoc_attachment_keys(
+    mocker, sample_letter_notification, attachment_keys
+):
+    expected_keys = [key.format(notification_id=sample_letter_notification.id) for key in attachment_keys]
+    mock_celery = mocker.patch("app.celery.letters_pdf_tasks.notify_celery.send_task")
+    mocker.patch("app.celery.letters_pdf_tasks.generate_letter_pdf_filename", return_value="LETTER.PDF")
+    mocker.patch("app.celery.letters_pdf_tasks.get_letter_attachment_keys", return_value=expected_keys)
+
+    get_pdf_for_templated_letter(sample_letter_notification.id)
+
+    actual_data = signing.decode(mock_celery.call_args.kwargs["args"][0])
+    assert actual_data["attachments"] == expected_keys
+
+
+@pytest.mark.parametrize(
+    "permissions, expected_international_letters_allowed",
+    (
+        ([LETTER_TYPE], False),
+        ([LETTER_TYPE, INTERNATIONAL_LETTERS], True),
+    ),
+)
+def test_get_pdf_for_templated_letter_sets_allow_international_letters(
+    mocker, sample_letter_notification, permissions, expected_international_letters_allowed
+):
+    sample_letter_notification.service = create_service(service_permissions=permissions)
+    mock_celery = mocker.patch("app.celery.letters_pdf_tasks.notify_celery.send_task")
+    mocker.patch("app.celery.letters_pdf_tasks.generate_letter_pdf_filename", return_value="LETTER.PDF")
+    mocker.patch("app.celery.letters_pdf_tasks.get_letter_attachment_keys", return_value=[])
+
+    get_pdf_for_templated_letter(sample_letter_notification.id)
+
+    actual_data = signing.decode(mock_celery.call_args.kwargs["args"][0])
+    assert actual_data["allow_international_letters"] == expected_international_letters_allowed
+
+
+def test_process_virus_scan_success_letter_attachments_updates_status_and_dispatches(
+    mocker, sample_letter_notification
+):
+    sample_letter_notification.status = NOTIFICATION_PENDING_VIRUS_CHECK
+    mock_get_pdf = mocker.patch("app.celery.letters_pdf_tasks.get_pdf_for_templated_letter.apply_async")
+
+    process_virus_scan_success_letter_attachments(sample_letter_notification.id)
+
+    assert sample_letter_notification.status == NOTIFICATION_CREATED
+    mock_get_pdf.assert_called_once_with([str(sample_letter_notification.id)], queue=QueueNames.CREATE_LETTERS_PDF)
+
+
+def test_process_virus_scan_success_letter_attachments_skips_when_not_pending(mocker, sample_letter_notification):
+    notifications_dao.update_notification_status_by_id(sample_letter_notification.id, NOTIFICATION_CREATED)
+    mock_get_pdf = mocker.patch("app.celery.letters_pdf_tasks.get_pdf_for_templated_letter.apply_async")
+
+    process_virus_scan_success_letter_attachments(sample_letter_notification.id)
+
+    assert not mock_get_pdf.called
+
+
+@mock_aws
+def test_process_virus_scan_failed_letter_attachments_moves_folder_and_sets_permanent_failure(
+    sample_letter_notification,
+):
+    scan_bucket = current_app.config["S3_BUCKET_LETTERS_SCAN"]
+    invalid_bucket = current_app.config["S3_BUCKET_INVALID_PDF"]
+    sample_letter_notification.status = NOTIFICATION_PENDING_VIRUS_CHECK
+
+    s3 = boto3.client("s3", region_name="eu-west-1")
+    s3.create_bucket(Bucket=scan_bucket, CreateBucketConfiguration={"LocationConstraint": "eu-west-1"})
+    s3.create_bucket(Bucket=invalid_bucket, CreateBucketConfiguration={"LocationConstraint": "eu-west-1"})
+    s3.put_object(Bucket=scan_bucket, Key=f"{sample_letter_notification.id}/attachment-1.pdf", Body=b"content")
+
+    with pytest.raises(VirusScanError):
+        process_virus_scan_failed_letter_attachments(sample_letter_notification.id)
+
+    assert sample_letter_notification.status == NOTIFICATION_VIRUS_SCAN_FAILED
+
+
+def test_process_virus_scan_error_letter_attachments_reschedules_scan(mocker, sample_letter_notification):
+    sample_letter_notification.status = NOTIFICATION_PENDING_VIRUS_CHECK
+    mock_send_task = mocker.patch("app.celery.letters_pdf_tasks.notify_celery.send_task")
+
+    process_virus_scan_error_letter_attachments(sample_letter_notification.id)
+
+    mock_send_task.assert_called_once_with(
+        name=TaskNamesNL.SCAN_LETTER_ATTACHMENTS,
+        kwargs={"notification_id": str(sample_letter_notification.id)},
+        queue=QueueNames.ANTIVIRUS,
+        countdown=LETTER_ATTACHMENTS_VIRUS_SCAN_ERROR_RETRY_DELAY,
+    )
+
+
+def test_process_virus_scan_error_letter_attachments_skips_reschedule_when_not_pending(
+    mocker, sample_letter_notification
+):
+    notifications_dao.update_notification_status_by_id(sample_letter_notification.id, NOTIFICATION_CREATED)
+    mock_send_task = mocker.patch("app.celery.letters_pdf_tasks.notify_celery.send_task")
+
+    process_virus_scan_error_letter_attachments(sample_letter_notification.id)
+
+    assert not mock_send_task.called
 
 
 @pytest.mark.parametrize(

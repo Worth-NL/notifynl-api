@@ -1,4 +1,5 @@
 import base64
+import binascii
 from math import ceil
 
 from ebms_adapter_client.berichtenbox import MAX_PERSONALISED_ATTACHMENT_BYTES
@@ -172,6 +173,26 @@ def check_service_has_oin(service):
             message=f"Service is not configured for messagebox delivery - add an OIN for your service at "
             f"{current_app.config['ADMIN_BASE_URL']}/services/{service.id}/messagebox-settings"
         )
+
+
+MAX_LETTER_ATTACHMENT_BYTES = 2 * 1024 * 1024
+
+
+def check_letter_attachments_within_size_limit(attachments):
+    # Per-attachment (not combined) cap, measured before base64 encoding - a cheap
+    # pre-flight guard ahead of the real hard cap, LETTER_MAX_PAGE_COUNT, which can
+    # only be checked post-merge once the page count is known.
+    for attachment in attachments:
+        try:
+            decoded_bytes = len(base64.b64decode(attachment, validate=True))
+        except binascii.Error as e:
+            raise BadRequestError(message="Cannot decode letter attachment (invalid base64 encoding)") from e
+
+        if decoded_bytes > MAX_LETTER_ATTACHMENT_BYTES:
+            raise BadRequestError(
+                message=f"Each letter attachment must be at most {MAX_LETTER_ATTACHMENT_BYTES} bytes "
+                f"before base64 encoding, got {decoded_bytes}"
+            )
 
 
 def check_messagebox_attachments_within_size_limit(attachments):
