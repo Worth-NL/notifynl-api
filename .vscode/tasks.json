@@ -194,10 +194,10 @@
             }
         },
         {
-            "label": "Create SMS Template",
+            "label": "Create SMS template",
             "type": "shell",
             "command": ".venv/bin/python -m flask command create-sms-template -s \"${input:serviceId}\" -u \"${input:userId}\" -n \"${input:smsTemplateName}\"",
-            "problemMatcher": [],
+            "problemMatcher": "$python",
             "presentation": {
                 "showReuseMessage": false
             },
@@ -208,10 +208,24 @@
             }
         },
         {
-            "label": "Create Email Template",
+            "label": "Create email template",
             "type": "shell",
             "command": ".venv/bin/python -m flask command create-email-template -s \"${input:serviceId}\" -u \"${input:userId}\" -n \"${input:emailTemplateName}\"",
-            "problemMatcher": [],
+            "problemMatcher": "$python",
+            "presentation": {
+                "showReuseMessage": false
+            },
+            "options": {
+                "env": {
+                    "FLASK_APP": "application.py"
+                }
+            }
+        },
+        {
+            "label": "Create letter template",
+            "type": "shell",
+            "command": ".venv/bin/python -m flask command create-letter-template -s \"${input:serviceId}\" -u \"${input:userId}\" -n \"${input:letterTemplateName}\" -p \"${input:letterPostage}\"",
+            "problemMatcher": "$python",
             "presentation": {
                 "showReuseMessage": false
             },
@@ -318,6 +332,19 @@
             "type": "promptString",
             "description": "Enter email template name:",
             "default": "Test Email Template"
+        },
+        {
+            "id": "letterTemplateName",
+            "type": "promptString",
+            "description": "Enter letter template name:",
+            "default": "Test Letter Template"
+        },
+        {
+            "id": "letterPostage",
+            "type": "pickString",
+            "description": "Select letter postage class:",
+            "options": ["netherlands", "europe", "rest-of-world"],
+            "default": "netherlands"
         },
         {
             "id": "nlMigrationDescription",
