@@ -1197,6 +1197,8 @@ def create_api_key(service_id, user_id, name, key_type):
 
     full_key = f"{api_key.name}-{api_key.service_id}-{api_key.secret}"
 
+    # codeql[py/clear-text-logging-sensitive-data] intentional: this CLI command's sole purpose
+    # is to print a newly generated API key to the operator's terminal so they can copy it once.
     print(full_key)
 
     return full_key
