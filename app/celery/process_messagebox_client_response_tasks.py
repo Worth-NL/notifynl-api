@@ -2,6 +2,7 @@ import logging
 import uuid
 from datetime import datetime
 
+import sentry_sdk
 from flask import current_app
 
 from app import notify_celery, statsd_client
@@ -70,6 +71,8 @@ def _process_for_status(
     notify_detailed_status=None,
 ):
     matched_notification = notifications_dao.get_notification_by_id(provider_reference)
+
+    sentry_sdk.set_tag("notification_id", provider_reference)
 
     log_extra = {
         "envelope_id": envelope_id,

@@ -2049,9 +2049,9 @@ segno==1.6.6 \
     # via
     #   -r requirements_nl.txt
     #   notifications-utils
-sentry-sdk==1.45.1 \
-    --hash=sha256:608887855ccfe39032bfd03936e3a1c4f4fc99b3a4ac49ced54a4220de61c9c1 \
-    --hash=sha256:a16c997c0f4e3df63c0fc5e4207ccb1ab37900433e0f72fef88315d317829a26
+sentry-sdk==2.35.0 \
+    --hash=sha256:5ea58d352779ce45d17bc2fa71ec7185205295b83a9dbb5707273deb64720092 \
+    --hash=sha256:6e0c29b9a5d34de8575ffb04d289a987ff3053cf2c98ede445bea995e3830263
     # via -r requirements_nl.txt
 six==1.17.0 \
     --hash=sha256:4721f391ed90541fddacab5acf947aa0d3dc7d27b2e1e8eda2be8970586c3274 \

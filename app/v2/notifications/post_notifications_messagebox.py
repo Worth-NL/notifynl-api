@@ -1,5 +1,6 @@
 from datetime import UTC, datetime
 
+import sentry_sdk
 from flask import current_app, jsonify, request
 from gds_metrics import Histogram
 
@@ -95,6 +96,8 @@ def process_messagebox_notification(*, messagebox_data, api_key, service):
             client_reference=messagebox_data.get("reference", None),
             updated_at=updated_at,
         )
+
+        sentry_sdk.set_tag("notification_id", str(notification.id))
 
         if status in MESSAGEBOX_TERMINAL_STATUSES:
             # Test-key sends are created already-delivered (see `status` above)

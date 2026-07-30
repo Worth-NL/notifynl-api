@@ -1,5 +1,6 @@
 import logging
 
+import sentry_sdk
 from flask import current_app
 from notifications_utils.s3 import s3_move_folder_between_buckets
 
@@ -21,7 +22,8 @@ from app.models import Notification
 
 @notify_celery.task(name=TaskNamesNL.MESSAGEBOX_VIRUS_SCAN_FAILED, bind=True)
 def messagebox_virus_scan_failed(self, notification_id: str):
-    current_app.logger.info("[%s] [%s]", self.name, notification_id)
+    sentry_sdk.set_tag("notification_id", notification_id)
+    current_app.logger.info("[%s] [%s]", self.name, notification_id, extra={"notification_id": notification_id})
     notification: Notification = notifications_dao.get_notification_by_id(notification_id, _raise=True)
 
     s3_move_folder_between_buckets(
@@ -58,7 +60,8 @@ def messagebox_virus_scan_error(self, notification_id: str):
     regardless of how many rescans have been scheduled underneath -- that's
     the intended circuit breaker (human investigates/decides), not an
     automatic permanent failure."""
-    current_app.logger.info("[%s] [%s]", self.name, notification_id)
+    sentry_sdk.set_tag("notification_id", notification_id)
+    current_app.logger.info("[%s] [%s]", self.name, notification_id, extra={"notification_id": notification_id})
     notification: Notification = notifications_dao.get_notification_by_id(notification_id, _raise=True)
 
     if notification.status != NOTIFICATION_PENDING_VIRUS_CHECK:
@@ -67,6 +70,7 @@ def messagebox_virus_scan_error(self, notification_id: str):
             self.name,
             notification_id,
             notification.status,
+            extra={"notification_id": notification_id},
         )
         return
 
@@ -75,6 +79,7 @@ def messagebox_virus_scan_error(self, notification_id: str):
         self.name,
         notification_id,
         MESSAGEBOX_VIRUS_SCAN_ERROR_RETRY_DELAY,
+        extra={"notification_id": notification_id},
     )
 
     notify_celery.send_task(
@@ -87,7 +92,8 @@ def messagebox_virus_scan_error(self, notification_id: str):
 
 @notify_celery.task(name=TaskNamesNL.MESSAGEBOX_VIRUS_SCAN_SUCCESS, bind=True)
 def messagebox_virus_scan_success(self, notification_id: str):
-    current_app.logger.info("[%s] [%s]", self.name, notification_id)
+    sentry_sdk.set_tag("notification_id", notification_id)
+    current_app.logger.info("[%s] [%s]", self.name, notification_id, extra={"notification_id": notification_id})
     notification: Notification = notifications_dao.get_notification_by_id(notification_id, _raise=True)
 
     s3_move_folder_between_buckets(
@@ -113,7 +119,8 @@ def messagebox_virus_scan_success(self, notification_id: str):
     early_log_level=logging.DEBUG,
 )
 def messagebox_deliver(self, notification_id: str):
-    current_app.logger.info("[%s] [%s]", self.name, notification_id)
+    sentry_sdk.set_tag("notification_id", notification_id)
+    current_app.logger.info("[%s] [%s]", self.name, notification_id, extra={"notification_id": notification_id})
     notification: Notification = notifications_dao.get_notification_by_id(notification_id, _raise=True)
 
     if notification.status != NOTIFICATION_CREATED:
@@ -127,17 +134,22 @@ def messagebox_deliver(self, notification_id: str):
             self.name,
             notification_id,
             notification.status,
+            extra={"notification_id": notification_id},
         )
         return
 
     try:
         envelope_message_id = ebms_adapter_client.send_messagebox(str(notification.id))
     except MessageboxClientNonRetryableException as e:
-        current_app.logger.exception("Messagebox notification %s failed: %s", notification_id, e)
+        current_app.logger.exception(
+            "Messagebox notification %s failed: %s", notification_id, e, extra={"notification_id": notification_id}
+        )
         notifications_dao.update_notification_status_by_id(notification.id, NOTIFICATION_TECHNICAL_FAILURE)
         return
     except Exception:
-        current_app.logger.exception("RETRY: Messagebox notification %s failed", notification_id)
+        current_app.logger.exception(
+            "RETRY: Messagebox notification %s failed", notification_id, extra={"notification_id": notification_id}
+        )
         # Touch updated_at so dao_messagebox_notifications_still_pending can tell an
         # actively-retrying notification apart from one whose dispatch was genuinely
         # lost -- status stays NOTIFICATION_CREATED throughout retries, so created_at

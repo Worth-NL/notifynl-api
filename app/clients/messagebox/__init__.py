@@ -49,14 +49,22 @@ class MessageboxClient(Client):
                     **adapter.poolmanager.connection_pool_kw,
                 }
 
-    def record_outcome(self, success):
+    def record_outcome(self, success, notification_id: str):
         if success:
-            self.current_app.logger.info("Provider request for %s %s", self.name, "succeeded" if success else "failed")
+            self.current_app.logger.info(
+                "Provider request for %s %s",
+                self.name,
+                "succeeded" if success else "failed",
+                extra={"notification_id": notification_id, "provider_name": self.name},
+            )
             self.statsd_client.incr(f"clients.{self.name}.success")
         else:
             self.statsd_client.incr(f"clients.{self.name}.error")
             self.current_app.logger.warning(
-                "Provider request for %s %s", self.name, "succeeded" if success else "failed"
+                "Provider request for %s %s",
+                self.name,
+                "succeeded" if success else "failed",
+                extra={"notification_id": notification_id, "provider_name": self.name},
             )
 
     def send_messagebox(self, notification_id: str):
@@ -64,9 +72,9 @@ class MessageboxClient(Client):
 
         try:
             response = self.try_send_messagebox(notification_id)
-            self.record_outcome(True)
+            self.record_outcome(True, notification_id)
         except MessageboxClientException as e:
-            self.record_outcome(False)
+            self.record_outcome(False, notification_id)
             raise e
         finally:
             elapsed_time = monotonic() - start_time
