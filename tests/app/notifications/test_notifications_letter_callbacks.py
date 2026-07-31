@@ -175,7 +175,23 @@ def test_process_letter_callback_raises_error_if_token_and_notification_id_in_da
 ):
     signed_token_id = signing.encode(fake_uuid)
 
-    data = mock_dvla_callback_data()
+    data = mock_dvla_callback_data(
+        overrides={
+            "data": {
+                "despatchProperties": [
+                    {"key": "totalSheets", "value": "5"},
+                    {"key": "postageClass", "value": "netherlands"},
+                    {"key": "mailingProduct", "value": "MM UNSORTED"},
+                    {"key": "productionRunDate", "value": "2024-08-01 09:15:14.456"},
+                    {"key": "osgBatchType", "value": "UNSORTED"},
+                    {"key": "mailProvider", "value": "UKM"},
+                    {"key": "osgAppName", "value": "SEL5"},
+                    {"key": "cardChipId", "value": "null"},
+                    {"key": "uci", "value": "null"},
+                ]
+            }
+        }
+    )
 
     response = client.post(
         url_for("notifications_letter_callback.process_letter_callback", token=signed_token_id),
@@ -192,7 +208,23 @@ def test_process_dvla_dispatched_letter_callback_calls_process_letter_callback_d
     client, mock_celery_task, mock_dvla_callback_data
 ):
     mock_task = mock_celery_task(process_letter_callback_data)
-    data = mock_dvla_callback_data()
+    data = mock_dvla_callback_data(
+        overrides={
+            "data": {
+                "despatchProperties": [
+                    {"key": "totalSheets", "value": "5"},
+                    {"key": "postageClass", "value": "netherlands"},
+                    {"key": "mailingProduct", "value": "MM UNSORTED"},
+                    {"key": "productionRunDate", "value": "2024-08-01 09:15:14.456"},
+                    {"key": "osgBatchType", "value": "UNSORTED"},
+                    {"key": "mailProvider", "value": "UKM"},
+                    {"key": "osgAppName", "value": "SEL5"},
+                    {"key": "cardChipId", "value": "null"},
+                    {"key": "uci", "value": "null"},
+                ]
+            }
+        }
+    )
     data["data"]["jobStatus"] = DVLA_NOTIFICATION_DISPATCHED
     data["data"]["transitionDate"] = "2025-04-01T23:30:07Z"
 

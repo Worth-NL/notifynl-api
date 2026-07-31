@@ -14,7 +14,7 @@ from app.celery.service_callback_tasks import (
     send_delivery_status_to_service,
 )
 from app.config import QueueNames
-from app.constants import DVLA_NOTIFICATION_DISPATCHED, DVLA_NOTIFICATION_REJECTED
+from app.constants import DVLA_NOTIFICATION_DISPATCHED, DVLA_NOTIFICATION_REJECTED, POSTAGE_TYPES
 from app.dao.service_callback_api_dao import (
     get_delivery_status_callback_api_for_service,
 )
@@ -53,7 +53,7 @@ dvla_letter_callback_schema = {
                             {
                                 "properties": {
                                     "key": {"const": "postageClass"},
-                                    "value": {"enum": ["1ST", "2ND", "INTERNATIONAL"]},
+                                    "value": {"enum": POSTAGE_TYPES},
                                 }
                             },
                             {
