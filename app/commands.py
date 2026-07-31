@@ -30,7 +30,7 @@ from app.celery.letters_pdf_tasks import (
 )
 from app.celery.tasks import get_id_task_args_kwargs_for_job_row, process_job_row
 from app.config import QueueNames
-from app.constants import KEY_TYPE_TEST, NOTIFICATION_CREATED, SMS_TYPE
+from app.constants import KEY_TYPE_TEST, NETHERLANDS, NOTIFICATION_CREATED, SMS_TYPE
 from app.dao.annual_billing_dao import (
     dao_create_or_update_annual_billing_for_year,
     set_default_free_allowance_for_service,
@@ -944,7 +944,7 @@ def generate_bulktest_data(user_id):
             template_type="letter",
             subject="letter",
             content="letter body",
-            postage="second",
+            postage=NETHERLANDS,
             created_by_id=user_id,
         ),
     }
@@ -968,7 +968,7 @@ def generate_bulktest_data(user_id):
         for i in range(batch_size):
             notification_num = (batch * batch_size) + i
             notification_type = random.choice(["sms", "letter", "email"])
-            extra_kwargs = {"postage": "second"} if notification_type == "letter" else {}
+            extra_kwargs = {"postage": NETHERLANDS} if notification_type == "letter" else {}
             template = TEMPLATES[notification_type]
             notifications_batch.append(
                 Notification(
