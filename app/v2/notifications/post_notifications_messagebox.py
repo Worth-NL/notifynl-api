@@ -4,7 +4,7 @@ import sentry_sdk
 from flask import current_app, jsonify, request
 from gds_metrics import Histogram
 
-from app import api_user, authenticated_service, encryption, notify_celery
+from app import api_user, authenticated_service, db, encryption, notify_celery
 from app.config import QueueNames, QueueNamesNL, TaskNamesNL
 from app.constants import (
     KEY_TYPE_TEAM,
@@ -16,7 +16,6 @@ from app.constants import (
     NOTIFICATION_PENDING_VIRUS_CHECK,
 )
 from app.dao import notifications_dao
-from app.dao.dao_utils import transaction
 from app.dao.templates_messagebox_dao import get_messagebox_template
 from app.messagebox.utils import upload_messagebox_attachments
 from app.notifications.process_notifications import (
@@ -79,7 +78,7 @@ def process_messagebox_notification(*, messagebox_data, api_key, service):
 
     template = get_messagebox_template(service.id)
 
-    with transaction():
+    try:
         notification = persist_notification(
             template_id=template.id,
             template_version=template.version,
@@ -96,6 +95,7 @@ def process_messagebox_notification(*, messagebox_data, api_key, service):
             key_type=api_key.key_type,
             client_reference=messagebox_data.get("reference", None),
             updated_at=updated_at,
+            _autocommit=False,
         )
 
         sentry_sdk.set_tag("notification_id", str(notification.id))
@@ -109,6 +109,10 @@ def process_messagebox_notification(*, messagebox_data, api_key, service):
             notification.normalised_to = None
 
         upload_messagebox_attachments(notification, messagebox_data.get("attachments", []))
+        db.session.commit()
+    except Exception:
+        db.session.rollback()
+        raise
 
     resp = {"id": notification.id, "uri": f"{request.url_root}v2/notifications/{str(notification.id)}"}
 

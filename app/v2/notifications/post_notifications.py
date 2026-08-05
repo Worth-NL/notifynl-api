@@ -364,6 +364,30 @@ def _decode_letter_attachments(attachments):
         ) from e
 
 
+def _create_templated_letter_notification_with_attachments(
+    *, letter_data, service, template, api_key, status, reply_to_text, updated_at, postage, decoded_attachments
+):
+    try:
+        notification = create_letter_notification(
+            letter_data=letter_data,
+            service=service,
+            template=template,
+            api_key=api_key,
+            status=status,
+            reply_to_text=reply_to_text,
+            updated_at=updated_at,
+            postage=postage,
+            _autocommit=False,
+        )
+        if decoded_attachments:
+            upload_letter_attachments(notification, decoded_attachments)
+        db.session.commit()
+    except Exception:
+        db.session.rollback()
+        raise
+    return notification
+
+
 def _dispatch_templated_letter_pdf(notification, *, test_key, attachments, queue):
     if test_key or not attachments:
         get_pdf_for_templated_letter.apply_async([str(notification.id)], queue=queue)
@@ -432,19 +456,17 @@ def process_letter_notification(
 
     queue = QueueNames.CREATE_LETTERS_PDF if not test_key else QueueNames.RESEARCH_MODE
 
-    with transaction():
-        notification = create_letter_notification(
-            letter_data=letter_data,
-            service=service,
-            template=template,
-            api_key=api_key,
-            status=status,
-            reply_to_text=reply_to_text,
-            updated_at=updated_at,
-            postage=postage,
-        )
-        if attachments:
-            upload_letter_attachments(notification, decoded_attachments)
+    notification = _create_templated_letter_notification_with_attachments(
+        letter_data=letter_data,
+        service=service,
+        template=template,
+        api_key=api_key,
+        status=status,
+        reply_to_text=reply_to_text,
+        updated_at=updated_at,
+        postage=postage,
+        decoded_attachments=decoded_attachments if attachments else None,
+    )
 
     _dispatch_templated_letter_pdf(notification, test_key=test_key, attachments=attachments, queue=queue)
 
@@ -529,7 +551,7 @@ def process_multi_part_precompiled_letter_notifications(*, letter_data, api_key,
     except ValueError as e:
         raise BadRequestError(message="Cannot decode letter content (invalid base64 encoding)", status_code=400) from e
 
-    with transaction():
+    try:
         notification = create_letter_notification(
             letter_data=letter_data,
             service=service,
@@ -537,8 +559,13 @@ def process_multi_part_precompiled_letter_notifications(*, letter_data, api_key,
             api_key=api_key,
             status=status,
             reply_to_text=reply_to_text,
+            _autocommit=False,
         )
         filenames = upload_letter_pdf_parts(notification, letter_contents, precompiled=True)
+        db.session.commit()
+    except Exception:
+        db.session.rollback()
+        raise
 
     resp = {"id": notification.id, "reference": notification.client_reference, "postage": notification.postage}
 
