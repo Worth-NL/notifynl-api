@@ -1,8 +1,8 @@
 """make notifications.to nullable, so the messagebox BSN can be wiped once a
 notification reaches a permanent end state
 
-Revision ID: 0020
-Revises: 0019
+Revision ID: 0023
+Revises: 0022
 Create Date: 2026-07-23 00:00:00.000000
 
 """
@@ -10,8 +10,8 @@ from alembic import op
 import sqlalchemy as sa
 
 # revision identifiers, used by Alembic.
-revision = '0020'
-down_revision = '0019'
+revision = '0023'
+down_revision = '0022'
 branch_labels = None
 depends_on = None
 

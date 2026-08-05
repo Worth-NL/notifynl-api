@@ -1,7 +1,7 @@
 """add detailed_status_code and messagebox_stadium columns to notification models
 
-Revision ID: 0019
-Revises: 0018
+Revision ID: 0022
+Revises: 0021
 Create Date: 2026-07-16 14:29:24.809554
 
 """
@@ -9,8 +9,8 @@ from alembic import op
 import sqlalchemy as sa
 
 # revision identifiers, used by Alembic.
-revision = '0019'
-down_revision = '0018'
+revision = '0022'
+down_revision = '0021'
 branch_labels = None
 depends_on = None
 
