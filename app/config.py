@@ -923,7 +923,20 @@ class DevNL(ConfigNL):
         "broker_transport_options": {
             **ConfigNL.CELERY["broker_transport_options"],
             "is_secure": False,
+            # ministack's default test account ID (000000000000), not
+            # Config.AWS_ACCOUNT_ID's real-AWS-shaped default -- confirmed
+            # against a live ministack container.
+            "predefined_queues": QueueNamesNL.predefined_queues(
+                Config.NOTIFICATION_QUEUE_PREFIX,
+                Config.AWS_REGION,
+                "000000000000",
+                endpoint_url="http://ministack:4566",
+            ),
         },
+        # overrides ConfigNL.CELERY's inherited (upstream-only) task_queues, which is built
+        # from base QueueNames.all_queues() and would otherwise never declare the NL-only
+        # messagebox queue for local celery workers to consume from.
+        "task_queues": [Queue(queue, Exchange("default"), routing_key=queue) for queue in QueueNamesNL.all_queues()],
     }
 
     SERVER_NAME = os.getenv("SERVER_NAME")
@@ -974,29 +987,6 @@ class DevNL(ConfigNL):
 
     FROM_NUMBER = "development"
     ASSET_PATH = "https://static.test.notifynl.nl/"
-
-    CELERY = {
-        "broker_url": "http://ministack:4566",
-        "broker_transport": "sqs",
-        "broker_transport_options": {
-            "region": Config.AWS_REGION,
-            "queue_name_prefix": Config.NOTIFICATION_QUEUE_PREFIX,
-            "is_secure": False,
-            # ministack's default test account ID (000000000000), not
-            # Config.AWS_ACCOUNT_ID's real-AWS-shaped default -- confirmed
-            # against a live ministack container.
-            "predefined_queues": QueueNamesNL.predefined_queues(
-                Config.NOTIFICATION_QUEUE_PREFIX,
-                Config.AWS_REGION,
-                "000000000000",
-                endpoint_url="http://ministack:4566",
-            ),
-        },
-        "timezone": ConfigNL.TIMEZONE,
-        "imports": ConfigNL.CELERY_IMPORTS,
-        "task_queues": [Queue(queue, Exchange("default"), routing_key=queue) for queue in QueueNamesNL.all_queues()],
-        "beat_schedule": ConfigNL.CELERY["beat_schedule"],
-    }
 
 
 class TestNL(ConfigNL):
