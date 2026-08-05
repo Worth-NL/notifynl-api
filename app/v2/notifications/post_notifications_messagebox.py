@@ -89,6 +89,7 @@ def process_messagebox_notification(*, messagebox_data, api_key, service):
             personalisation={
                 "message": messagebox_data["message"],
                 "subject": messagebox_data.get("subject", "Berichtenboxbericht"),
+                "message_type": messagebox_data.get("message_type"),
             },
             notification_type=MESSAGEBOX_TYPE,
             api_key_id=api_key.id,

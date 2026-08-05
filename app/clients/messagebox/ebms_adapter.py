@@ -114,7 +114,7 @@ class EbmsAdapterClient(MessageboxClient):
                 message=personalisation.get("message", ""),
                 subject=personalisation.get("subject", "Berichtenboxbericht"),
                 deliverer_id=service.oin,
-                message_type=self._message_type,
+                message_type=personalisation.get("message_type") or self._message_type,
                 attachments=[
                     BerichtenboxAttachment(filename=attachment["filename"], content=attachment["content"])
                     for attachment in attachments

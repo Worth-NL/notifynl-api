@@ -347,6 +347,7 @@ post_messagebox_request = {
             },
             "maxItems": 2,
         },
+        "message_type": {"type": "string"},
         "reference": {"type": "string", "maxLength": 1_000},
     },
     "required": ["recipient", "message"],

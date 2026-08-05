@@ -188,6 +188,22 @@ def _valid_messagebox_data(**overrides):
             },
             False,
         ),
+        (
+            {
+                "recipient": str(fake.random_number(digits=9, fix_len=True)),
+                "message": "This message overrides the default BerichtType",
+                "message_type": "custom-type",
+            },
+            True,
+        ),
+        (
+            {
+                "recipient": str(fake.random_number(digits=9, fix_len=True)),
+                "message": "This message has an unknown top-level field",
+                "berichttype": "custom-type",
+            },
+            False,
+        ),
     ],
 )
 def test_post_messagebox_schema_validation(data, expected_result):
@@ -255,7 +271,31 @@ def test_post_messagebox_notification_persists_message_and_subject(
     )
 
     notification = Notification.query.get(resp_json["id"])
-    assert notification.personalisation == {"message": data["message"], "subject": data["subject"]}
+    assert notification.personalisation == {
+        "message": data["message"],
+        "subject": data["subject"],
+        "message_type": None,
+    }
+
+
+def test_post_messagebox_notification_persists_message_type_override(
+    mocker, api_client_request, sample_template_with_placeholders
+):
+    sample_template_with_placeholders.service.oin = str(fake.random_number(digits=20, fix_len=True))
+    current_app.config["S3_BUCKET_MESSAGEBOX_SCAN"] = "notifynl-test-messagebox-scan"
+    mocker.patch("app.messagebox.utils.s3upload")
+    mocker.patch("app.v2.notifications.post_notifications_messagebox.notify_celery.send_task")
+    data = _valid_messagebox_data(message_type="custom-type")
+
+    resp_json = api_client_request.post(
+        sample_template_with_placeholders.service_id,
+        "v2_notifications.post_notification_messagebox",
+        notification_type=MESSAGEBOX_TYPE,
+        _data=data,
+    )
+
+    notification = Notification.query.get(resp_json["id"])
+    assert notification.personalisation["message_type"] == "custom-type"
 
 
 def test_post_messagebox_notification_encrypts_recipient_bsn(

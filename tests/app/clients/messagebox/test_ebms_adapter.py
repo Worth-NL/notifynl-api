@@ -83,6 +83,8 @@ def test_try_send_messagebox_builds_and_sends_message_request(mocker, messagebox
     xml_content = base64.b64decode(payload["dataSources"][0]["content"]).decode("utf-8")
     assert CLIENT_ORG_OIN in xml_content
     assert "123456789" in xml_content
+    # No message_type key in personalisation -- falls back to the configured
+    # EBMS_BERICHTENBOX_MESSAGE_TYPE ("test-123" here).
     assert "<bericht:BerichtType>test-123</bericht:BerichtType>" in xml_content
     # 0 attachments (mocked above) -- no Bijlagen element should be emitted.
     assert "Bijlagen" not in xml_content
@@ -94,6 +96,34 @@ def test_try_send_messagebox_builds_and_sends_message_request(mocker, messagebox
     assert f"<BatchID>{notification_id}</BatchID>" in xml_content
     assert f"<bericht:BatchID>{notification_id}</bericht:BatchID>" in xml_content
     assert f"<bericht:BerichtID>{notification_id}</bericht:BerichtID>" in xml_content
+
+
+def test_try_send_messagebox_uses_personalisation_message_type_override(mocker, notify_db_session, notify_user):
+    mocker.patch("app.messagebox.utils.get_messagebox_attachments", return_value=[])
+    mock_core_client = mocker.Mock()
+    mock_core_client.send_message.return_value = "envelope-message-id-123"
+    mock_core_client.__enter__ = mocker.Mock(return_value=mock_core_client)
+    mock_core_client.__exit__ = mocker.Mock(return_value=False)
+    mocker.patch("app.clients.messagebox.ebms_adapter.EbmsCoreClient", return_value=mock_core_client)
+
+    service = create_service(service_permissions=[MESSAGEBOX_TYPE])
+    service.oin = CLIENT_ORG_OIN
+    template = get_messagebox_template(service.id)
+    notification = create_notification(
+        template=template,
+        to_field=encryption.encrypt("123456789"),
+        personalisation={"message": "Hello & welcome", "subject": "Test subject", "message_type": "custom-type"},
+        status="created",
+    )
+
+    client = _client(current_app._get_current_object(), mocker.Mock())
+    client.try_send_messagebox(str(notification.id))
+
+    message_request = mock_core_client.send_message.call_args[0][0]
+    xml_content = base64.b64decode(message_request.to_dict()["dataSources"][0]["content"]).decode("utf-8")
+    # personalisation's message_type overrides the configured
+    # EBMS_BERICHTENBOX_MESSAGE_TYPE ("test-123", set by _client).
+    assert "<bericht:BerichtType>custom-type</bericht:BerichtType>" in xml_content
 
 
 def test_try_send_messagebox_wraps_bad_request_as_non_retryable(mocker, messagebox_notification):
