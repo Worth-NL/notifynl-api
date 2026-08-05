@@ -899,13 +899,16 @@ def test_fetch_usage_for_service_annual(
     ),
     ids=("default", "bulk"),
 )
-def test_fetch_usage_for_service_annual_includes_messagebox(sample_service, notify_db_session, session, expected_bind_key):
+def test_fetch_usage_for_service_annual_includes_messagebox(
+    sample_service, notify_db_session, session, expected_bind_key
+):
     messagebox_template = create_template(service=sample_service, template_type="messagebox")
     create_ft_billing(bst_date=date(2016, 4, 1), template=messagebox_template, rate=0, billable_unit=0)
     create_ft_billing(bst_date=date(2016, 4, 2), template=messagebox_template, rate=0, billable_unit=0)
+    service_id = sample_service.id
 
     with QueryRecorder() as query_recorder:
-        results = fetch_usage_for_service_annual(service_id=sample_service.id, year=2016, session=session)
+        results = fetch_usage_for_service_annual(service_id=service_id, year=2016, session=session)
 
     assert {query_info.bind_key for query_info in query_recorder.queries} == {expected_bind_key}
     assert len(results) == 1
