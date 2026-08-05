@@ -390,16 +390,21 @@ def _create_templated_letter_notification_with_attachments(
 
 def _dispatch_templated_letter_pdf(notification, *, test_key, attachments, queue):
     if test_key or not attachments:
-        get_pdf_for_templated_letter.apply_async([str(notification.id)], queue=queue)
+        get_pdf_for_templated_letter.apply_async(
+            [str(notification.id)], queue=queue, MessageGroupId=str(notification.service_id)
+        )
     elif current_app.config["ANTIVIRUS_ENABLED"]:
         notify_celery.send_task(
             name=TaskNamesNL.SCAN_LETTER_ATTACHMENTS,
             kwargs={"notification_id": str(notification.id)},
             queue=QueueNames.ANTIVIRUS,
+            MessageGroupId=str(notification.service_id),
         )
     else:
         # stub out antivirus in dev
-        process_virus_scan_success_letter_attachments.apply_async([str(notification.id)], queue=QueueNames.LETTERS)
+        process_virus_scan_success_letter_attachments.apply_async(
+            [str(notification.id)], queue=QueueNames.LETTERS, MessageGroupId=str(notification.service_id)
+        )
 
 
 def process_letter_notification(

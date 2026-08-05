@@ -208,6 +208,7 @@ def test_post_letter_notification_with_attachments_returns_201_and_dispatches_sc
         name=TaskNamesNL.SCAN_LETTER_ATTACHMENTS,
         kwargs={"notification_id": str(notification.id)},
         queue=QueueNames.ANTIVIRUS,
+        MessageGroupId=str(notification.service_id),
     )
     assert not mock_get_pdf.called
 
@@ -229,7 +230,9 @@ def test_post_letter_notification_with_attachments_for_test_key_skips_antivirus(
 
     notification = Notification.query.one()
     mock_upload.assert_called_once_with(ANY, [b"pdf-bytes-1"])
-    mock_get_pdf.assert_called_once_with([str(notification.id)], queue=QueueNames.RESEARCH_MODE)
+    mock_get_pdf.assert_called_once_with(
+        [str(notification.id)], queue=QueueNames.RESEARCH_MODE, MessageGroupId=str(notification.service_id)
+    )
     # test-key sends skip AV entirely for ad-hoc attachments - the fake-delivery-callback
     # machinery fires its own unrelated send_task call, so assert on the specific task name
     # rather than on send_task not being called at all.
@@ -254,7 +257,9 @@ def test_post_letter_notification_with_attachments_antivirus_disabled_dispatches
 
     notification = Notification.query.one()
     assert notification.status == NOTIFICATION_PENDING_VIRUS_CHECK
-    mock_success_task.assert_called_once_with([str(notification.id)], queue=QueueNames.LETTERS)
+    mock_success_task.assert_called_once_with(
+        [str(notification.id)], queue=QueueNames.LETTERS, MessageGroupId=str(notification.service_id)
+    )
 
 
 def test_post_letter_notification_rejects_more_than_2_attachments(api_client_request, sample_letter_template):
@@ -334,7 +339,7 @@ def test_post_precompiled_letter_notification_with_contents_if_s3_upload_fails_n
     mocker.patch("app.v2.notifications.post_notifications.notify_celery.send_task")
     data = {"reference": "letter-reference", "contents": ["bGV0dGVyLWNvbnRlbnQ="]}
 
-    with pytest.raises(expected_exception=Exception):
+    with pytest.raises(expected_exception=Exception):  # noqa: B017
         api_client_request.post(sample_service.id, "v2_notifications.post_precompiled_letter_notification", _data=data)
 
     assert s3mock.called
