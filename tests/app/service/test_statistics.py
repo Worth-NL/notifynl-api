@@ -14,8 +14,8 @@ from app.service.statistics import (
     format_statistics,
 )
 
-StatsRow = collections.namedtuple("row", ("notification_type", "status", "count"))
-NewStatsRow = collections.namedtuple("row", ("notification_type", "status", "key_type", "count"))
+StatsRow = collections.namedtuple("StatsRow", ("notification_type", "status", "count"))
+NewStatsRow = collections.namedtuple("NewStatsRow", ("notification_type", "status", "key_type", "count"))
 
 
 # email_counts and sms_counts are 3-tuple of requested, delivered, failed
@@ -83,7 +83,7 @@ def test_create_zeroed_stats_dicts():
         "sms": {"requested": 0, "delivered": 0, "failed": 0},
         "email": {"requested": 0, "delivered": 0, "failed": 0},
         "letter": {"requested": 0, "delivered": 0, "failed": 0},
-        "messagebox": {"requested": 0, "delivered": 0, "failed": 0}
+        "messagebox": {"requested": 0, "delivered": 0, "failed": 0},
     }
 
 

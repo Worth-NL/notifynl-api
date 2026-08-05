@@ -3,12 +3,15 @@ import uuid
 from collections import namedtuple
 from datetime import UTC, date, datetime, timedelta
 from unittest.mock import ANY
+from uuid import UUID
 
 import pytest
 from flask import current_app, url_for
 from freezegun import freeze_time
+from notifications_utils.testing.comparisons import AnyStringMatching, RestrictedAny
 from sqlalchemy.exc import SQLAlchemyError
 
+from app import db
 from app.celery.provider_tasks import deliver_email
 from app.celery.tasks import process_report_request
 from app.constants import (
@@ -262,6 +265,7 @@ def test_get_service_by_id(admin_request, sample_service):
         "billing_contact_email_addresses",
         "billing_contact_names",
         "billing_reference",
+        "confirmed_email_sender_name",
         "confirmed_unique",
         "consent_to_research",
         "contact_link",
@@ -332,7 +336,6 @@ def test_get_service_by_id_has_default_service_permissions(admin_request, sample
 
 def test_get_service_by_id_should_404_if_no_service(admin_request, notify_db_session):
     json_resp = admin_request.get("service.get_service_by_id", service_id=uuid.uuid4(), _expected_status=404)
-
     assert json_resp["result"] == "error"
     assert json_resp["message"] == "No result found"
 
@@ -1466,48 +1469,51 @@ def test_add_unknown_user_to_service_returns404(notify_api, notify_db_session, s
             assert result["message"] == expected_message
 
 
-def test_remove_user_from_service(client, sample_user_service_permission):
-    second_user = create_user(email="new@digital.cabinet-office.gov.uk")
+def test_remove_user_from_service(sample_user_service_permission, admin_request):
+    second_user = create_user(email="new_2@digital.cabinet-office.gov.uk")
+    third_user = create_user(email="new_3@digital.cabinet-office.gov.uk")
+
     service = sample_user_service_permission.service
 
-    # Simulates successfully adding a user to the service
+    # Adds 2 additional users to the service so it is possible to remove 1
     dao_add_user_to_service(
         service,
         second_user,
         permissions=[Permission(service_id=service.id, user_id=second_user.id, permission="manage_settings")],
     )
-
-    endpoint = url_for("service.remove_user_from_service", service_id=str(service.id), user_id=str(second_user.id))
-    auth_header = create_admin_authorization_header()
-    resp = client.delete(endpoint, headers=[("Content-Type", "application/json"), auth_header])
-    assert resp.status_code == 204
-
-
-def test_remove_non_existant_user_from_service(client, sample_user_service_permission):
-    second_user = create_user(email="new@digital.cabinet-office.gov.uk")
-    endpoint = url_for(
-        "service.remove_user_from_service",
-        service_id=str(sample_user_service_permission.service.id),
-        user_id=str(second_user.id),
+    dao_add_user_to_service(
+        service,
+        third_user,
+        permissions=[Permission(service_id=service.id, user_id=second_user.id, permission="manage_settings")],
     )
-    auth_header = create_admin_authorization_header()
-    resp = client.delete(endpoint, headers=[("Content-Type", "application/json"), auth_header])
-    assert resp.status_code == 404
+
+    admin_request.delete(
+        "service.remove_user_from_service",
+        service_id=service.id,
+        user_id=second_user.id,
+    )
 
 
-def test_cannot_remove_only_user_from_service(notify_api, notify_db_session, sample_user_service_permission):
-    with notify_api.test_request_context():
-        with notify_api.test_client() as client:
-            endpoint = url_for(
-                "service.remove_user_from_service",
-                service_id=str(sample_user_service_permission.service.id),
-                user_id=str(sample_user_service_permission.user.id),
-            )
-            auth_header = create_admin_authorization_header()
-            resp = client.delete(endpoint, headers=[("Content-Type", "application/json"), auth_header])
-            assert resp.status_code == 400
-            result = resp.json
-            assert result["message"] == "You cannot remove the only user for a service"
+def test_remove_non_existent_user_from_service(sample_user_service_permission, admin_request):
+    second_user = create_user(email="new@digital.cabinet-office.gov.uk")
+
+    response = admin_request.delete(
+        "service.remove_user_from_service",
+        service_id=sample_user_service_permission.service.id,
+        user_id=second_user.id,
+        _expected_status=404,
+    )
+    assert response["message"] == "User not found"
+
+
+def test_cannot_remove_only_user_from_service(admin_request, sample_user_service_permission):
+    response = admin_request.delete(
+        "service.remove_user_from_service",
+        service_id=sample_user_service_permission.service.id,
+        user_id=sample_user_service_permission.user.id,
+        _expected_status=400,
+    )
+    assert response["message"] == "User cannot be removed from the service"
 
 
 # This test is just here verify get_service_and_api_key_history that is a temp solution
@@ -1552,6 +1558,38 @@ def test_get_all_notifications_for_service_in_order(client, notify_db_session):
     assert resp["notifications"][1]["created_at"] == "2025-01-02T03:04:05.000000Z"
     assert resp["notifications"][2]["created_at"] == "2025-01-02T03:04:05.000000Z"
     assert response.status_code == 200
+
+
+def test_get_all_notifications_for_service_uses_session_bulk(admin_request, sample_service, mocker):
+    mock_get_notifications = mocker.patch(
+        "app.dao.notifications_dao.get_notifications_for_service",
+    )
+
+    mock_pagination = mocker.MagicMock()
+    mock_pagination.items = []
+    mock_get_notifications.return_value = mock_pagination
+
+    admin_request.get("service.get_all_notifications_for_service", service_id=sample_service.id)
+
+    assert mock_get_notifications.call_count == 2
+
+    for call in mock_get_notifications.call_args_list:
+        assert call.kwargs["session"] == db.session_bulk
+
+
+def test_get_all_notifications_for_service_search_uses_session_bulk(admin_request, sample_service, mocker):
+    mock_search = mocker.patch(
+        "app.dao.notifications_dao.dao_get_notifications_by_recipient_or_reference",
+    )
+    mock_pagination = mocker.MagicMock()
+    mock_pagination.items = []
+    mock_search.return_value = mock_pagination
+
+    admin_request.get("service.get_all_notifications_for_service", service_id=sample_service.id, to="test@example.com")
+
+    assert mock_search.call_count == 2
+    for call in mock_search.call_args_list:
+        assert call.kwargs["session"] == db.session_bulk
 
 
 def test_get_all_notifications_for_service_in_order_with_post_request(client, notify_db_session):
@@ -2622,7 +2660,11 @@ def test_verify_reply_to_email_address_should_send_verification_email(
     notification = Notification.query.first()
     assert notification.template_id == verify_reply_to_address_email_template.id
     assert response["data"] == {"id": str(notification.id)}
-    mocked.assert_called_once_with([str(notification.id)], queue="notify-internal-tasks")
+    mocked.assert_called_once_with(
+        [str(notification.id)],
+        queue="notify-internal-tasks",
+        MessageGroupId=str(notification.service_id),
+    )
     assert notification.reply_to_text == notify_service.get_default_reply_to_email_address()
 
 
@@ -3417,6 +3459,10 @@ def test_get_returned_letter_summary(admin_request, sample_service):
     assert response[1] == {"returned_letter_count": 1, "reported_at": "2019-12-08"}
 
 
+_any_falsey = RestrictedAny(lambda x: not x)
+_any_emaily = AnyStringMatching(r".+@.+")
+
+
 @freeze_time("2019-12-11 13:30")
 def test_get_returned_letter(admin_request, sample_letter_template):
     job = create_job(template=sample_letter_template)
@@ -3478,6 +3524,7 @@ def test_get_returned_letter(admin_request, sample_letter_template):
         service=sample_letter_template.service, reported_at=datetime.utcnow(), notification_id=uploaded_letter.id
     )
 
+    # not included in results because wrong service
     not_included_in_results_template = create_template(
         service=create_service(service_name="not included in results"), template_type="letter"
     )
@@ -3487,71 +3534,125 @@ def test_get_returned_letter(admin_request, sample_letter_template):
     create_returned_letter(
         service=not_included_in_results_template.service, reported_at=datetime.utcnow(), notification_id=letter_4.id
     )
+
+    # not included in results because wrong reported_at
+    letter_5 = create_notification_history(
+        template=precompiled_template,
+        client_reference="filename.pdf",
+        created_at=datetime.utcnow() - timedelta(days=6),
+        created_by_id=sample_letter_template.service.users[0].id,
+    )
+    create_returned_letter(
+        service=sample_letter_template.service,
+        reported_at=datetime.utcnow() - timedelta(days=2),
+        notification_id=letter_5.id,
+    )
+
+    # two "orphaned" letters
+    create_returned_letter(
+        service=sample_letter_template.service,
+        reported_at=datetime.utcnow(),
+        notification_id=uuid.uuid4(),
+    )
+    create_returned_letter(
+        service=sample_letter_template.service,
+        reported_at=datetime.utcnow(),
+        notification_id=uuid.uuid4(),
+    )
+
+    # an "orphaned" letter for the wrong day
+    create_returned_letter(
+        service=sample_letter_template.service,
+        reported_at=datetime.utcnow() - timedelta(days=3),
+        notification_id=uuid.uuid4(),
+    )
+
+    # an "orphaned" letter for the wrong service
+    create_returned_letter(
+        service=not_included_in_results_template.service,
+        reported_at=datetime.utcnow(),
+        notification_id=uuid.uuid4(),
+    )
+
     response = admin_request.get(
         "service.get_returned_letters", service_id=sample_letter_template.service_id, reported_at="2019-12-11"
     )
 
-    assert len(response) == 5
-    assert response[0]["notification_id"] == str(letter_from_job.id)
-    assert not response[0]["client_reference"]
-    assert response[0]["reported_at"] == "2019-12-11"
-    assert response[0]["created_at"] == "2019-12-10 13:30:00.000000"
-    assert response[0]["template_name"] == sample_letter_template.name
-    assert response[0]["template_id"] == str(sample_letter_template.id)
-    assert response[0]["template_version"] == sample_letter_template.version
-    assert response[0]["user_name"] == sample_letter_template.service.users[0].name
-    assert response[0]["original_file_name"] == job.original_file_name
-    assert response[0]["job_row_number"] == 4
-    assert not response[0]["uploaded_letter_file_name"]
-
-    assert response[1]["notification_id"] == str(one_off_letter.id)
-    assert not response[1]["client_reference"]
-    assert response[1]["reported_at"] == "2019-12-11"
-    assert response[1]["created_at"] == "2019-12-09 13:30:00.000000"
-    assert response[1]["template_name"] == sample_letter_template.name
-    assert response[1]["template_id"] == str(sample_letter_template.id)
-    assert response[1]["template_version"] == sample_letter_template.version
-    assert response[1]["user_name"] == sample_letter_template.service.users[0].name
-    assert not response[1]["original_file_name"]
-    assert not response[1]["job_row_number"]
-    assert not response[1]["uploaded_letter_file_name"]
-
-    assert response[2]["notification_id"] == str(api_letter.id)
-    assert response[2]["client_reference"] == "api_letter"
-    assert response[2]["reported_at"] == "2019-12-11"
-    assert response[2]["created_at"] == "2019-12-08 13:30:00.000000"
-    assert response[2]["template_name"] == sample_letter_template.name
-    assert response[2]["template_id"] == str(sample_letter_template.id)
-    assert response[2]["template_version"] == sample_letter_template.version
-    assert response[2]["user_name"] == "API"
-    assert not response[2]["original_file_name"]
-    assert not response[2]["job_row_number"]
-    assert not response[2]["uploaded_letter_file_name"]
-
-    assert response[3]["notification_id"] == str(precompiled_letter.id)
-    assert response[3]["client_reference"] == "precompiled letter"
-    assert response[3]["reported_at"] == "2019-12-11"
-    assert response[3]["created_at"] == "2019-12-07 13:30:00.000000"
-    assert not response[3]["template_name"]
-    assert not response[3]["template_id"]
-    assert not response[3]["template_version"]
-    assert response[3]["user_name"] == "API"
-    assert not response[3]["original_file_name"]
-    assert not response[3]["job_row_number"]
-    assert not response[3]["uploaded_letter_file_name"]
-
-    assert response[4]["notification_id"] == str(uploaded_letter.id)
-    assert not response[4]["client_reference"]
-    assert response[4]["reported_at"] == "2019-12-11"
-    assert response[4]["created_at"] == "2019-12-06 13:30:00.000000"
-    assert not response[4]["template_name"]
-    assert not response[4]["template_id"]
-    assert not response[4]["template_version"]
-    assert response[4]["user_name"] == sample_letter_template.service.users[0].name
-    assert response[4]["email_address"] == sample_letter_template.service.users[0].email_address
-    assert not response[4]["original_file_name"]
-    assert not response[4]["job_row_number"]
-    assert response[4]["uploaded_letter_file_name"] == "filename.pdf"
+    assert response == {
+        "returned_letters": [
+            {
+                "notification_id": str(letter_from_job.id),
+                "client_reference": _any_falsey,
+                "reported_at": "2019-12-11",
+                "created_at": "2019-12-10 13:30:00.000000",
+                "email_address": _any_emaily,
+                "template_name": sample_letter_template.name,
+                "template_id": str(sample_letter_template.id),
+                "template_version": sample_letter_template.version,
+                "user_name": sample_letter_template.service.users[0].name,
+                "original_file_name": job.original_file_name,
+                "job_row_number": 4,
+                "uploaded_letter_file_name": _any_falsey,
+            },
+            {
+                "notification_id": str(one_off_letter.id),
+                "client_reference": _any_falsey,
+                "reported_at": "2019-12-11",
+                "created_at": "2019-12-09 13:30:00.000000",
+                "email_address": _any_emaily,
+                "template_name": sample_letter_template.name,
+                "template_id": str(sample_letter_template.id),
+                "template_version": sample_letter_template.version,
+                "user_name": sample_letter_template.service.users[0].name,
+                "original_file_name": _any_falsey,
+                "job_row_number": _any_falsey,
+                "uploaded_letter_file_name": _any_falsey,
+            },
+            {
+                "notification_id": str(api_letter.id),
+                "client_reference": "api_letter",
+                "reported_at": "2019-12-11",
+                "created_at": "2019-12-08 13:30:00.000000",
+                "email_address": "API",
+                "template_name": sample_letter_template.name,
+                "template_id": str(sample_letter_template.id),
+                "template_version": sample_letter_template.version,
+                "user_name": "API",
+                "original_file_name": _any_falsey,
+                "job_row_number": _any_falsey,
+                "uploaded_letter_file_name": _any_falsey,
+            },
+            {
+                "notification_id": str(precompiled_letter.id),
+                "client_reference": "precompiled letter",
+                "reported_at": "2019-12-11",
+                "created_at": "2019-12-07 13:30:00.000000",
+                "email_address": "API",
+                "template_name": _any_falsey,
+                "template_id": _any_falsey,
+                "template_version": _any_falsey,
+                "user_name": "API",
+                "original_file_name": _any_falsey,
+                "job_row_number": _any_falsey,
+                "uploaded_letter_file_name": _any_falsey,
+            },
+            {
+                "notification_id": str(uploaded_letter.id),
+                "client_reference": _any_falsey,
+                "reported_at": "2019-12-11",
+                "created_at": "2019-12-06 13:30:00.000000",
+                "email_address": _any_emaily,
+                "template_name": _any_falsey,
+                "template_id": _any_falsey,
+                "template_version": _any_falsey,
+                "user_name": sample_letter_template.service.users[0].name,
+                "original_file_name": _any_falsey,
+                "job_row_number": _any_falsey,
+                "uploaded_letter_file_name": "filename.pdf",
+            },
+        ],
+        "orphaned_count": 2,
+    }
 
 
 @freeze_time("2024-07-01 12:00")
@@ -3969,7 +4070,7 @@ def test_count_notifications_for_service(admin_request, sample_template, test_ca
 
 
 ServiceJoinRequestTestCase = namedtuple(
-    "TestCase",
+    "ServiceJoinRequestTestCase",
     [
         "requester_id",
         "service_id",
@@ -4559,7 +4660,11 @@ def test_update_service_join_request_by_id_notification_sent(
     )
 
     notification = Notification.query.first()
-    mock_deliver_email_task.assert_called_once_with(([str(notification.id)]), queue="notify-internal-tasks")
+    mock_deliver_email_task.assert_called_once_with(
+        ([str(notification.id)]),
+        queue="notify-internal-tasks",
+        MessageGroupId=str(notification.service_id),
+    )
 
     assert notification.reply_to_text == notify_service.get_default_reply_to_email_address()
     assert notification.to == f"{requester_id}@digital.cabinet-office.gov.uk"
@@ -4605,7 +4710,11 @@ def test_update_service_join_request_get_template(
     )
 
     notification = Notification.query.first()
-    mock_deliver_email_task.assert_called_once_with(([str(notification.id)]), queue="notify-internal-tasks")
+    mock_deliver_email_task.assert_called_once_with(
+        ([str(notification.id)]),
+        queue="notify-internal-tasks",
+        MessageGroupId=str(notification.service_id),
+    )
 
     assert notification.template.version == template.version
     assert notification.template_id == template.id
@@ -4735,7 +4844,7 @@ def test_create_report_request_by_type(
 
     json_resp = admin_request.post(
         "service.create_report_request_by_type",
-        service_id=str(sample_service.id),
+        service_id=sample_service.id,
         _data={
             "user_id": str(sample_service.created_by_id),
             "report_type": "notifications_report",
@@ -4747,10 +4856,11 @@ def test_create_report_request_by_type(
 
     process_task_mock.assert_called_once_with(
         kwargs={
-            "report_request_id": json_resp["data"]["id"],
-            "service_id": str(sample_service.id),
+            "report_request_id": UUID(json_resp["data"]["id"]),
+            "service_id": sample_service.id,
         },
         queue="report-requests-notifications-tasks",
+        MessageGroupId=str(sample_service.id),
     )
 
     assert json_resp["data"]["id"]
@@ -4798,7 +4908,7 @@ def test_create_report_request_by_type_returns_existing_request(
     assert response["data"]["parameter"] == existing_request.parameter
     assert (
         f"Duplicate report request detected for user {sample_user.id} (service {sample_service.id})"
-        f" with params {json.dumps(expected_params, separators=(',', ':'))} – returning existing "
+        f" with params {json.dumps(expected_params, separators=(',', ':'))!r} – returning existing "
         f"request {existing_request.id}" in caplog.messages
     )
     assert not process_task_mock.called
@@ -4830,10 +4940,11 @@ def test_create_report_request_by_type_creates_new_when_no_existing(admin_reques
 
     process_task_mock.assert_called_once_with(
         kwargs={
-            "report_request_id": response["data"]["id"],
-            "service_id": str(sample_service.id),
+            "report_request_id": UUID(response["data"]["id"]),
+            "service_id": sample_service.id,
         },
         queue="report-requests-notifications-tasks",
+        MessageGroupId=str(sample_service.id),
     )
 
 
@@ -4874,12 +4985,13 @@ def test_create_report_request_by_type_creates_new_if_existing_is_stale(
     assert created_request_id != str(stale_request.id)
     assert (
         f"Report request {created_request_id} for user {sample_user.id} (service {sample_service.id}) "
-        f"created with params {json.dumps(expected_params, separators=(',', ':'))}" in caplog.messages
+        f"created with params {json.dumps(expected_params, separators=(',', ':'))!r}" in caplog.messages
     )
     process_task_mock.assert_called_once_with(
         kwargs={
-            "report_request_id": response["data"]["id"],
-            "service_id": str(sample_service.id),
+            "report_request_id": UUID(response["data"]["id"]),
+            "service_id": sample_service.id,
         },
         queue="report-requests-notifications-tasks",
+        MessageGroupId=str(sample_service.id),
     )

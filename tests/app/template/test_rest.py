@@ -12,14 +12,16 @@ from freezegun import freeze_time
 from notifications_utils import SMS_CHAR_COUNT_LIMIT
 from pypdf.errors import PdfReadError
 
+from app import db
 from app.constants import EMAIL_TYPE, LETTER_TYPE, SMS_TYPE
+from app.dao.template_email_files_dao import dao_get_template_email_files_by_template_id
 from app.dao.templates_dao import (
     dao_get_template_by_id,
     dao_get_template_versions,
     dao_redact_template,
     dao_update_template,
 )
-from app.models import Template, TemplateHistory
+from app.models import Template, TemplateEmailFile, TemplateHistory
 from tests import create_admin_authorization_header
 from tests.app.db import (
     create_letter_attachment,
@@ -27,6 +29,7 @@ from tests.app.db import (
     create_notification,
     create_service,
     create_template,
+    create_template_email_file,
     create_template_folder,
 )
 from tests.conftest import set_config_values
@@ -548,11 +551,21 @@ def test_should_be_able_to_get_all_templates_for_a_service(client, sample_user, 
     assert response.status_code == 200
     update_json_resp = json.loads(response.get_data(as_text=True))
     assert update_json_resp["data"][0]["name"] == "my template 1"
-    assert update_json_resp["data"][0]["version"] == 1
-    assert update_json_resp["data"][0]["created_at"]
+    assert update_json_resp["data"][0]["template_type"] == EMAIL_TYPE
     assert update_json_resp["data"][1]["name"] == "my template 2"
-    assert update_json_resp["data"][1]["version"] == 1
-    assert update_json_resp["data"][1]["created_at"]
+    assert update_json_resp["data"][1]["template_type"] == EMAIL_TYPE
+
+
+def test_get_all_templates_for_service_returns_data_with_the_correct_keys(client, sample_user, sample_service):
+    create_template(sample_service, EMAIL_TYPE, "my template 1")
+    create_template(sample_service, EMAIL_TYPE, "my template 2")
+    auth_header = create_admin_authorization_header()
+
+    response = client.get(f"/service/{sample_service.id}/template", headers=[auth_header])
+    assert response.status_code == 200
+    update_json_resp = json.loads(response.get_data(as_text=True))
+    for resp in update_json_resp["data"]:
+        assert resp.keys() == {"folder", "id", "is_precompiled_letter", "name", "template_type"}
 
 
 def test_should_get_only_templates_for_that_service(admin_request, notify_db_session):
@@ -569,66 +582,27 @@ def test_should_get_only_templates_for_that_service(admin_request, notify_db_ses
     assert {template["id"] for template in json_resp_2["data"]} == {str(id_3)}
 
 
-@pytest.mark.parametrize(
-    "extra_args",
-    (
-        {},
-        {"detailed": True},
-        {"detailed": "True"},
-    ),
-)
-def test_should_get_return_all_fields_by_default(
-    admin_request,
-    sample_email_template,
-    extra_args,
-):
-    json_response = admin_request.get(
-        "template.get_all_templates_for_service", service_id=sample_email_template.service.id, **extra_args
-    )
-    assert json_response["data"][0].keys() == {
-        "archived",
-        "content",
-        "created_at",
-        "created_by",
-        "folder",
-        "has_unsubscribe_link",
-        "hidden",
-        "id",
-        "is_precompiled_letter",
-        "letter_attachment",
-        "letter_languages",
-        "letter_welsh_content",
-        "letter_welsh_subject",
-        "name",
-        "postage",
-        "redact_personalisation",
-        "reply_to_text",
-        "reply_to",
-        "service_letter_contact",
-        "service",
-        "subject",
-        "template_redacted",
-        "template_type",
-        "updated_at",
-        "version",
-    }
-
-
+@pytest.mark.parametrize("in_folder", (False, True))
 @pytest.mark.parametrize("template_type", (EMAIL_TYPE, SMS_TYPE, LETTER_TYPE))
-def test_should_not_return_content_and_subject_if_requested(admin_request, sample_service, template_type):
-    create_template(sample_service, template_type=template_type)
+def test_get_all_templates_folder_info(admin_request, sample_service, template_type, in_folder):
+    parent_folder = create_template_folder(service=sample_service, name="my parent folder")
+    template = create_template(sample_service, template_type=template_type, folder=parent_folder if in_folder else None)
+
+    db.session.commit()
+
     json_response = admin_request.get(
         "template.get_all_templates_for_service",
         service_id=sample_service.id,
-        detailed=False,
     )
-    assert json_response["data"][0].keys() == {
-        "folder",
-        "id",
-        "is_precompiled_letter",
-        "name",
-        "template_type",
-    }
+    assert json_response["data"] == [
+        {
+            "folder": str(parent_folder.id) if in_folder else None,
+            "id": str(template.id),
+            "is_precompiled_letter": template.is_precompiled_letter,
+            "name": template.name,
+            "template_type": template.template_type,
+        }
+    ]
 
 
 @pytest.mark.parametrize(
@@ -1009,6 +983,107 @@ def test_get_template_reply_to(client, sample_service, template_default, service
     assert "service_letter_contact_id" not in json_resp["data"]
     assert json_resp["data"]["reply_to"] == reply_to_id
     assert json_resp["data"]["reply_to_text"] == template_default
+
+
+def test_update_template_content(client, sample_email_template):
+    assert sample_email_template.version == 1
+
+    auth_header = create_admin_authorization_header()
+    data = {
+        "content": "New content",
+    }
+    response = client.post(
+        f"/service/{sample_email_template.service_id}/template/{sample_email_template.id}",
+        data=json.dumps(data),
+        headers=[("Content-Type", "application/json"), auth_header],
+    )
+
+    assert response.status_code == 200, response.get_data(as_text=True)
+
+    template = dao_get_template_by_id(sample_email_template.id)
+    assert template.content == "New content"
+    assert template.version == 2
+    assert TemplateHistory.query.filter_by(id=sample_email_template.id, version=2).one()
+
+
+@freeze_time("2025-12-30 16:06:04.000000")
+def test_update_template_content_and_archive_email_files(
+    client, sample_email_template_with_template_email_files, sample_user
+):
+    template = sample_email_template_with_template_email_files
+    assert template.version == 1
+
+    auth_header = create_admin_authorization_header()
+    data = {
+        "content": "New content",
+        "created_by": str(sample_user.id),
+        "archive_email_file_ids": [str(template.email_files[0].id), str(template.email_files[1].id)],
+    }
+    response = client.post(
+        f"/service/{template.service_id}/template/{template.id}",
+        data=json.dumps(data),
+        headers=[("Content-Type", "application/json"), auth_header],
+    )
+
+    assert response.status_code == 200, response.get_data(as_text=True)
+
+    template = dao_get_template_by_id(template.id)
+    assert template.content == "New content"
+    assert template.version == 2
+    assert TemplateHistory.query.filter_by(id=template.id, version=2).one()
+
+    fetched_template_email_files = TemplateEmailFile.query.filter_by(template_id=template.id).all()
+    assert len(fetched_template_email_files) == 2
+
+    for file in fetched_template_email_files:
+        assert file.archived_at == datetime(2025, 12, 30, 16, 6, 4)
+        assert file.archived_by_id == sample_user.id
+        assert file.version == 2
+        assert file.template_version == 2
+
+
+@freeze_time("2025-12-30 16:06:04.000000")
+def test_update_template_content_and_archive_just_one_of_two_email_files(
+    client, sample_email_template_with_template_email_files, sample_user
+):
+    template = sample_email_template_with_template_email_files
+    assert template.version == 1
+
+    file_to_keep = template.email_files[0]
+    file_to_archive = template.email_files[1]
+
+    auth_header = create_admin_authorization_header()
+    data = {
+        "content": "Just bring the invite ((invitation.pdf))",
+        "created_by": str(sample_user.id),
+        "archive_email_file_ids": [str(file_to_archive.id)],
+    }
+    response = client.post(
+        f"/service/{template.service_id}/template/{template.id}",
+        data=json.dumps(data),
+        headers=[("Content-Type", "application/json"), auth_header],
+    )
+
+    assert response.status_code == 200, response.get_data(as_text=True)
+
+    template = dao_get_template_by_id(template.id)
+    assert template.content == "Just bring the invite ((invitation.pdf))"
+    assert template.version == 2
+    assert TemplateHistory.query.filter_by(id=template.id, version=2).one()
+
+    archived_file = TemplateEmailFile.query.filter_by(id=file_to_archive.id).one()
+
+    assert archived_file.archived_at == datetime(2025, 12, 30, 16, 6, 4)
+    assert archived_file.archived_by_id == sample_user.id
+    assert archived_file.version == 2
+    assert archived_file.template_version == 2
+
+    remaining_file = TemplateEmailFile.query.filter_by(id=file_to_keep.id).one()
+
+    assert remaining_file.archived_at == None  # noqa
+    assert remaining_file.archived_by_id == None  # noqa
+    assert remaining_file.version == 1
+    assert remaining_file.template_version == 1
 
 
 def test_update_template_reply_to(client, sample_letter_template):
@@ -1819,3 +1894,42 @@ def test_preview_letter_template_precompiled_png_template_preview_pdf_error(
                 f"Error extracting requested page from PDF file for notification_id {notification.id} "
                 f"type {type(PdfReadError())} {error_message}"
             )
+
+
+@pytest.mark.parametrize("files_to_create", [["file_one.pdf"], ["file_one.pdf, file_two.pdf"], []])
+def test_get_email_template_with_file_returns_files(client, admin_request, sample_service, mocker, files_to_create):
+    template = create_template(service=sample_service, template_type=EMAIL_TYPE, template_name="sample_template")
+    for filename in files_to_create:
+        [
+            create_template_email_file(
+                template.id, created_by_id=sample_service.users[0].id, filename=filename, pending=False
+            )
+        ]
+    json_resp = admin_request.get(
+        "template.get_template_by_id_and_service_id", service_id=sample_service.id, template_id=template.id
+    )
+    assert {file.get("filename") for file in json_resp["data"]["email_files"]} == set(files_to_create)
+
+
+@pytest.mark.parametrize("files_to_create", [["file_one.pdf"], ["file_one.pdf, file_two.pdf"], []])
+@freeze_time("2025-12-30 16:06:04.000000")
+def test_archive_template_with_email_files_archives_files(client, admin_request, sample_service, files_to_create):
+    template = create_template(service=sample_service, template_type=EMAIL_TYPE, template_name="sample_template")
+    for filename in files_to_create:
+        create_template_email_file(template.id, created_by_id=sample_service.users[0].id, filename=filename)
+    data = {
+        "archived": True,
+    }
+
+    client.post(
+        f"/service/{sample_service.id}/template/{template.id}",
+        headers=[("Content-Type", "application/json"), create_admin_authorization_header()],
+        data=json.dumps(data),
+    )
+    archived_template = dao_get_template_by_id(template_id=template.id)
+    assert archived_template.archived
+    assert len(archived_template.email_files) == len(files_to_create)
+    for file in dao_get_template_email_files_by_template_id(template.id):
+        assert file.archived_at == "2025-12-30 16:06:04.000000"
+        assert file.template_version == archived_template.version
+        assert file.version == 1

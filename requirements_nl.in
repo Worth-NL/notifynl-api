@@ -1,25 +1,56 @@
 ### From requirements.in
-celery[sqs]==5.4.0
-Flask-Bcrypt==1.0.1
-flask-marshmallow==1.3.0
-Flask-Migrate==3.1.0
-flask-sqlalchemy==3.0.5
-click-datetime==0.2
-gunicorn[eventlet]==23.0.0
-eventlet==0.39.1
-iso8601==2.1.0
-jsonschema[format]==4.23.0
-marshmallow-sqlalchemy==0.28.1
-marshmallow==3.18.0
-requests==2.32.5
-psycopg2-binary==2.9.10
-PyJWT==2.12.0
-SQLAlchemy==1.4.41
-psutil>=6.0.0,<7.0.0
-notifications-python-client==10.0.1
-notifications-utils @ git+https://github.com/Worth-NL/notifynl-utils.git@101.1.15
-prometheus-client==0.14.1
-git+https://github.com/alphagov/gds_metrics_python.git@6f1840a57b6fb1ee40b7e84f2f18ec229de8aa72
-sentry-sdk[flask,celery,sqlalchemy]==1.45.1
 
-cryptography==46.0.6
+
+celery[sqs]==5.6.0
+# Pin kombu to merge of PR #2342 (SQS fair queue / MessageGroupId support) until kombu 5.7 is released
+kombu @ git+https://github.com/celery/kombu.git@860e40a6c904c4d8551577d9f4e8c00f03b6e06c
+
+Flask-Bcrypt~=1.0
+flask-marshmallow~=1.4
+Flask-Migrate~=4.1
+flask-sqlalchemy~=3.1
+click-datetime~=0.2
+gunicorn[eventlet]~=25.1
+eventlet~=0.40.4
+jsonschema[format]~=4.23
+marshmallow-sqlalchemy~=1.4
+marshmallow~=4.2
+psycopg2-binary~=2.9
+SQLAlchemy~=2.0
+pyorc~=0.10
+
+# temporary for debug output
+psutil~=6.0
+
+notifications-python-client==10.0
+
+# Run `make bump-utils` to update to the latest version
+notifications-utils @ git+https://github.com/Worth-NL/notifynl-utils.git@101.1.20
+
+git+https://github.com/alphagov/gds_metrics_python.git@6f1840a57b6fb1ee40b7e84f2f18ec229de8aa72
+
+sentry-sdk[flask,celery,sqlalchemy]~=1.45
+wheel>=0.46.2  # Can be removed after merge of https://github.com/click-contrib/click-datetime/pull/13
+
+
+opentelemetry-distro[otlp]
+opentelemetry-instrumentation-asyncio
+opentelemetry-instrumentation-dbapi
+opentelemetry-instrumentation-logging
+opentelemetry-instrumentation-sqlite3
+opentelemetry-instrumentation-threading
+opentelemetry-instrumentation-urllib
+opentelemetry-instrumentation-wsgi
+opentelemetry-instrumentation-boto3sqs
+opentelemetry-instrumentation-botocore
+opentelemetry-instrumentation-celery
+opentelemetry-instrumentation-click
+opentelemetry-instrumentation-flask
+opentelemetry-instrumentation-grpc
+opentelemetry-instrumentation-jinja2
+opentelemetry-instrumentation-psycopg2
+opentelemetry-instrumentation-redis
+opentelemetry-instrumentation-requests
+opentelemetry-instrumentation-sqlalchemy
+opentelemetry-instrumentation-system-metrics
+opentelemetry-instrumentation-urllib3

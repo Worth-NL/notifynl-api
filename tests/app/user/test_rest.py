@@ -6,6 +6,7 @@ import pytest
 from flask import current_app, url_for
 from freezegun import freeze_time
 
+from app import db
 from app.constants import (
     EMAIL_AUTH_TYPE,
     MANAGE_SETTINGS,
@@ -359,9 +360,7 @@ def test_archive_user_when_user_cannot_be_archived(mocker, admin_request, sample
     mocker.patch("app.dao.users_dao.user_can_be_archived", return_value=False)
 
     json_resp = admin_request.post("user.archive_user", user_id=sample_user.id, _expected_status=400)
-    msg = "User can’t be removed from a service - check all services have another team member with manage_settings"
-
-    assert json_resp["message"] == msg
+    assert json_resp["message"] == "User cannot be removed from a service"
 
 
 def test_fetch_user_by_email(admin_request, notify_db_session):
@@ -450,10 +449,28 @@ def test_set_user_permissions_remove_old(admin_request, sample_user, sample_serv
     assert query.first().permission == MANAGE_SETTINGS
 
 
+def test_set_user_permissions_when_permissions_cannot_be_changed(admin_request, sample_user, sample_service):
+    data = {"permissions": [{"permission": MANAGE_TEMPLATES}]}
+
+    result = admin_request.post(
+        "user.set_permissions",
+        user_id=str(sample_user.id),
+        service_id=str(sample_service.id),
+        _data=data,
+        _expected_status=400,
+    )
+
+    assert result["message"] == "Cannot change user permissions - service would have too few users with manage_settings"
+
+    # check the user still has the original permissions
+    query = Permission.query.filter_by(user=sample_user)
+    assert query.count() == 8
+
+
 def test_set_user_folder_permissions(admin_request, sample_user, sample_service):
     tf1 = create_template_folder(sample_service)
     tf2 = create_template_folder(sample_service)
-    data = {"permissions": [], "folder_permissions": [str(tf1.id), str(tf2.id)]}
+    data = {"permissions": [{"permission": MANAGE_SETTINGS}], "folder_permissions": [str(tf1.id), str(tf2.id)]}
 
     admin_request.post(
         "user.set_permissions",
@@ -504,7 +521,7 @@ def test_set_user_folder_permissions_does_not_affect_permissions_for_other_servi
     service_2_user.folders = [tf3]
     dao_update_service_user(service_2_user)
 
-    data = {"permissions": [], "folder_permissions": [str(tf2.id)]}
+    data = {"permissions": [{"permission": MANAGE_SETTINGS}], "folder_permissions": [str(tf2.id)]}
 
     admin_request.post(
         "user.set_permissions",
@@ -527,7 +544,7 @@ def test_update_user_folder_permissions(admin_request, sample_user, sample_servi
     service_user.folders = [tf1, tf2]
     dao_update_service_user(service_user)
 
-    data = {"permissions": [], "folder_permissions": [str(tf2.id), str(tf3.id)]}
+    data = {"permissions": [{"permission": MANAGE_SETTINGS}], "folder_permissions": [str(tf2.id), str(tf3.id)]}
 
     admin_request.post(
         "user.set_permissions",
@@ -550,7 +567,7 @@ def test_remove_user_folder_permissions(admin_request, sample_user, sample_servi
     service_user.folders = [tf1, tf2]
     dao_update_service_user(service_user)
 
-    data = {"permissions": [], "folder_permissions": []}
+    data = {"permissions": [{"permission": MANAGE_SETTINGS}], "folder_permissions": []}
 
     admin_request.post(
         "user.set_permissions",
@@ -659,7 +676,11 @@ def test_send_user_reset_password_should_send_reset_password_link(
     )
 
     notification = Notification.query.first()
-    mocked.assert_called_once_with([str(notification.id)], queue="notify-internal-tasks")
+    mocked.assert_called_once_with(
+        [str(notification.id)],
+        queue="notify-internal-tasks",
+        MessageGroupId=str(notification.service_id),
+    )
     assert notification.reply_to_text == notify_service.get_default_reply_to_email_address()
 
 
@@ -716,7 +737,11 @@ def test_send_user_reset_password_reset_password_link_contains_redirect_link_if_
 
     notification = Notification.query.first()
     assert "?next=blob" in notification.content
-    mocked.assert_called_once_with([str(notification.id)], queue="notify-internal-tasks")
+    mocked.assert_called_once_with(
+        [str(notification.id)],
+        queue="notify-internal-tasks",
+        MessageGroupId=str(notification.service_id),
+    )
 
 
 def test_send_user_reset_password_should_return_400_when_email_is_missing(admin_request, mocker):
@@ -775,7 +800,11 @@ def test_send_already_registered_email(admin_request, sample_user, already_regis
     )
 
     notification = Notification.query.first()
-    mocked.assert_called_once_with(([str(notification.id)]), queue="notify-internal-tasks")
+    mocked.assert_called_once_with(
+        ([str(notification.id)]),
+        queue="notify-internal-tasks",
+        MessageGroupId=str(notification.service_id),
+    )
     assert notification.reply_to_text == notify_service.get_default_reply_to_email_address()
 
 
@@ -807,7 +836,11 @@ def test_send_user_confirm_new_email_returns_204(
     )
 
     notification = Notification.query.first()
-    mocked.assert_called_once_with(([str(notification.id)]), queue="notify-internal-tasks")
+    mocked.assert_called_once_with(
+        ([str(notification.id)]),
+        queue="notify-internal-tasks",
+        MessageGroupId=str(notification.service_id),
+    )
     assert notification.reply_to_text == notify_service.get_default_reply_to_email_address()
 
 
@@ -927,12 +960,16 @@ def test_get_orgs_and_services_nests_services(admin_request, sample_user):
     service1 = create_service(service_name="service1")
     service2 = create_service(service_name="service2")
     service3 = create_service(service_name="service3")
+    # in org, but user not a member
+    service4 = create_service(service_name="service4")
 
-    org1.services = [service1, service2]
+    org1.services = [service1, service2, service4]
     org2.services = []
 
     sample_user.organisations = [org1, org2]
     sample_user.services = [service1, service2, service3]
+
+    db.session.commit()
 
     resp = admin_request.get("user.get_organisations_and_services_for_user", user_id=sample_user.id)
 
@@ -940,38 +977,44 @@ def test_get_orgs_and_services_nests_services(admin_request, sample_user):
         "organisations",
         "services",
     }
-    assert resp["organisations"] == [
-        {
-            "name": org1.name,
-            "id": str(org1.id),
-            "count_of_live_services": 2,
-        },
-        {
-            "name": org2.name,
-            "id": str(org2.id),
-            "count_of_live_services": 0,
-        },
-    ]
-    assert resp["services"] == [
-        {
-            "name": service1.name,
-            "id": str(service1.id),
-            "restricted": False,
-            "organisation": str(org1.id),
-        },
-        {
-            "name": service2.name,
-            "id": str(service2.id),
-            "restricted": False,
-            "organisation": str(org1.id),
-        },
-        {
-            "name": service3.name,
-            "id": str(service3.id),
-            "restricted": False,
-            "organisation": None,
-        },
-    ]
+    assert sorted(resp["organisations"], key=lambda i: i["id"]) == sorted(
+        [
+            {
+                "name": org1.name,
+                "id": str(org1.id),
+                "count_of_live_services": 3,
+            },
+            {
+                "name": org2.name,
+                "id": str(org2.id),
+                "count_of_live_services": 0,
+            },
+        ],
+        key=lambda i: i["id"],
+    )
+    assert sorted(resp["services"], key=lambda i: i["id"]) == sorted(
+        [
+            {
+                "name": service1.name,
+                "id": str(service1.id),
+                "restricted": False,
+                "organisation": str(org1.id),
+            },
+            {
+                "name": service2.name,
+                "id": str(service2.id),
+                "restricted": False,
+                "organisation": str(org1.id),
+            },
+            {
+                "name": service3.name,
+                "id": str(service3.id),
+                "restricted": False,
+                "organisation": None,
+            },
+        ],
+        key=lambda i: i["id"],
+    )
 
 
 def test_get_orgs_and_services_only_returns_active(admin_request, sample_user):
@@ -993,6 +1036,8 @@ def test_get_orgs_and_services_only_returns_active(admin_request, sample_user):
     sample_user.organisations = [org1, org2]
     sample_user.services = [service1, service2, service3, service4, service5]
 
+    db.session.commit()
+
     resp = admin_request.get("user.get_organisations_and_services_for_user", user_id=sample_user.id)
 
     assert set(resp.keys()) == {
@@ -1006,16 +1051,19 @@ def test_get_orgs_and_services_only_returns_active(admin_request, sample_user):
             "count_of_live_services": 1,
         }
     ]
-    assert resp["services"] == [
-        {"name": service1.name, "id": str(service1.id), "restricted": False, "organisation": str(org1.id)},
-        {"name": service3.name, "id": str(service3.id), "restricted": False, "organisation": str(org2.id)},
-        {
-            "name": service4.name,
-            "id": str(service4.id),
-            "restricted": False,
-            "organisation": None,
-        },
-    ]
+    assert sorted(resp["services"], key=lambda i: i["id"]) == sorted(
+        [
+            {"name": service1.name, "id": str(service1.id), "restricted": False, "organisation": str(org1.id)},
+            {"name": service3.name, "id": str(service3.id), "restricted": False, "organisation": str(org2.id)},
+            {
+                "name": service4.name,
+                "id": str(service4.id),
+                "restricted": False,
+                "organisation": None,
+            },
+        ],
+        key=lambda i: i["id"],
+    )
 
 
 def test_get_orgs_and_services_only_shows_users_orgs_and_services(admin_request, sample_user):
@@ -1033,6 +1081,8 @@ def test_get_orgs_and_services_only_shows_users_orgs_and_services(admin_request,
 
     other_user.organisations = [org1, org2]
     other_user.services = [service1, service2]
+
+    db.session.commit()
 
     resp = admin_request.get("user.get_organisations_and_services_for_user", user_id=sample_user.id)
 

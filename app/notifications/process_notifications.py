@@ -4,8 +4,10 @@ from datetime import datetime
 from flask import current_app
 from gds_metrics import Histogram
 from notifications_utils.clients import redis
+from notifications_utils.formatters import strip_and_remove_obscure_whitespace
 from notifications_utils.recipient_validation.email_address import (
     format_email_address,
+    validate_and_format_email_address,
 )
 from notifications_utils.recipient_validation.notifynl.phone_number import NL_PREFIX
 from notifications_utils.template import (
@@ -14,7 +16,7 @@ from notifications_utils.template import (
     SMSMessageTemplate,
 )
 
-from app import redis_store
+from app import document_download_client, redis_store
 from app.celery import provider_tasks
 from app.celery.letters_pdf_tasks import get_pdf_for_templated_letter
 from app.config import QueueNames
@@ -32,7 +34,10 @@ from app.dao.notifications_dao import (
     dao_delete_notifications_by_id,
 )
 from app.models import Notification
-from app.utils import parse_and_format_phone_number
+from app.utils import (
+    parse_and_format_phone_number,
+    try_download_template_email_file_from_s3,
+)
 from app.v2.errors import BadRequestError, QrCodeTooLongError
 
 REDIS_GET_AND_INCR_DAILY_LIMIT_DURATION_SECONDS = Histogram(
@@ -41,8 +46,9 @@ REDIS_GET_AND_INCR_DAILY_LIMIT_DURATION_SECONDS = Histogram(
 )
 
 
-def create_content_for_notification(template, personalisation):
+def create_content_for_notification(template, personalisation, recipient):
     if template.template_type == EMAIL_TYPE:
+        personalisation = add_email_file_links_to_personalisation(template, personalisation, recipient)
         template_object = PlainTextEmailTemplate(
             {
                 "content": template.content,
@@ -90,6 +96,26 @@ def check_placeholders(template_object):
         raise BadRequestError(fields=[{"template": message}], message=message)
 
 
+def add_email_file_links_to_personalisation(template, personalisation, recipient):
+    for email_file in template.email_file_objects:
+        template_email_file_from_s3 = try_download_template_email_file_from_s3(template.service, email_file.id)
+        doc_download_link = document_download_client.upload_document(
+            template.service,
+            template_email_file_from_s3,
+            confirmation_email=validate_and_format_email_address(recipient)
+            if email_file.validate_users_email
+            else None,
+            retention_period=f"{email_file.retention_period} weeks",
+            filename=email_file.filename,
+        )
+        if email_file.link_text:
+            personalisation[email_file.filename] = f"[{email_file.link_text}]({doc_download_link})"
+        else:
+            personalisation[email_file.filename] = doc_download_link
+
+    return personalisation
+
+
 def persist_notification(
     *,
     template_id,
@@ -116,6 +142,7 @@ def persist_notification(
     postage=None,
     document_download_count=None,
     updated_at=None,
+    _autocommit=True,
 ):
     notification_created_at = created_at or datetime.utcnow()
     if not notification_id:
@@ -145,12 +172,14 @@ def persist_notification(
         updated_at=updated_at,
     )
     if notification_type == SMS_TYPE:
+        notification.to = strip_and_remove_obscure_whitespace(notification.to)
         notification.normalised_to = recipient["normalised_to"]
         notification.international = recipient["international"]
         notification.phone_prefix = recipient["phone_prefix"]
         notification.rate_multiplier = recipient["rate_multiplier"]
 
     elif notification_type == EMAIL_TYPE:
+        notification.to = strip_and_remove_obscure_whitespace(notification.to)
         notification.normalised_to = format_email_address(notification.to)
 
     elif notification_type == LETTER_TYPE:
@@ -160,7 +189,8 @@ def persist_notification(
 
     # if simulated create a Notification model to return but do not persist the Notification to the dB
     if not simulated:
-        dao_create_notification(notification)
+        dao_create_notification(notification=notification, _autocommit=_autocommit)
+        # Not sure how we can rollback
         increment_daily_limit_caches(service, notification, key_type)
 
     return notification
@@ -188,7 +218,9 @@ def increment_daily_limit_cache(service_id, notification_type):
         redis_store.incr(cache_key)
 
 
-def send_notification_to_queue_detached(key_type, notification_type, notification_id, queue=None):
+def send_notification_to_queue_detached(
+    key_type, notification_type, notification_id, queue=None, message_group_id=None
+):
     if key_type == KEY_TYPE_TEST:
         queue = QueueNames.RESEARCH_MODE
 
@@ -206,16 +238,20 @@ def send_notification_to_queue_detached(key_type, notification_type, notificatio
         deliver_task = get_pdf_for_templated_letter
 
     try:
-        deliver_task.apply_async([str(notification_id)], queue=queue)
+        deliver_task.apply_async([str(notification_id)], queue=queue, MessageGroupId=message_group_id)
     except Exception:
         dao_delete_notifications_by_id(notification_id)
         raise
 
-    current_app.logger.debug("%s %s sent to the %s queue for delivery", notification_type, notification_id, queue)
-
 
 def send_notification_to_queue(notification, queue=None):
-    send_notification_to_queue_detached(notification.key_type, notification.notification_type, notification.id, queue)
+    send_notification_to_queue_detached(
+        notification.key_type,
+        notification.notification_type,
+        notification.id,
+        queue,
+        message_group_id=str(notification.service_id),
+    )
 
 
 def simulated_recipient(to_address, notification_type):

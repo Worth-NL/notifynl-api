@@ -1,7 +1,9 @@
+from datetime import UTC
+
 import dateutil
-import pytz
 from flask import Blueprint, current_app, jsonify, request
 
+from app import db
 from app.aws.s3 import get_job_metadata_from_s3
 from app.celery.tasks import process_job
 from app.config import QueueNames
@@ -83,7 +85,13 @@ def get_all_notifications_for_service_job(service_id, job_id):
     page = data["page"] if "page" in data else 1
     page_size = data["page_size"] if "page_size" in data else current_app.config.get("PAGE_SIZE")
     paginated_notifications = get_notifications_for_job(
-        service_id, job_id, filter_dict=data, page=page, page_size=page_size
+        service_id,
+        job_id,
+        filter_dict=data,
+        page=page,
+        page_size=page_size,
+        session=db.session_bulk,
+        retry_attempts=2,
     )
 
     kwargs = request.args.to_dict()
@@ -175,7 +183,12 @@ def create_job(service_id):
     sender_id = data.get("sender_id")
 
     if job.job_status == JOB_STATUS_PENDING:
-        process_job.apply_async([str(job.id)], {"sender_id": sender_id}, queue=QueueNames.JOBS)
+        process_job.apply_async(
+            [str(job.id)],
+            {"sender_id": sender_id},
+            queue=QueueNames.JOBS,
+            MessageGroupId=str(job.service_id),
+        )
 
     job_json = job_schema.dump(job)
     job_json["statistics"] = []
@@ -185,12 +198,12 @@ def create_job(service_id):
 
 @job_blueprint.route("/scheduled-job-stats", methods=["GET"])
 def get_scheduled_job_stats(service_id):
-    count, soonest_scheduled_for = dao_get_scheduled_job_stats(service_id)
+    count, soonest_scheduled_for = dao_get_scheduled_job_stats(service_id, session=db.session_bulk, retry_attempts=2)
     return (
         jsonify(
             count=count,
             soonest_scheduled_for=(
-                soonest_scheduled_for.replace(tzinfo=pytz.UTC).isoformat() if soonest_scheduled_for else None
+                soonest_scheduled_for.replace(tzinfo=UTC).isoformat() if soonest_scheduled_for else None
             ),
         ),
         200,

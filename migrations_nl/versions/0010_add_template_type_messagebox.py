@@ -29,18 +29,18 @@ tcr = sa.sql.table("templates", sa.Column("template_type", new_type, nullable=Fa
 
 
 def upgrade():
-    op.execute("ALTER TYPE template_type ADD VALUE IF NOT EXISTS 'messagebox'")
+    op.execute(sa.text("ALTER TYPE template_type ADD VALUE IF NOT EXISTS 'messagebox'"))
 
 
 
 def downgrade():
     # Convert 'letter' template into 'email'
-    op.execute(tcr.update().where(tcr.c.template_type == "messagebox").values(template_type="email"))
+    op.execute(sa.text(tcr.update().where(tcr.c.template_type == "messagebox").values(template_type="email")))
 
-    op.execute("ALTER TYPE " + name + " RENAME TO " + tmp_name)
+    op.execute(sa.text("ALTER TYPE " + name + " RENAME TO " + tmp_name))
 
     old_type.create(op.get_bind())
     op.execute(
-        "ALTER TABLE templates ALTER COLUMN template_type " + "TYPE " + name + " USING template_type::text::" + name
+        sa.text("ALTER TABLE templates ALTER COLUMN template_type " + "TYPE " + name + " USING template_type::text::" + name)
     )
-    op.execute("DROP TYPE " + tmp_name)
+    op.execute(sa.text("DROP TYPE " + tmp_name))

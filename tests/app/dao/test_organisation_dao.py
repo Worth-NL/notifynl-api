@@ -37,6 +37,7 @@ from tests.app.db import (
     create_service,
     create_user,
 )
+from tests.utils import QueryRecorder
 
 
 def test_get_organisations_gets_all_organisations_alphabetically_with_active_organisations_first(notify_db_session):
@@ -465,13 +466,21 @@ def test_add_user_to_organisation_when_organisation_does_not_exist(sample_user):
 
 
 @pytest.mark.parametrize(
+    "session,expected_bind_key",
+    (
+        (db.session, None),
+        (db.session_bulk, "bulk"),
+    ),
+    ids=("default", "bulk"),
+)
+@pytest.mark.parametrize(
     "domain, expected_org",
     (
         ("unknown.gov.uk", False),
         ("example.gov.uk", True),
     ),
 )
-def test_get_organisation_by_email_address(domain, expected_org, notify_db_session):
+def test_get_organisation_by_email_address(domain, expected_org, session, expected_bind_key, notify_db_session):
     org = create_organisation()
     create_domain("example.gov.uk", org.id)
     create_domain("test.gov.uk", org.id)
@@ -480,10 +489,13 @@ def test_get_organisation_by_email_address(domain, expected_org, notify_db_sessi
     create_domain("cabinet-office.gov.uk", another_org.id)
     create_domain("cabinetoffice.gov.uk", another_org.id)
 
-    found_org = dao_get_organisation_by_email_address(f"test@{domain}")
+    with QueryRecorder() as query_recorder:
+        found_org = dao_get_organisation_by_email_address(f"test@{domain}", session=session)
+
+    assert {query_info.bind_key for query_info in query_recorder.queries} == {expected_bind_key}
 
     if expected_org:
-        assert found_org is org
+        assert found_org.id == org.id
     else:
         assert found_org is None
 
@@ -544,20 +556,20 @@ def test_dao_remove_email_branding_from_organisation_pool(sample_organisation):
     sample_organisation.email_branding_id = branding_2.id
     sample_organisation.email_branding_pool += [branding_1, branding_2, branding_3]
 
-    assert sample_organisation.email_branding_pool == [branding_1, branding_2, branding_3]
+    assert set(sample_organisation.email_branding_pool) == {branding_1, branding_2, branding_3}
 
     dao_remove_email_branding_from_organisation_pool(sample_organisation.id, branding_1.id)
-    assert sample_organisation.email_branding_pool == [branding_2, branding_3]
+    assert set(sample_organisation.email_branding_pool) == {branding_2, branding_3}
 
     # Error if trying to remove an email branding that's not in the pool
     with pytest.raises(ValueError):
         dao_remove_email_branding_from_organisation_pool(sample_organisation.id, branding_1.id)
-    assert sample_organisation.email_branding_pool == [branding_2, branding_3]
+    assert set(sample_organisation.email_branding_pool) == {branding_2, branding_3}
 
     # Error if trying to remove the org's default email branding
     with pytest.raises(InvalidRequest):
         dao_remove_email_branding_from_organisation_pool(sample_organisation.id, branding_2.id)
-    assert sample_organisation.email_branding_pool == [branding_2, branding_3]
+    assert set(sample_organisation.email_branding_pool) == {branding_2, branding_3}
 
     dao_remove_email_branding_from_organisation_pool(sample_organisation.id, branding_3.id)
     assert sample_organisation.email_branding_pool == [branding_2]

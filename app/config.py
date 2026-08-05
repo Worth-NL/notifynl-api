@@ -1,14 +1,18 @@
 import json
 import os
 from datetime import timedelta
+from typing import Any
 
 from celery.schedules import crontab
 from kombu import Exchange, Queue
+
+from app.constants import EMAIL_TYPE, INTERNATIONAL_SMS_TYPE, LETTER_TYPE, SMS_TYPE
 
 
 class QueueNames:
     PERIODIC = "periodic-tasks"
     DATABASE = "database-tasks"
+    DATABASE_DOCUMENTS = "database-tasks-documents"
     SEND_SMS = "send-sms-tasks"
     SEND_EMAIL = "send-email-tasks"
     SEND_LETTER = "send-letter-tasks"
@@ -34,6 +38,7 @@ class QueueNames:
         return [
             QueueNames.PERIODIC,
             QueueNames.DATABASE,
+            QueueNames.DATABASE_DOCUMENTS,
             QueueNames.SEND_SMS,
             QueueNames.SEND_EMAIL,
             QueueNames.SEND_LETTER,
@@ -75,6 +80,7 @@ class TaskNames:
     SANITISE_LETTER = "sanitise-and-upload-letter"
     CREATE_PDF_FOR_TEMPLATED_LETTER = "create-pdf-for-templated-letter"
     RECREATE_PDF_FOR_PRECOMPILED_LETTER = "recreate-pdf-for-precompiled-letter"
+    RECREATE_PDF_FOR_TEMPLATE_LETTER_ATTACHMENTS = "recreate-pdf-for-template-letter-attachments"
 
 
 class Config:
@@ -95,12 +101,27 @@ class Config:
 
     INTERNAL_CLIENT_API_KEYS = json.loads(os.environ.get("INTERNAL_CLIENT_API_KEYS", "{}"))
 
+    DEFAULT_LIVE_SERVICE_RATE_LIMITS = {
+        EMAIL_TYPE: 250_000,
+        SMS_TYPE: 250_000,
+        LETTER_TYPE: 20_000,
+        INTERNATIONAL_SMS_TYPE: 100,
+    }
+
     # encyption secret/salt
     SECRET_KEY = os.getenv("SECRET_KEY")
+    TOKEN_SECRET_KEY = os.getenv("TOKEN_SECRET_KEY")
     DANGEROUS_SALT = os.getenv("DANGEROUS_SALT")
 
     # DB conection string
     SQLALCHEMY_DATABASE_URI = os.getenv("SQLALCHEMY_DATABASE_URI")
+    SQLALCHEMY_BINDS = {
+        "bulk": {
+            # see https://docs.sqlalchemy.org/en/20/dialects/postgresql.html#specifying-multiple-fallback-hosts for
+            # the unusual uri syntax sqlalchemy requires if specifying multiple postgres hosts here
+            "url": os.getenv("SQLALCHEMY_DATABASE_URI_BULK") or os.getenv("SQLALCHEMY_DATABASE_URI"),
+        },
+    }
 
     # MMG API Key
     MMG_API_KEY = os.getenv("MMG_API_KEY")
@@ -123,6 +144,9 @@ class Config:
     # URL of redis instance
     REDIS_URL = os.getenv("REDIS_URL")
     REDIS_ENABLED = False if os.environ.get("REDIS_ENABLED") == "0" else True
+
+    ENABLE_SQS_MESSAGE_GROUP_IDS = os.environ.get("ENABLE_SQS_MESSAGE_GROUP_IDS", "1") == "1"
+
     EXPIRE_CACHE_TEN_MINUTES = 600
     EXPIRE_CACHE_EIGHT_DAYS = 8 * 24 * 60 * 60
 
@@ -155,25 +179,45 @@ class Config:
     INVITATION_EXPIRATION_DAYS = 2
     NOTIFY_APP_NAME = "api"
 
-    SQLALCHEMY_ENGINE_OPTIONS = {
+    SQLALCHEMY_ENGINE_OPTIONS: dict[str, Any] = {
         "pool_size": int(os.environ.get("SQLALCHEMY_POOL_SIZE", 5)),
         "pool_timeout": 30,
         "pool_recycle": 300,
         "connect_args": {
+            "connect_timeout": "5",  # seconds
+            "tcp_user_timeout": "5000",  # milliseconds
             # statement_timeout is overridden in setup_sqlalchemy_events, but not all our
             # invocations heed those event hooks (e.g. alembic migrations), so this is set
             # as a fallback
             "options": "-c statement_timeout=1200000",
         },
     }
-    DATABASE_DEFAULT_DISABLE_PARALLEL_QUERY = (
-        os.getenv(
-            "DATABASE_DEFAULT_DISABLE_PARALLEL_QUERY",
-            "1",
-        )
-        == "1"
+    SQLALCHEMY_BINDS["bulk"] = {
+        **SQLALCHEMY_ENGINE_OPTIONS,
+        **SQLALCHEMY_BINDS["bulk"],
+    }
+
+    # allow different settings for connections that end up on the replica or primary
+    # database, as we will want to prioritize small transactional queries on the
+    # primary, rather than potentially allowing long-running, resource-occupying
+    # analytic-style queries to inhibit our critical transactional workload.
+    #
+    # note how alternate db settings are explicitly targeted at the actual *replica*,
+    # rather than just the "bulk" binding, which could potentially fall back to the
+    # primary database if no replica is available.
+    _db_max_parallel_workers = os.getenv("DATABASE_MAX_PARALLEL_WORKERS")
+    _db_max_parallel_workers_replica = os.getenv("DATABASE_MAX_PARALLEL_WORKERS_REPLICA")
+
+    DATABASE_MAX_PARALLEL_WORKERS = (
+        0
+        if (os.getenv("DATABASE_DEFAULT_DISABLE_PARALLEL_QUERY") == "1")
+        else (int(_db_max_parallel_workers) if _db_max_parallel_workers else None)
+    )
+    DATABASE_MAX_PARALLEL_WORKERS_REPLICA = (
+        int(_db_max_parallel_workers_replica) if _db_max_parallel_workers_replica else None
     )
     DATABASE_STATEMENT_TIMEOUT_MS = int(os.getenv("DATABASE_STATEMENT_TIMEOUT_MS", 1_200_000))
+    DATABASE_STATEMENT_TIMEOUT_REPLICA_MS = int(os.getenv("DATABASE_STATEMENT_TIMEOUT_REPLICA_MS", 1_200_000))
 
     PAGE_SIZE = 50
     API_PAGE_SIZE = 250
@@ -219,14 +263,19 @@ class Config:
     NOTIFY_SUPPORT_EMAIL_ADDRESS = "support@notificatie.nl"
 
     AWS_ACCOUNT_ID = os.environ.get("AWS_ACCOUNT_ID", "123456789012")
-    CELERY = {
+    CELERY: dict[str, Any] = {
         "broker_url": "https://sqs.eu-west-1.amazonaws.com",
         "broker_transport": "sqs",
+        "task_ignore_result": True,
         "broker_transport_options": {
             "region": AWS_REGION,
             "queue_name_prefix": NOTIFICATION_QUEUE_PREFIX,
             "is_secure": True,
-            "predefined_queues": QueueNames.predefined_queues(NOTIFICATION_QUEUE_PREFIX, AWS_REGION, AWS_ACCOUNT_ID),
+            "predefined_queues": QueueNames.predefined_queues(
+                NOTIFICATION_QUEUE_PREFIX,
+                AWS_REGION,
+                AWS_ACCOUNT_ID,
+            ),
         },
         "result_expires": 0,
         "timezone": "UTC",
@@ -280,6 +329,11 @@ class Config:
                 "schedule": crontab(minute="*/10"),
                 "options": {"queue": QueueNames.PERIODIC},
             },
+            "update-status-of-fully-processed-jobs": {
+                "task": "update-status-of-fully-processed-jobs",
+                "schedule": crontab(minute="*/1"),
+                "options": {"queue": QueueNames.PERIODIC},
+            },
             "replay-created-notifications": {
                 "task": "replay-created-notifications",
                 "schedule": crontab(minute="0, 15, 30, 45"),
@@ -299,6 +353,11 @@ class Config:
             "archive-unsubscribe-requests": {
                 "task": "archive-unsubscribe-requests",
                 "schedule": crontab(hour=0, minute=5),
+                "options": {"queue": QueueNames.REPORTING},
+            },
+            "deep-archive-notification-history-up-to-limit": {
+                "task": "deep-archive-notification-history-up-to-limit",
+                "schedule": crontab(hour=1, minute=35),
                 "options": {"queue": QueueNames.REPORTING},
             },
             "create-nightly-billing": {
@@ -477,15 +536,22 @@ class Config:
     ZENDESK_REPORTING = json.loads(os.environ.get("ZENDESK_REPORTING", "{}").encode().decode("unicode-escape"))
 
     NOTIFY_EMAIL_DOMAIN = os.environ.get("NOTIFY_EMAIL_DOMAIN")
+
     S3_BUCKET_CSV_UPLOAD = os.environ.get("S3_BUCKET_CSV_UPLOAD")
     S3_BUCKET_CONTACT_LIST = os.environ.get("S3_BUCKET_CONTACT_LIST")
+    S3_BUCKET_TEMPLATE_EMAIL_FILES = os.environ.get("S3_BUCKET_TEMPLATE_EMAIL_FILES")
+
     S3_BUCKET_TEST_LETTERS = os.environ.get("S3_BUCKET_TEST_LETTERS")
     S3_BUCKET_LETTERS_PDF = os.environ.get("S3_BUCKET_LETTERS_PDF")
     S3_BUCKET_LETTERS_SCAN = os.environ.get("S3_BUCKET_LETTERS_SCAN")
     S3_BUCKET_INVALID_PDF = os.environ.get("S3_BUCKET_INVALID_PDF")
     S3_BUCKET_TRANSIENT_UPLOADED_LETTERS = os.environ.get("S3_BUCKET_TRANSIENT_UPLOADED_LETTERS")
     S3_BUCKET_LETTER_SANITISE = os.environ.get("S3_BUCKET_LETTER_SANITISE")
+
     S3_BUCKET_REPORT_REQUESTS_DOWNLOAD = os.environ.get("S3_BUCKET_REPORT_REQUESTS_DOWNLOAD")
+
+    S3_BUCKET_NOTIFICATION_DEEP_HISTORY = os.environ.get("S3_BUCKET_NOTIFICATION_DEEP_HISTORY")
+
     FROM_NUMBER = os.environ.get("FROM_NUMBER")
     API_RATE_LIMIT_ENABLED = os.environ.get("API_RATE_LIMIT_ENABLED", "1") == "1"
 
@@ -494,6 +560,13 @@ class Config:
     SEND_ZENDESK_ALERTS_ENABLED = os.environ.get("SEND_ZENDESK_ALERTS_ENABLED", "0") == "1"
     CHECK_SLOW_TEXT_MESSAGE_DELIVERY = os.environ.get("CHECK_SLOW_TEXT_MESSAGE_DELIVERY", "0") == "1"
     WEEKLY_USER_RESEARCH_EMAIL_ENABLED = os.environ.get("WEEKLY_USER_RESEARCH_EMAIL_ENABLED", "0") == "1"
+
+    NOTIFICATION_DEEP_HISTORY_MIN_AGE_DAYS = int(os.environ.get("NOTIFICATION_DEEP_HISTORY_MIN_AGE_DAYS", 365))
+    NOTIFICATION_DEEP_HISTORY_MAX_HOURS_ARCHIVED_IN_RUN = int(
+        os.environ.get("NOTIFICATION_DEEP_HISTORY_MAX_HOURS_ARCHIVED_IN_RUN", 24 * 10)
+    )
+    NOTIFICATION_DEEP_HISTORY_S3_KEY_PREFIX = os.environ.get("NOTIFICATION_DEEP_HISTORY_S3_KEY_PREFIX", "")
+    NOTIFICATION_DEEP_HISTORY_DELETE_ARCHIVED = os.environ.get("NOTIFICATION_DEEP_HISTORY_DELETE_ARCHIVED", "1") == "1"
 
     REPORT_REQUEST_NOTIFICATIONS_TIMEOUT_MINUTES = 30
     REPORT_REQUEST_NOTIFICATIONS_CSV_BATCH_SIZE = 2500
@@ -508,12 +581,24 @@ class Development(Config):
     DEBUG = True
     SQLALCHEMY_ECHO = False
 
+    CELERY_WORKER_LOG_LEVEL = "INFO"
+
+    CELERY = {
+        **Config.CELERY,
+        "broker_transport_options": {
+            key: value for key, value in Config.CELERY["broker_transport_options"].items() if key != "predefined_queues"
+        },
+    }
+
     SERVER_NAME = os.getenv("SERVER_NAME")
 
     REDIS_ENABLED = os.getenv("REDIS_ENABLED") == "1"
+    ENABLE_SQS_MESSAGE_GROUP_IDS = os.environ.get("ENABLE_SQS_MESSAGE_GROUP_IDS", "1") == "1"
 
     S3_BUCKET_CSV_UPLOAD = "development-notifications-csv-upload"
     S3_BUCKET_CONTACT_LIST = "development-contact-list"
+    S3_BUCKET_TEMPLATE_EMAIL_FILES = "development-template-email-files"
+
     S3_BUCKET_TEST_LETTERS = "development-test-letters"
     S3_BUCKET_LETTERS_PDF = "development-letters-pdf"
     S3_BUCKET_LETTERS_SCAN = "development-letters-scan"
@@ -521,12 +606,16 @@ class Development(Config):
     S3_BUCKET_TRANSIENT_UPLOADED_LETTERS = "development-transient-uploaded-letters"
     S3_BUCKET_LETTER_SANITISE = "development-letters-sanitise"
 
+    S3_BUCKET_REPORT_REQUESTS_DOWNLOAD = "development-report-requests-download"
+    S3_BUCKET_NOTIFICATION_DEEP_HISTORY = "development-notification-deep-history"
+
     INTERNAL_CLIENT_API_KEYS = {
         Config.ADMIN_CLIENT_ID: ["dev-notify-secret-key"],
         Config.FUNCTIONAL_TESTS_CLIENT_ID: ["functional-tests-secret-key"],
     }
 
     SECRET_KEY = "dev-notify-secret-key"
+    TOKEN_SECRET_KEY = "5YNWU0e_pN5ZyaSZvBd5uZb_sZlrVDFeOjiea6dq4zQ="
     DANGEROUS_SALT = "dev-notify-salt"
 
     MMG_INBOUND_SMS_AUTH = ["testkey"]
@@ -535,7 +624,14 @@ class Development(Config):
     NOTIFY_ENVIRONMENT = "development"
     NOTIFY_EMAIL_DOMAIN = "notify.tools"
 
-    SQLALCHEMY_DATABASE_URI = os.getenv("SQLALCHEMY_DATABASE_URI", "postgresql://localhost/notification_api")
+    SQLALCHEMY_DATABASE_URI = os.getenv("SQLALCHEMY_DATABASE_URI", "postgresql+psycopg2://localhost/notification_api")
+    SQLALCHEMY_BINDS = {
+        **Config.SQLALCHEMY_BINDS,
+        "bulk": {
+            **Config.SQLALCHEMY_BINDS["bulk"],
+            "url": SQLALCHEMY_DATABASE_URI,
+        },
+    }
     REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
 
     ANTIVIRUS_ENABLED = os.getenv("ANTIVIRUS_ENABLED") == "1"
@@ -560,19 +656,30 @@ class Test(Development):
 
     S3_BUCKET_CSV_UPLOAD = "test-notifications-csv-upload"
     S3_BUCKET_CONTACT_LIST = "test-contact-list"
+    S3_BUCKET_TEMPLATE_EMAIL_FILES = "test-template-email-files"
+
     S3_BUCKET_TEST_LETTERS = "test-test-letters"
     S3_BUCKET_LETTERS_PDF = "test-letters-pdf"
     S3_BUCKET_LETTERS_SCAN = "test-letters-scan"
     S3_BUCKET_INVALID_PDF = "test-letters-invalid-pdf"
     S3_BUCKET_TRANSIENT_UPLOADED_LETTERS = "test-transient-uploaded-letters"
     S3_BUCKET_LETTER_SANITISE = "test-letters-sanitise"
+
     S3_BUCKET_REPORT_REQUESTS_DOWNLOAD = "test-report-requests-download"
+    S3_BUCKET_NOTIFICATION_DEEP_HISTORY = "test-notification-deep-history"
 
     # when testing, the SQLALCHEMY_DATABASE_URI is used for the postgres server's location
     # but the database name is set in the _notify_db fixture
     SQLALCHEMY_RECORD_QUERIES = True
 
-    CELERY = {**Config.CELERY, "broker_url": "you-forgot-to-mock-celery-in-your-tests://", "broker_transport": None}
+    CELERY = {
+        **Config.CELERY,
+        "broker_url": "you-forgot-to-mock-celery-in-your-tests://",
+        "broker_transport": None,
+        "broker_transport_options": {
+            key: value for key, value in Config.CELERY["broker_transport_options"].items() if key != "predefined_queues"
+        },
+    }
 
     ANTIVIRUS_ENABLED = True
 
@@ -699,6 +806,18 @@ class DevNL(ConfigNL):
 
     CELERY_WORKER_LOG_LEVEL = "INFO"
 
+    # kombu's SQS transport builds its boto3 endpoint_url straight from broker_url +
+    # is_secure, ignoring AWS_ENDPOINT_URL entirely, so the ministack endpoint has to be
+    # set here explicitly rather than relying on the env var like other AWS clients do.
+    CELERY = {
+        **ConfigNL.CELERY,
+        "broker_url": os.getenv("AWS_ENDPOINT_URL", "http://ministack:4566"),
+        "broker_transport_options": {
+            **ConfigNL.CELERY["broker_transport_options"],
+            "is_secure": False,
+        },
+    }
+
     SERVER_NAME = os.getenv("SERVER_NAME")
 
     REDIS_ENABLED = os.getenv("REDIS_ENABLED") == "1"
@@ -714,6 +833,7 @@ class DevNL(ConfigNL):
     S3_BUCKET_TRANSIENT_UPLOADED_LETTERS = f"{NL_PREFIX}-{NOTIFY_ENVIRONMENT}-transient-uploaded-letters"
     S3_BUCKET_LETTER_SANITISE = f"{NL_PREFIX}-{NOTIFY_ENVIRONMENT}-letters-sanitise"
     S3_BUCKET_REPORT_REQUESTS_DOWNLOAD = f"{NL_PREFIX}-{NOTIFY_ENVIRONMENT}-report-requests-download"
+    S3_BUCKET_TEMPLATE_EMAIL_FILES = f"{NL_PREFIX}-{NOTIFY_ENVIRONMENT}-template-email-files"
 
     INTERNAL_CLIENT_API_KEYS = {
         Config.ADMIN_CLIENT_ID: ["dev-notify-secret-key"],
@@ -758,6 +878,7 @@ class TestNL(ConfigNL):
     S3_BUCKET_TRANSIENT_UPLOADED_LETTERS = f"{NL_PREFIX}-{NOTIFY_ENVIRONMENT}-transient-uploaded-letters"
     S3_BUCKET_LETTER_SANITISE = f"{NL_PREFIX}-{NOTIFY_ENVIRONMENT}-letters-sanitise"
     S3_BUCKET_REPORT_REQUESTS_DOWNLOAD = f"{NL_PREFIX}-{NOTIFY_ENVIRONMENT}-report-requests-download"
+    S3_BUCKET_TEMPLATE_EMAIL_FILES = f"{NL_PREFIX}-{NOTIFY_ENVIRONMENT}-template-email-files"
 
     ASSET_PATH = "https://static.test.notifynl.nl/"
 
@@ -776,6 +897,7 @@ class AccNL(ConfigNL):
     S3_BUCKET_TRANSIENT_UPLOADED_LETTERS = f"{NL_PREFIX}-{NOTIFY_ENVIRONMENT}-transient-uploaded-letters"
     S3_BUCKET_LETTER_SANITISE = f"{NL_PREFIX}-{NOTIFY_ENVIRONMENT}-letters-sanitise"
     S3_BUCKET_REPORT_REQUESTS_DOWNLOAD = f"{NL_PREFIX}-{NOTIFY_ENVIRONMENT}-report-requests-download"
+    S3_BUCKET_TEMPLATE_EMAIL_FILES = f"{NL_PREFIX}-{NOTIFY_ENVIRONMENT}-template-email-files"
 
     REGISTER_FUNCTIONAL_TESTING_BLUEPRINT = False
 
@@ -796,6 +918,7 @@ class ProdNL(ConfigNL):
     S3_BUCKET_TRANSIENT_UPLOADED_LETTERS = f"{NL_PREFIX}-{NOTIFY_ENVIRONMENT}-transient-uploaded-letters"
     S3_BUCKET_LETTER_SANITISE = f"{NL_PREFIX}-{NOTIFY_ENVIRONMENT}-letters-sanitise"
     S3_BUCKET_REPORT_REQUESTS_DOWNLOAD = f"{NL_PREFIX}-{NOTIFY_ENVIRONMENT}-report-requests-download"
+    S3_BUCKET_TEMPLATE_EMAIL_FILES = f"{NL_PREFIX}-{NOTIFY_ENVIRONMENT}-template-email-files"
 
     REGISTER_FUNCTIONAL_TESTING_BLUEPRINT = False
 

@@ -70,6 +70,8 @@ def test_get_email_branding_by_id(
         "text",
         "brand_type",
         "alt_text",
+        "alignment",
+        "height",
         "created_by",
         "created_at",
         "updated_at",
@@ -81,6 +83,8 @@ def test_get_email_branding_by_id(
     assert response["email_branding"]["id"] == str(email_branding.id)
     assert response["email_branding"]["brand_type"] == str(email_branding.brand_type)
     assert response["email_branding"]["alt_text"] is None
+    assert response["email_branding"]["alignment"] == "left"
+    assert response["email_branding"]["height"] is None
     assert response["email_branding"]["created_at"] == expected_created_at
     assert response["email_branding"]["updated_at"] == expected_updated_at
 

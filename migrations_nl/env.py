@@ -1,40 +1,48 @@
-import logging
+from collections.abc import Callable, Iterable, Mapping
 import os
+import psycopg2
+import struct
 import sys
+import time
 from logging.config import fileConfig
+from pathlib import Path
 
 from alembic import context
 from flask import current_app
+from sqlalchemy import engine_from_config, pool, text
+import sqlalchemy
 
 # this is the Alembic Config object, which provides
 # access to the values within the .ini file in use.
 import app.models
 
-# this is the Alembic Config object, which provides
-# access to the values within the .ini file in use.
 config = context.config
 
 # Interpret the config file for Python logging.
 # This line sets up loggers basically.
 fileConfig(config.config_file_name)
-logger = logging.getLogger('alembic.env')
 
 # add your model's MetaData object here
 # for 'autogenerate' support
 # from myapp import mymodel
 # target_metadata = mymodel.Base.metadata
-config.set_main_option(
-    'sqlalchemy.url',
-    str(current_app.extensions['migrate'].db.get_engine().url).replace(
-        '%', '%%'))
-# target_metadata = current_app.extensions['migrate'].db.metadata
+
+config.set_main_option("sqlalchemy.url", current_app.config.get("SQLALCHEMY_DATABASE_URI"))
 target_metadata = app.models.db.metadata
 
 # other values from the config, defined by the needs of env.py,
 # can be acquired:
 # my_important_option = config.get_main_option("my_important_option")
 # ... etc.
-version_table_nl = 'alembic_version_nl'
+
+
+
+def include_object(object, name, type_, reflected, compare_to):
+    """
+    Exclude views from Alembic's consideration.
+    """
+
+    return object.info.get("managed_by_alembic", True)
 
 
 def run_migrations_offline():
@@ -51,13 +59,18 @@ def run_migrations_offline():
     """
     url = config.get_main_option("sqlalchemy.url")
     context.configure(
-        url=url, target_metadata=target_metadata, literal_binds=True, version_table=version_table_nl
+        url=url,
+        compare_type=True,
+        include_object=include_object,
+        target_metadata=target_metadata,
+        transaction_per_migration=True,
     )
 
     with context.begin_transaction():
         context.run_migrations()
 
 
+version_table_nl = 'alembic_version_nl'
 def run_migrations_online():
     """Run migrations in 'online' mode.
 
@@ -65,48 +78,99 @@ def run_migrations_online():
     and associate a connection with the context.
 
     """
+    engine = engine_from_config(
+        config.get_section(config.config_ini_section),
+        prefix="sqlalchemy.",
+        poolclass=pool.NullPool,
+    )
 
-    # Check for current Alembic head
-    # Required because we need the base migrations to have run for the NL migrations to work
-    expected_head_file = os.path.join(os.path.dirname(__file__), '..', 'migrations', '.current-alembic-head')
+    connection = engine.connect()
+    try:
+        # Check for current Alembic head
+        expected_head_file = os.path.join(os.path.dirname(__file__), '..', 'migrations', '.current-alembic-head')
 
-    with open(expected_head_file) as f:
-        expected_head = f.read().strip()
+        with open(expected_head_file) as f:
+            expected_head = f.read().strip()
 
-    # this callback is used to prevent an auto-migration from being generated
-    # when there are no changes to the schema
-    # reference: http://alembic.zzzcomputing.com/en/latest/cookbook.html
-    def process_revision_directives(context, revision, directives):
-        if getattr(config.cmd_opts, 'autogenerate', False):
-            script = directives[0]
-            if script.upgrade_ops.is_empty():
-                directives[:] = []
-                logger.info('No changes in schema detected.')
+        current_head = connection.execute(text("SELECT version_num FROM alembic_version")).scalar()
 
-    connectable = current_app.extensions['migrate'].db.get_engine()
-
-    with connectable.connect() as connection:
-        current_head = connection.execute("SELECT version_num FROM alembic_version").scalar()
-
+        # Required because we need the base migrations to have run for the NL migrations to work
         if current_head != expected_head:
-            logger.error('Current Alembic head [%s] does not match expected head [%s]', current_head, expected_head)
+            print(f'Current Alembic head [{current_head}] does not match expected head [{expected_head}]')
             sys.exit(1)
 
-        logger.info('Current UK Alembic head: [%s]', current_head)
+        print(f'Current UK Alembic head: [{current_head}]' )
 
         context.configure(
             connection=connection,
+            compare_type=True,
+            include_object=include_object,
             target_metadata=target_metadata,
-            process_revision_directives=process_revision_directives,
+            transaction_per_migration=True,
             version_table=version_table_nl,
-            **current_app.extensions['migrate'].configure_args
         )
+
+        # take a *session-level* advisory lock to prevent multiple migration
+        # processes attempting to run concurrently. being a session-level lock,
+        # it should safely cover our few migrations that need to perform multiple
+        # transactions.
+        # advisory lock ids are 64b (signed) integers, so use the null-padded,
+        # big-endian representation of the string "alembic"
+        lock_id = struct.unpack(">q", struct.pack("8s", b"alembic"))[0]
+        connection.execute(text("SELECT pg_advisory_lock(:id)"), {"id": lock_id})
+
+        # abort any migrations if a lock (other than the above advisory lock)
+        # cannot be acquired after one second.
+        #
+        # if we see issues with this lock timeout failing, we should try running
+        # again when there are no locks on that table, perhaps at a quieter time.
+        connection.execute(text("SET lock_timeout = 1000"))
 
         with context.begin_transaction():
             context.run_migrations()
+
+        # Commit the transaction to persist changes
+        connection.commit()
+
+        # if we're running on the main db (as opposed to the test db)
+        if engine.url.database == "notification_api":
+            with open(Path(__file__).parent / ".current-alembic-head", "w") as f:
+                # write the current head to `.current-alembic-head`. This will prevent conflicting migrations
+                # being merged at the same time and breaking the build.
+                head = context.get_head_revision()
+                f.write(head + "\n")
+    except Exception as e:
+        print("NL migrations failed because: ", e)
+        connection.rollback()
+    finally:
+        connection.close()
+
+
+def retry_on_lock_error(
+    *,
+    func: Callable,
+    args: Iterable = [],
+    kwargs: Mapping = {},
+    max_retries: int = 1,
+    delay_secs: int = 0,
+):
+    for i in range(max_retries):
+        try:
+            return func(*args, **kwargs)
+        except sqlalchemy.exc.OperationalError as e:
+            # on the last attempt raise so we get a full stack trace
+            if i + 1 == max_retries:
+                raise
+
+            if not isinstance(e.orig, psycopg2.errors.LockNotAvailable):
+                raise
+
+            print("Retrying due to LockNotAvailable error")
+            print(e)
+            time.sleep(delay_secs)
 
 
 if context.is_offline_mode():
     run_migrations_offline()
 else:
-    run_migrations_online()
+    retry_on_lock_error(func=run_migrations_online, max_retries=10, delay_secs=10)

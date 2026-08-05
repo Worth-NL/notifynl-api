@@ -1,7 +1,6 @@
 from datetime import datetime
 from urllib.parse import unquote
 
-import iso8601
 from flask import Blueprint, abort, current_app, jsonify, request
 from gds_metrics.metrics import Counter
 
@@ -43,7 +42,11 @@ def receive_mmg_sms():
         auth.username not in current_app.config["MMG_INBOUND_SMS_USERNAME"]
         or auth.password not in current_app.config["MMG_INBOUND_SMS_AUTH"]
     ):
-        current_app.logger.warning("Inbound sms (MMG) incorrect username (%s) or password", auth.username)
+        current_app.logger.warning(
+            "Inbound sms (MMG) incorrect username (%s) or password",
+            auth.username,
+            extra={"username": auth.username},
+        )
         abort(403)
 
     inbound_number = strip_leading_forty_four(post_data["Number"])
@@ -66,11 +69,16 @@ def receive_mmg_sms():
     )
 
     service_callback_tasks.send_inbound_sms_to_service.apply_async(
-        [str(inbound.id), str(service.id)], queue=QueueNames.CALLBACKS
+        [str(inbound.id), str(service.id)],
+        queue=QueueNames.CALLBACKS,
+        MessageGroupId=str(service.id),
     )
 
-    current_app.logger.debug(
-        "%s received inbound SMS with reference %s from MMG", service.id, inbound.provider_reference
+    current_app.logger.info(
+        "Service %s received inbound SMS with reference %s from MMG",
+        service.id,
+        inbound.provider_reference,
+        extra={"service_id": service.id, "inbound_sms_provider_reference": inbound.provider_reference},
     )
     return jsonify({"status": "ok"}), 200
 
@@ -84,7 +92,11 @@ def receive_firetext_sms():
         current_app.logger.warning("Inbound sms (Firetext) no auth header")
         abort(401)
     elif auth.username != "notify" or auth.password not in current_app.config["FIRETEXT_INBOUND_SMS_AUTH"]:
-        current_app.logger.warning("Inbound sms (Firetext) incorrect username (%s) or password", auth.username)
+        current_app.logger.warning(
+            "Inbound sms (Firetext) incorrect username (%s) or password",
+            auth.username,
+            extra={"username": auth.username},
+        )
         abort(403)
 
     inbound_number = strip_leading_forty_four(post_data["destination"])
@@ -105,10 +117,15 @@ def receive_firetext_sms():
     INBOUND_SMS_COUNTER.labels("firetext").inc()
 
     service_callback_tasks.send_inbound_sms_to_service.apply_async(
-        [str(inbound.id), str(service.id)], queue=QueueNames.CALLBACKS
+        [str(inbound.id), str(service.id)],
+        queue=QueueNames.CALLBACKS,
+        MessageGroupId=str(service.id),
     )
-    current_app.logger.debug(
-        "%s received inbound SMS with reference %s from Firetext", service.id, inbound.provider_reference
+    current_app.logger.info(
+        "%s received inbound SMS with reference %s from Firetext",
+        service.id,
+        inbound.provider_reference,
+        extra={"service_id": service.id, "inbound_sms_provider_reference": inbound.provider_reference},
     )
     return jsonify({"status": "ok"}), 200
 
@@ -131,9 +148,9 @@ def format_mmg_datetime(date):
     """
     try:
         orig_date = format_mmg_message(date)
-        parsed_datetime = iso8601.parse_date(orig_date).replace(tzinfo=None)
+        parsed_datetime = datetime.fromisoformat(orig_date).replace(tzinfo=None)
         return parsed_datetime
-    except iso8601.ParseError:
+    except ValueError:
         return datetime.utcnow()
 
 
@@ -164,12 +181,15 @@ def fetch_potential_service(inbound_number, provider_name):
 
     if not service:
         current_app.logger.warning(
-            'Inbound number "%s" from %s not associated with a service', inbound_number, provider_name
+            "Inbound number %r from %s not associated with a service",
+            inbound_number,
+            provider_name,
+            extra={"inbound_number": inbound_number, "provider_name": provider_name},
         )
         return False
 
     if not has_inbound_sms_permissions(service.permissions):
-        current_app.logger.error('Service "%s" does not allow inbound SMS', service.id)
+        current_app.logger.error("Service %s does not allow inbound SMS", service.id, extra={"service_id": service.id})
         return False
 
     return service

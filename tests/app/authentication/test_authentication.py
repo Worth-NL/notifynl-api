@@ -4,6 +4,7 @@ import uuid
 import jwt
 import pytest
 from flask import g, request
+from jwt.exceptions import InvalidIssuerError, MissingRequiredClaimError
 from notifications_python_client.authentication import create_jwt_token
 
 from app import db
@@ -231,27 +232,40 @@ def test_decode_jwt_token_returns_error_with_no_secrets(client):
     assert exc.value.short_message == "Invalid token: API key not found"
 
 
-@pytest.mark.parametrize("service_id", ["not-a-valid-id", 1234])
-def test_requires_auth_should_not_allow_service_id_with_the_wrong_data_type(client, service_jwt_secret, service_id):
-    if isinstance(service_id, int):
-        # Expect a TypeError when service_id is an integer due to PyJWT 2.12.0's requirement for the iss claim
-        with pytest.raises(TypeError) as exc:
-            create_jwt_token(
-                client_id=service_id,
-                secret=service_jwt_secret,
-            )
-        assert "Issuer (iss) must be a string" in str(exc.value)
-    else:
-        # For non-integer service_id, proceed with the original test logic
-        token = create_jwt_token(
-            client_id=service_id,
-            secret=service_jwt_secret,
-        )
+def test_requires_auth_should_not_allow_service_id_which_is_not_uuid_string(client, service_jwt_secret):
+    token = create_jwt_token(
+        client_id="not-a-valid-id",
+        secret=service_jwt_secret,
+    )
 
-        request.headers = {"Authorization": f"Bearer {token}"}
-        with pytest.raises(AuthError) as exc:
-            requires_auth()
-        assert exc.value.short_message == "Invalid token: service id is not the right data type"
+    request.headers = {"Authorization": f"Bearer {token}"}
+    with pytest.raises(AuthError) as exc:
+        requires_auth()
+    assert exc.value.short_message == "Invalid token: service id is not the right data type"
+
+
+@pytest.mark.parametrize(
+    "exception",
+    (
+        # Possible exceptions which could be raised here:
+        # https://github.com/jpadilla/pyjwt/blob/b85050f1d444c6828bb4618ee764443b0a3f5d18/jwt/api_jwt.py#L560-L583
+        MissingRequiredClaimError,
+        InvalidIssuerError,
+    ),
+)
+def test_requires_auth_should_not_allow_non_string_service_id(client, sample_api_key, exception, mocker):
+    mocker.patch("notifications_python_client.authentication.jwt.decode", raises=exception)
+    token = create_jwt_token(
+        secret=str(sample_api_key.id),
+        client_id=str(sample_api_key.service_id),  # Our code never see this value
+    )
+
+    request.headers = {"Authorization": f"Bearer {token}"}
+    with pytest.raises(AuthError) as exc:
+        requires_auth()
+
+    # This is not a very helpful error message but the user would be having to try something weird to get here
+    assert exc.value.short_message == "Invalid token: iss field not provided"
 
 
 def test_requires_auth_returns_error_when_service_doesnt_exist(client, sample_api_key):

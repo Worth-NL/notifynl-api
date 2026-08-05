@@ -1,7 +1,6 @@
 import datetime
 import enum
 import uuid
-from dataclasses import dataclass
 
 from flask import current_app, url_for
 from jsonschema import ValidationError, validate
@@ -76,6 +75,42 @@ from app.constants import (
 )
 from app.hashing import check_hash, hashpw
 from app.history_meta import Versioned
+from app.models_types import (
+    LetterCostDetails,
+    SerializedAnnualBilling,
+    SerializedComplaint,
+    SerializedEmailBranding,
+    SerializedFreeSmsItems,
+    SerializedInboundNumber,
+    SerializedInboundSms,
+    SerializedInvitedOrganisationUser,
+    SerializedLetterAttachment,
+    SerializedLetterBranding,
+    SerializedLetterRate,
+    SerializedNotification,
+    SerializedNotificationForCSV,
+    SerializedNotificationWithCostData,
+    SerializedOrganisation,
+    SerializedOrganisationForList,
+    SerializedRate,
+    SerializedReportRequest,
+    SerializedService,
+    SerializedServiceCallbackApi,
+    SerializedServiceContactList,
+    SerializedServiceDataRetention,
+    SerializedServiceEmailReplyTo,
+    SerializedServiceJoinRequest,
+    SerializedServiceLetterContact,
+    SerializedServiceOrgDashboard,
+    SerializedServiceSmsSender,
+    SerializedTemplateEmailFile,
+    SerializedTemplateFolder,
+    SerializedUnsubscribeRequestReport,
+    SerializedUser,
+    SerializedUserForList,
+    SerializedWebauthnCredential,
+    SmsCostDetails,
+)
 from app.utils import (
     DATETIME_FORMAT,
     DATETIME_FORMAT_NO_TIMEZONE,
@@ -179,43 +214,43 @@ class User(db.Model):
 
         return retval
 
-    def serialize(self, service_filter_keys=None):
+    def serialize(self, service_filter_keys=None) -> SerializedUser:
         if service_filter_keys is None:
             services_data = [x.id for x in self.services if x.active]
         else:
             service_filter_keys = list(set(service_filter_keys) | {"id"})
             services_data = [dict_filter(x, service_filter_keys) for x in self.services if x.active]
 
-        return {
-            "id": self.id,
-            "name": self.name,
-            "email_address": self.email_address,
-            "created_at": self.created_at.strftime(DATETIME_FORMAT),
-            "auth_type": self.auth_type,
-            "current_session_id": self.current_session_id,
-            "failed_login_count": self.failed_login_count,
-            "email_access_validated_at": self.email_access_validated_at.strftime(DATETIME_FORMAT),
-            "logged_in_at": get_dt_string_or_none(self.logged_in_at),
-            "mobile_number": self.mobile_number,
-            "organisations": [x.id for x in self.organisations if x.active],
-            "password_changed_at": self.password_changed_at.strftime(DATETIME_FORMAT_NO_TIMEZONE),
-            "permissions": self.get_permissions(),
-            "organisation_permissions": self.get_organisation_permissions(),
-            "platform_admin": self.platform_admin,
-            "services": services_data,
-            "can_use_webauthn": self.can_use_webauthn,
-            "state": self.state,
-            "take_part_in_research": self.take_part_in_research,
-            "receives_new_features_email": self.receives_new_features_email,
-        }
+        return SerializedUser(
+            id=self.id,
+            name=self.name,
+            email_address=self.email_address,
+            created_at=self.created_at.strftime(DATETIME_FORMAT),
+            auth_type=self.auth_type,
+            current_session_id=self.current_session_id,
+            failed_login_count=self.failed_login_count,
+            email_access_validated_at=self.email_access_validated_at.strftime(DATETIME_FORMAT),
+            logged_in_at=get_dt_string_or_none(self.logged_in_at),
+            mobile_number=self.mobile_number,
+            organisations=[x.id for x in self.organisations if x.active],
+            password_changed_at=self.password_changed_at.strftime(DATETIME_FORMAT_NO_TIMEZONE),
+            permissions=self.get_permissions(),
+            organisation_permissions=self.get_organisation_permissions(),
+            platform_admin=self.platform_admin,
+            services=services_data,
+            can_use_webauthn=self.can_use_webauthn,
+            state=self.state,
+            take_part_in_research=self.take_part_in_research,
+            receives_new_features_email=self.receives_new_features_email,
+        )
 
-    def serialize_for_users_list(self):
-        return {
-            "id": self.id,
-            "name": self.name,
-            "email_address": self.email_address,
-            "mobile_number": self.mobile_number,
-        }
+    def serialize_for_users_list(self) -> SerializedUserForList:
+        return SerializedUserForList(
+            id=self.id,
+            name=self.name,
+            email_address=self.email_address,
+            mobile_number=self.mobile_number,
+        )
 
 
 class ServiceUser(db.Model):
@@ -268,6 +303,9 @@ class EmailBranding(db.Model):
 
     active = db.Column(db.Boolean, nullable=False, default=True)
 
+    alignment = db.Column(db.String(6), nullable=False, default="left")
+    height = db.Column(db.Numeric(asdecimal=False), nullable=True)
+
     CONSTRAINT_UNIQUE_NAME = "uq_email_branding_name"
     CONSTRAINT_CHECK_ONE_OF_ALT_TEXT_TEXT_NULL = "ck_email_branding_one_of_alt_text_or_text_is_null"
     # one of alt_text or text MUST be supplied
@@ -278,21 +316,21 @@ class EmailBranding(db.Model):
         ),
     )
 
-    def serialize(self):
-        serialized = {
-            "id": str(self.id),
-            "colour": self.colour,
-            "logo": self.logo,
-            "name": self.name,
-            "text": self.text,
-            "brand_type": self.brand_type,
-            "alt_text": self.alt_text,
-            "created_by": self.created_by,
-            "created_at": self.created_at.strftime(DATETIME_FORMAT) if self.created_at else None,
-            "updated_at": self.updated_at.strftime(DATETIME_FORMAT) if self.updated_at else None,
-        }
-
-        return serialized
+    def serialize(self) -> SerializedEmailBranding:
+        return SerializedEmailBranding(
+            id=str(self.id),
+            colour=self.colour,
+            logo=self.logo,
+            name=self.name,
+            text=self.text,
+            brand_type=self.brand_type,
+            alt_text=self.alt_text,
+            created_by=self.created_by,
+            created_at=self.created_at.strftime(DATETIME_FORMAT) if self.created_at else None,
+            updated_at=self.updated_at.strftime(DATETIME_FORMAT) if self.updated_at else None,
+            alignment=self.alignment,
+            height=self.height,
+        )
 
 
 service_email_branding = db.Table(
@@ -314,15 +352,15 @@ class LetterBranding(db.Model):
     updated_at = db.Column(db.DateTime, nullable=True, onupdate=datetime.datetime.utcnow)
     updated_by_id = db.Column(UUID(as_uuid=True), db.ForeignKey("users.id"), nullable=True)
 
-    def serialize(self):
-        return {
-            "id": str(self.id),
-            "name": self.name,
-            "filename": self.filename,
-            "created_by": self.created_by_id,
-            "created_at": self.created_at.strftime(DATETIME_FORMAT) if self.created_at else None,
-            "updated_at": self.updated_at.strftime(DATETIME_FORMAT) if self.updated_at else None,
-        }
+    def serialize(self) -> SerializedLetterBranding:
+        return SerializedLetterBranding(
+            id=str(self.id),
+            name=self.name,
+            filename=self.filename,
+            created_by=get_uuid_string_or_none(self.created_by_id),
+            created_at=get_dt_string_or_none(self.created_at),
+            updated_at=get_dt_string_or_none(self.updated_at),
+        )
 
 
 service_letter_branding = db.Table(
@@ -466,42 +504,42 @@ class Organisation(db.Model):
 
         set_organisation_permission(self, permissions)
 
-    def serialize(self):
-        return {
-            "id": str(self.id),
-            "name": self.name,
-            "active": self.active,
-            "crown": self.crown,
-            "organisation_type": self.organisation_type,
-            "letter_branding_id": self.letter_branding_id,
-            "email_branding_id": self.email_branding_id,
-            "agreement_signed": self.agreement_signed,
-            "agreement_signed_at": self.agreement_signed_at,
-            "agreement_signed_by_id": self.agreement_signed_by_id,
-            "agreement_signed_on_behalf_of_name": self.agreement_signed_on_behalf_of_name,
-            "agreement_signed_on_behalf_of_email_address": self.agreement_signed_on_behalf_of_email_address,
-            "agreement_signed_version": self.agreement_signed_version,
-            "domains": self.domain_list,
-            "request_to_go_live_notes": self.request_to_go_live_notes,
-            "count_of_live_services": len(self.live_services),
-            "notes": self.notes,
-            "purchase_order_number": self.purchase_order_number,
-            "billing_contact_names": self.billing_contact_names,
-            "billing_contact_email_addresses": self.billing_contact_email_addresses,
-            "billing_reference": self.billing_reference,
-            "can_approve_own_go_live_requests": self.can_approve_own_go_live_requests,
-            "permissions": [x.permission for x in self.permissions],
-        }
+    def serialize(self) -> SerializedOrganisation:
+        return SerializedOrganisation(
+            id=str(self.id),
+            name=self.name,
+            active=self.active,
+            crown=self.crown,
+            organisation_type=self.organisation_type,
+            letter_branding_id=get_uuid_string_or_none(self.letter_branding_id),
+            email_branding_id=get_uuid_string_or_none(self.email_branding_id),
+            agreement_signed=self.agreement_signed,
+            agreement_signed_at=self.agreement_signed_at,
+            agreement_signed_by_id=get_uuid_string_or_none(self.agreement_signed_by_id),
+            agreement_signed_on_behalf_of_name=self.agreement_signed_on_behalf_of_name,
+            agreement_signed_on_behalf_of_email_address=self.agreement_signed_on_behalf_of_email_address,
+            agreement_signed_version=self.agreement_signed_version,
+            domains=self.domain_list,
+            request_to_go_live_notes=self.request_to_go_live_notes,
+            count_of_live_services=len(self.live_services),
+            notes=self.notes,
+            purchase_order_number=self.purchase_order_number,
+            billing_contact_names=self.billing_contact_names,
+            billing_contact_email_addresses=self.billing_contact_email_addresses,
+            billing_reference=self.billing_reference,
+            can_approve_own_go_live_requests=self.can_approve_own_go_live_requests,
+            permissions=[x.permission for x in self.permissions],
+        )
 
-    def serialize_for_list(self):
-        return {
-            "name": self.name,
-            "id": str(self.id),
-            "active": self.active,
-            "count_of_live_services": len(self.live_services),
-            "domains": self.domain_list,
-            "organisation_type": self.organisation_type,
-        }
+    def serialize_for_list(self) -> SerializedOrganisationForList:
+        return SerializedOrganisationForList(
+            name=self.name,
+            id=str(self.id),
+            active=self.active,
+            count_of_live_services=len(self.live_services),
+            domains=self.domain_list,
+            organisation_type=self.organisation_type,
+        )
 
 
 class OrganisationEmailBranding(db.Model):
@@ -536,6 +574,7 @@ class Service(db.Model, Versioned):
     _normalised_service_name = db.Column("normalised_service_name", db.String, nullable=False, unique=True)
     _custom_email_sender_name = db.Column("custom_email_sender_name", db.String(255), nullable=True)
     _email_sender_local_part = db.Column("email_sender_local_part", db.String(255), nullable=False)
+    confirmed_email_sender_name = db.Column(db.Boolean, nullable=True, default=False)
 
     created_at = db.Column(db.DateTime, index=False, unique=False, nullable=False, default=datetime.datetime.utcnow)
     updated_at = db.Column(db.DateTime, index=False, unique=False, nullable=True, onupdate=datetime.datetime.utcnow)
@@ -665,13 +704,13 @@ class Service(db.Model, Versioned):
     def has_permission(self, permission):
         return permission in [p.permission for p in self.permissions]
 
-    def serialize_for_org_dashboard(self):
-        return {
-            "id": str(self.id),
-            "name": self.name,
-            "active": self.active,
-            "restricted": self.restricted,
-        }
+    def serialize_for_org_dashboard(self) -> SerializedServiceOrgDashboard:
+        return SerializedServiceOrgDashboard(
+            id=str(self.id),
+            name=self.name,
+            active=self.active,
+            restricted=self.restricted,
+        )
 
 
 class DefaultAnnualAllowance(db.Model):
@@ -720,25 +759,25 @@ class AnnualBilling(db.Model):
         UniqueConstraint("service_id", "financial_year_start", name="uix_service_id_financial_year_start"),
     )
 
-    def serialize_free_sms_items(self):
-        return {
-            "free_sms_fragment_limit": self.free_sms_fragment_limit,
-            "financial_year_start": self.financial_year_start,
-        }
+    def serialize_free_sms_items(self) -> SerializedFreeSmsItems:
+        return SerializedFreeSmsItems(
+            free_sms_fragment_limit=self.free_sms_fragment_limit,
+            financial_year_start=self.financial_year_start,
+        )
 
-    def serialize(self):
-        def serialize_service():
+    def serialize(self) -> SerializedAnnualBilling:
+        def serialize_service() -> SerializedService:
             return {"id": str(self.service_id), "name": self.service.name}
 
-        return {
-            "id": str(self.id),
-            "free_sms_fragment_limit": self.free_sms_fragment_limit,
-            "service_id": self.service_id,
-            "financial_year_start": self.financial_year_start,
-            "created_at": self.created_at.strftime(DATETIME_FORMAT),
-            "updated_at": get_dt_string_or_none(self.updated_at),
-            "service": serialize_service() if self.service else None,
-        }
+        return SerializedAnnualBilling(
+            id=str(self.id),
+            free_sms_fragment_limit=self.free_sms_fragment_limit,
+            service_id=str(self.service_id),
+            financial_year_start=self.financial_year_start,
+            created_at=self.created_at.strftime(DATETIME_FORMAT),
+            updated_at=get_dt_string_or_none(self.updated_at),
+            service=serialize_service() if self.service else None,
+        )
 
 
 class InboundNumber(db.Model):
@@ -753,19 +792,19 @@ class InboundNumber(db.Model):
     created_at = db.Column(db.DateTime, default=datetime.datetime.utcnow, nullable=False)
     updated_at = db.Column(db.DateTime, nullable=True, onupdate=datetime.datetime.utcnow)
 
-    def serialize(self):
-        def serialize_service():
+    def serialize(self) -> SerializedInboundNumber:
+        def serialize_service() -> SerializedService:
             return {"id": str(self.service_id), "name": self.service.name}
 
-        return {
-            "id": str(self.id),
-            "number": self.number,
-            "provider": self.provider,
-            "service": serialize_service() if self.service else None,
-            "active": self.active,
-            "created_at": self.created_at.strftime(DATETIME_FORMAT),
-            "updated_at": get_dt_string_or_none(self.updated_at),
-        }
+        return SerializedInboundNumber(
+            id=str(self.id),
+            number=self.number,
+            provider=self.provider,
+            service=serialize_service() if self.service else None,
+            active=self.active,
+            created_at=self.created_at.strftime(DATETIME_FORMAT),
+            updated_at=get_dt_string_or_none(self.updated_at),
+        )
 
 
 class ServiceSmsSender(db.Model):
@@ -787,17 +826,17 @@ class ServiceSmsSender(db.Model):
     def get_reply_to_text(self):
         return try_parse_and_format_phone_number(self.sms_sender)
 
-    def serialize(self):
-        return {
-            "id": str(self.id),
-            "sms_sender": self.sms_sender,
-            "service_id": str(self.service_id),
-            "is_default": self.is_default,
-            "archived": self.archived,
-            "inbound_number_id": str(self.inbound_number_id) if self.inbound_number_id else None,
-            "created_at": self.created_at.strftime(DATETIME_FORMAT),
-            "updated_at": get_dt_string_or_none(self.updated_at),
-        }
+    def serialize(self) -> SerializedServiceSmsSender:
+        return SerializedServiceSmsSender(
+            id=str(self.id),
+            sms_sender=self.sms_sender,
+            service_id=str(self.service_id),
+            is_default=self.is_default,
+            archived=self.archived,
+            inbound_number_id=get_uuid_string_or_none(self.inbound_number_id),
+            created_at=self.created_at.strftime(DATETIME_FORMAT),
+            updated_at=get_dt_string_or_none(self.updated_at),
+        )
 
 
 class ServicePermission(db.Model):
@@ -876,15 +915,15 @@ class ServiceCallbackApi(db.Model, Versioned):
         if bearer_token:
             self._bearer_token = signing.encode(str(bearer_token))
 
-    def serialize(self):
-        return {
-            "id": str(self.id),
-            "service_id": str(self.service_id),
-            "url": self.url,
-            "updated_by_id": str(self.updated_by_id),
-            "created_at": self.created_at.strftime(DATETIME_FORMAT),
-            "updated_at": get_dt_string_or_none(self.updated_at),
-        }
+    def serialize(self) -> SerializedServiceCallbackApi:
+        return SerializedServiceCallbackApi(
+            id=str(self.id),
+            service_id=str(self.service_id),
+            url=self.url,
+            updated_by_id=str(self.updated_by_id),
+            created_at=self.created_at.strftime(DATETIME_FORMAT),
+            updated_at=get_dt_string_or_none(self.updated_at),
+        )
 
 
 class ServiceCallbackType(db.Model):
@@ -910,6 +949,11 @@ class ApiKey(db.Model, Versioned):
 
     __table_args__ = (
         Index("uix_service_to_key_name", "service_id", "name", unique=True, postgresql_where=expiry_date.is_(None)),
+    )
+
+    __extended_statistics__ = (
+        # dependencies
+        ("st_dep_api_keys_service_id_created_by_id", ("service_id", "created_by_id"), ("dependencies",)),
     )
 
     @property
@@ -950,14 +994,19 @@ class TemplateFolder(db.Model):
 
     __table_args__ = (UniqueConstraint("id", "service_id", name="ix_id_service_id"), {})
 
-    def serialize(self):
-        return {
-            "id": self.id,
-            "name": self.name,
-            "parent_id": self.parent_id,
-            "service_id": self.service_id,
-            "users_with_permission": self.get_users_with_permission(),
-        }
+    __extended_statistics__ = (
+        # dependencies
+        ("st_dep_template_folder_service_id_parent_id", ("service_id", "parent_id"), ("dependencies",)),
+    )
+
+    def serialize(self) -> SerializedTemplateFolder:
+        return SerializedTemplateFolder(
+            id=self.id,
+            name=self.name,
+            parent_id=self.parent_id,
+            service_id=self.service_id,
+            users_with_permission=self.get_users_with_permission(),
+        )
 
     def is_parent_of(self, other):
         while other.parent is not None:
@@ -1068,6 +1117,34 @@ class TemplateBase(db.Model):
             ),
         )
 
+    @declared_attr
+    def __extended_statistics__(cls):
+        return (
+            # dependencies
+            (f"st_dep_{cls.__tablename__}_service_id_ctd_by_id", ("service_id", "created_by_id"), ("dependencies",)),
+            (
+                f"st_dep_{cls.__tablename__}_service_id_let_att_id",
+                ("service_id", "letter_attachment_id"),
+                ("dependencies",),
+            ),
+            (
+                f"st_dep_{cls.__tablename__}_service_id_sv_let_cct_id",
+                ("service_id", "service_letter_contact_id"),
+                ("dependencies",),
+            ),
+            (
+                f"st_dep_{cls.__tablename__}_tpt_type_has_unsub_lnk",
+                ("template_type", "has_unsubscribe_link"),
+                ("dependencies",),
+            ),
+            (f"st_dep_{cls.__tablename__}_tpt_type_postage", ("template_type", "postage"), ("dependencies",)),
+            (
+                f"st_dep_{cls.__tablename__}_tpt_type_letter_lang",
+                ("template_type", "letter_languages"),
+                ("dependencies",),
+            ),
+        )
+
     @property
     def reply_to(self):
         if self.template_type == LETTER_TYPE:
@@ -1095,11 +1172,11 @@ class TemplateBase(db.Model):
             return None
 
     @hybrid_property
-    def is_precompiled_letter(self):
+    def is_precompiled_letter(self) -> bool:
         return self.hidden and self.name == PRECOMPILED_TEMPLATE_NAME and self.template_type == LETTER_TYPE
 
-    @is_precompiled_letter.setter
-    def is_precompiled_letter(self, value):
+    @is_precompiled_letter.inplace.setter
+    def _is_precompiled_letter_setter(self, value: bool) -> None:
         pass
 
     def _as_utils_template(self):
@@ -1216,6 +1293,82 @@ class TemplateHistory(TemplateBase):
         return url_for("v2_template.get_template_by_id", template_id=self.id, version=self.version, _external=True)
 
 
+class TemplateEmailFileBase(db.Model):
+    __abstract__ = True
+
+    id = db.Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+
+    filename = db.Column(db.Text, nullable=False)
+    link_text = db.Column(db.Text, nullable=True)
+    # TODO: add constraint so max is 1.5 year in weeks
+    retention_period = db.Column(db.Integer, default=1, nullable=False)
+    validate_users_email = db.Column(db.Boolean, default=True, nullable=False)
+
+    created_at = db.Column(db.DateTime, nullable=False, default=datetime.datetime.utcnow)
+    updated_at = db.Column(db.DateTime, nullable=True, onupdate=datetime.datetime.utcnow)
+    archived_at = db.Column(db.DateTime, nullable=True)
+    pending = db.Column(db.Boolean, default=False, nullable=True)
+
+    def serialize(self) -> SerializedTemplateEmailFile:
+        return SerializedTemplateEmailFile(
+            id=str(self.id),
+            filename=self.filename,
+            link_text=self.link_text,
+            retention_period=self.retention_period,
+            validate_users_email=self.validate_users_email,
+            pending=self.pending,
+        )
+
+    @declared_attr
+    def template_id(cls):
+        return db.Column(UUID(as_uuid=True), db.ForeignKey("templates.id"), index=True, nullable=False)
+
+    @declared_attr
+    def template_version(cls):
+        return db.Column(db.Integer(), index=True, nullable=False)
+
+    @declared_attr
+    def created_by_id(cls):
+        return db.Column(UUID(as_uuid=True), db.ForeignKey("users.id"), index=True, nullable=False)
+
+    @declared_attr
+    def created_by(cls):
+        return db.relationship("User", foreign_keys=[cls.created_by_id])
+
+    @declared_attr
+    def archived_by_id(cls):
+        return db.Column(UUID(as_uuid=True), db.ForeignKey("users.id"), index=True, nullable=True)
+
+    @declared_attr
+    def archived_by(cls):
+        return db.relationship("User", foreign_keys=[cls.archived_by_id])
+
+
+class TemplateEmailFile(TemplateEmailFileBase):
+    __tablename__ = "template_email_files"
+
+    version = db.Column(db.Integer, default=0, nullable=False)
+    template = db.relationship("Template", backref="email_files")
+
+    @classmethod
+    def from_json(cls, data):
+        """
+        Assumption: data has been validated appropriately.
+
+        Returns a TemplateEmailFile object based on the provided data. Deserialises created_by to created_by_id as
+        marshmallow would.
+        """
+        fields = data.copy()
+        fields["created_at"] = datetime.datetime.utcnow()
+        return cls(**fields)
+
+
+class TemplateEmailFileHistory(TemplateEmailFileBase):
+    __tablename__ = "template_email_files_history"
+
+    version = db.Column(db.Integer, primary_key=True, nullable=False)
+
+
 class ProviderDetails(db.Model):
     __tablename__ = "provider_details"
 
@@ -1230,6 +1383,13 @@ class ProviderDetails(db.Model):
     created_by_id = db.Column(UUID(as_uuid=True), db.ForeignKey("users.id"), index=True, nullable=True)
     created_by = db.relationship("User")
     supports_international = db.Column(db.Boolean, nullable=False, default=False)
+
+    def serialize(self):
+        return {
+            "identifier": self.identifier,
+            "priority": self.priority,
+            "active": self.active,
+        }
 
 
 class ProviderDetailsHistory(db.Model):
@@ -1294,6 +1454,7 @@ class Job(db.Model):
     __extended_statistics__ = (
         # dependencies
         ("st_dep_jobs_service_id_template_id", ("service_id", "template_id"), ("dependencies",)),
+        ("st_dep_jobs_service_id_created_by_id", ("service_id", "created_by_id"), ("dependencies",)),
         ("st_dep_jobs_service_id_contact_list_id", ("service_id", "contact_list_id"), ("dependencies",)),
     )
 
@@ -1388,7 +1549,7 @@ class Notification(db.Model):
     billable_units = db.Column(db.Integer, nullable=False, default=0)
     notification_type = db.Column(notification_types, nullable=False)
     created_at = db.Column(db.DateTime, index=True, unique=False, nullable=False)
-    sent_at = db.Column(db.DateTime, index=False, unique=False, nullable=True)
+    sent_at = db.Column(db.DateTime, index=False, unique=False, nullable=True)  # can be null even if successfully sent
     sent_by = db.Column(db.String, nullable=True)
     updated_at = db.Column(db.DateTime, index=False, unique=False, nullable=True, onupdate=datetime.datetime.utcnow)
     status = db.Column(
@@ -1449,11 +1610,11 @@ class Notification(db.Model):
             },
         ),
         Index(
-            "ix_notifications_failed_service_id_composite",
+            "ix_notifications_nondelivered_service_id_composite",
             "service_id",
             "notification_type",
             "created_at",
-            postgresql_where=status.in_(NOTIFICATION_STATUS_TYPES_FAILED),
+            postgresql_where=(status != NOTIFICATION_DELIVERED),
         ),
     )
 
@@ -1462,11 +1623,19 @@ class Notification(db.Model):
         ("st_dep_notifications_service_id_api_key_id", ("service_id", "api_key_id"), ("dependencies",)),
         ("st_dep_notifications_service_id_job_id", ("service_id", "job_id"), ("dependencies",)),
         ("st_dep_notifications_service_id_template_id", ("service_id", "template_id"), ("dependencies",)),
+        ("st_dep_notifications_service_id_cby_id", ("service_id", "created_by_id"), ("dependencies",)),
         (
             "st_dep_notifications_job_id_template_id_notification_type",
             ("job_id", "template_id", "notification_type"),
             ("dependencies",),
         ),
+        ("st_dep_notifications_ntfcn_type_postage", ("notification_type", "postage"), ("dependencies",)),
+        ("st_dep_notifications_ntfcn_type_sent_by", ("notification_type", "sent_by"), ("dependencies",)),
+        ("st_dep_notifications_sent_by_postage", ("sent_by", "postage"), ("dependencies",)),
+        ("st_dep_notifications_ntfcn_type_phone_prefix", ("notification_type", "phone_prefix"), ("dependencies",)),
+        ("st_dep_notifications_ntfcn_type_intnl", ("notification_type", "international"), ("dependencies",)),
+        ("st_dep_notifications_phone_prefix_intnl", ("phone_prefix", "international"), ("dependencies",)),
+        ("st_dep_notifications_ntfcn_type_doc_dl", ("notification_type", "document_download_count"), ("dependencies",)),
         # most common values
         ("st_mcv_notifications_notification_type_status", ("notification_type", "notification_status"), ("mcv",)),
         ("st_mcv_notifications_service_id_key_type", ("service_id", "key_type"), ("mcv",)),
@@ -1589,54 +1758,52 @@ class Notification(db.Model):
         else:
             return None
 
-    def serialize_for_csv(self):
-        serialized = {
-            "id": self.id,
-            "row_number": "" if self.job_row_number is None else self.job_row_number + 1,
-            "recipient": self.to,
-            "client_reference": self.client_reference or "",
-            "template_name": self.template.name,
-            "template_type": self.template.template_type,
-            "job_name": self.job.original_file_name if self.job else "",
-            "status": self.formatted_status,
-            "created_at": utc_string_to_bst_string(self.created_at),
-            "created_by_name": self.get_created_by_name(),
-            "created_by_email_address": self.get_created_by_email_address(),
-            "api_key_name": self.api_key.name if self.api_key else None,
-        }
+    def serialize_for_csv(self) -> SerializedNotificationForCSV:
+        return SerializedNotificationForCSV(
+            id=self.id,
+            row_number="" if self.job_row_number is None else self.job_row_number + 1,
+            recipient=self.to,
+            client_reference=self.client_reference or "",
+            template_name=self.template.name,
+            template_type=self.template.template_type,
+            job_name=self.job.original_file_name if self.job else "",
+            status=self.formatted_status,
+            created_at=utc_string_to_bst_string(self.created_at),
+            created_by_name=self.get_created_by_name(),
+            created_by_email_address=self.get_created_by_email_address(),
+            api_key_name=self.api_key.name if self.api_key else None,
+        )
 
-        return serialized
-
-    def serialize(self):
+    def serialize(self) -> SerializedNotification:
         template_dict = {"version": self.template.version, "id": self.template.id, "uri": self.template.get_link()}
 
-        serialized = {
-            "id": self.id,
-            "reference": self.client_reference,
-            "email_address": self.to if self.notification_type == EMAIL_TYPE else None,
-            "phone_number": self.to if self.notification_type == SMS_TYPE else None,
-            "line_1": None,
-            "line_2": None,
-            "line_3": None,
-            "line_4": None,
-            "line_5": None,
-            "line_6": None,
-            "postcode": None,
-            "type": self.notification_type,
-            "status": self.get_letter_status() if self.notification_type == LETTER_TYPE else self.status,
-            "template": template_dict,
-            "body": self.content,
-            "subject": self.subject,
-            "created_at": self.created_at.strftime(DATETIME_FORMAT),
-            "created_by_name": self.get_created_by_name(),
-            "sent_at": get_dt_string_or_none(self.sent_at),
-            "completed_at": self.completed_at(),
-            "scheduled_for": None,
-            "postage": self.postage,
-            "one_click_unsubscribe_url": self.get_unsubscribe_link_for_headers(
+        serialized = SerializedNotification(
+            id=self.id,
+            reference=self.client_reference,
+            email_address=self.to if self.notification_type == EMAIL_TYPE else None,
+            phone_number=self.to if self.notification_type == SMS_TYPE else None,
+            line_1=None,
+            line_2=None,
+            line_3=None,
+            line_4=None,
+            line_5=None,
+            line_6=None,
+            postcode=None,
+            type=self.notification_type,
+            status=self.get_letter_status() if self.notification_type == LETTER_TYPE else self.status,
+            template=template_dict,
+            body=self.content,
+            subject=self.subject,
+            created_at=self.created_at.strftime(DATETIME_FORMAT),
+            created_by_name=self.get_created_by_name(),
+            sent_at=get_dt_string_or_none(self.sent_at),
+            completed_at=self.completed_at(),
+            scheduled_for=None,
+            postage=self.postage,
+            one_click_unsubscribe_url=self.get_unsubscribe_link_for_headers(
                 template_has_unsubscribe_link=self.template.has_unsubscribe_link
             ),
-        }
+        )
 
         if self.notification_type == LETTER_TYPE:
             personalisation = InsensitiveDict(self.personalisation)
@@ -1656,11 +1823,13 @@ class Notification(db.Model):
 
         return serialized
 
-    def serialize_with_cost_data(self):
-        serialized = self.serialize()
-        serialized["cost_details"] = {}
-        serialized["cost_in_pounds"] = 0.00
-        serialized["is_cost_data_ready"] = True
+    def serialize_with_cost_data(self) -> SerializedNotificationWithCostData:
+        serialized: SerializedNotificationWithCostData = {
+            **self.serialize(),
+            "cost_details": {},
+            "cost_in_pounds": 0.00,
+            "is_cost_data_ready": True,
+        }
 
         if self.notification_type == "sms":
             return self._add_cost_data_for_sms(serialized)
@@ -1669,33 +1838,39 @@ class Notification(db.Model):
 
         return serialized
 
-    def _add_cost_data_for_sms(self, serialized):
+    def _add_cost_data_for_sms(self, serialized) -> SerializedNotificationWithCostData:
         if not self._is_cost_data_ready_for_sms():
             serialized["is_cost_data_ready"] = False
             serialized["cost_details"] = {}
             serialized["cost_in_pounds"] = None
         else:
-            serialized["cost_details"]["billable_sms_fragments"] = self.billable_units
-            serialized["cost_details"]["international_rate_multiplier"] = self.rate_multiplier
             sms_rate = self._get_sms_rate()
-            serialized["cost_details"]["sms_rate"] = sms_rate
+            serialized["cost_details"] = SmsCostDetails(
+                billable_sms_fragments=self.billable_units,
+                international_rate_multiplier=self.rate_multiplier,
+                sms_rate=sms_rate,
+            )
             serialized["cost_in_pounds"] = self.billable_units * self.rate_multiplier * sms_rate
 
         return serialized
 
-    def _add_cost_data_for_letter(self, serialized):
+    def _add_cost_data_for_letter(self, serialized) -> SerializedNotificationWithCostData:
         if not self._is_cost_data_ready_for_letter():
             serialized["is_cost_data_ready"] = False
             serialized["cost_details"] = {}
             serialized["cost_in_pounds"] = None
         # we don't bill users for letters that were not sent
         elif self._letter_was_never_sent():
-            serialized["cost_details"]["billable_sheets_of_paper"] = 0
-            serialized["cost_details"]["postage"] = self.postage
+            serialized["cost_details"] = LetterCostDetails(
+                billable_sheets_of_paper=0,
+                postage=self.postage,
+            )
             serialized["cost_in_pounds"] = 0.00
         else:
-            serialized["cost_details"]["billable_sheets_of_paper"] = self.billable_units
-            serialized["cost_details"]["postage"] = self.postage
+            serialized["cost_details"] = LetterCostDetails(
+                billable_sheets_of_paper=self.billable_units,
+                postage=self.postage,
+            )
             serialized["cost_in_pounds"] = self._get_letter_cost()
 
         return serialized
@@ -1801,7 +1976,7 @@ class NotificationHistory(db.Model):
     billable_units = db.Column(db.Integer, nullable=False, default=0)
     notification_type = db.Column(notification_types, nullable=False)
     created_at = db.Column(db.DateTime, unique=False, nullable=False)
-    sent_at = db.Column(db.DateTime, index=False, unique=False, nullable=True)
+    sent_at = db.Column(db.DateTime, index=False, unique=False, nullable=True)  # can be null even if successfully sent
     sent_by = db.Column(db.String, nullable=True)
     updated_at = db.Column(db.DateTime, index=False, unique=False, nullable=True, onupdate=datetime.datetime.utcnow)
     status = db.Column(
@@ -1841,9 +2016,25 @@ class NotificationHistory(db.Model):
         ("st_dep_notification_history_service_id_api_key_id", ("service_id", "api_key_id"), ("dependencies",)),
         ("st_dep_notification_history_service_id_job_id", ("service_id", "job_id"), ("dependencies",)),
         ("st_dep_notification_history_service_id_tpt_id", ("service_id", "template_id"), ("dependencies",)),
+        ("st_dep_notification_history_service_id_cby_id", ("service_id", "created_by_id"), ("dependencies",)),
         (
             "st_dep_notification_history_job_id_tpt_id_ntfcn_type",
             ("job_id", "template_id", "notification_type"),
+            ("dependencies",),
+        ),
+        ("st_dep_notification_history_ntfcn_type_postage", ("notification_type", "postage"), ("dependencies",)),
+        ("st_dep_notification_history_ntfcn_type_sent_by", ("notification_type", "sent_by"), ("dependencies",)),
+        ("st_dep_notification_history_sent_by_postage", ("sent_by", "postage"), ("dependencies",)),
+        (
+            "st_dep_notification_history_ntfcn_type_phone_prefix",
+            ("notification_type", "phone_prefix"),
+            ("dependencies",),
+        ),
+        ("st_dep_notification_history_ntfcn_type_intnl", ("notification_type", "international"), ("dependencies",)),
+        ("st_dep_notification_history_phone_prefix_intnl", ("phone_prefix", "international"), ("dependencies",)),
+        (
+            "st_dep_notification_history_ntfcn_type_doc_dl",
+            ("notification_type", "document_download_count"),
             ("dependencies",),
         ),
         # most common values
@@ -1902,6 +2093,11 @@ class InvitedUser(db.Model):
     auth_type = db.Column(db.String, db.ForeignKey("auth_type.name"), index=True, nullable=False, default=SMS_AUTH_TYPE)
     folder_permissions = db.Column(JSONB(none_as_null=True), nullable=False, default=[])
 
+    __extended_statistics__ = (
+        # dependencies
+        ("st_dep_inv_users_user_id_service_id", ("user_id", "service_id"), ("dependencies",)),
+    )
+
     # would like to have used properties for this but haven't found a way to make them
     # play nice with marshmallow yet
     def get_permissions(self):
@@ -1923,16 +2119,21 @@ class InvitedOrganisationUser(db.Model):
 
     status = db.Column(db.String, db.ForeignKey("invite_status_type.name"), nullable=False, default=INVITE_PENDING)
 
-    def serialize(self):
-        return {
-            "id": str(self.id),
-            "email_address": self.email_address,
-            "invited_by": str(self.invited_by_id),
-            "organisation": str(self.organisation_id),
-            "created_at": self.created_at.strftime(DATETIME_FORMAT),
-            "permissions": [p for p in self.permissions.split(",") if p],
-            "status": self.status,
-        }
+    __extended_statistics__ = (
+        # dependencies
+        ("st_dep_inv_org_users_inv_by_id_org_id", ("invited_by_id", "organisation_id"), ("dependencies",)),
+    )
+
+    def serialize(self) -> SerializedInvitedOrganisationUser:
+        return SerializedInvitedOrganisationUser(
+            id=str(self.id),
+            email_address=self.email_address,
+            invited_by=str(self.invited_by_id),
+            organisation=str(self.organisation_id),
+            created_at=self.created_at.strftime(DATETIME_FORMAT),
+            permissions=[p for p in self.permissions.split(",") if p],
+            status=self.status,
+        )
 
 
 class Permission(db.Model):
@@ -1950,6 +2151,11 @@ class Permission(db.Model):
     created_at = db.Column(db.DateTime, index=False, unique=False, nullable=False, default=datetime.datetime.utcnow)
 
     __table_args__ = (UniqueConstraint("service_id", "user_id", "permission", name="uix_service_user_permission"),)
+
+    __extended_statistics__ = (
+        # dependencies
+        ("st_dep_permissions_service_id_user_id", ("service_id", "user_id"), ("dependencies",)),
+    )
 
 
 class Event(db.Model):
@@ -1975,11 +2181,8 @@ class Rate(db.Model):
         the_string += f" {self.valid_from}"
         return the_string
 
-    def serialize(self):
-        return {
-            "rate": self.rate,
-            "valid_from": self.valid_from.isoformat(),
-        }
+    def serialize(self) -> SerializedRate:
+        return SerializedRate(rate=float(self.rate), valid_from=self.valid_from.isoformat())
 
 
 class InboundSms(db.Model):
@@ -1997,6 +2200,11 @@ class InboundSms(db.Model):
     provider = db.Column(db.String, nullable=False)
     _content = db.Column("content", db.String, nullable=False)
 
+    __extended_statistics__ = (
+        # dependencies
+        ("st_dep_inb_sms_service_id_ntfy_num_provider", ("service_id", "notify_number", "provider"), ("dependencies",)),
+    )
+
     @property
     def content(self):
         return signing.decode(self._content)
@@ -2005,15 +2213,15 @@ class InboundSms(db.Model):
     def content(self, content):
         self._content = signing.encode(content)
 
-    def serialize(self):
-        return {
-            "id": str(self.id),
-            "created_at": self.created_at.strftime(DATETIME_FORMAT),
-            "service_id": str(self.service_id),
-            "notify_number": self.notify_number,
-            "user_number": self.user_number,
-            "content": self.content,
-        }
+    def serialize(self) -> SerializedInboundSms:
+        return SerializedInboundSms(
+            id=str(self.id),
+            created_at=self.created_at.strftime(DATETIME_FORMAT),
+            service_id=str(self.service_id),
+            notify_number=self.notify_number,
+            user_number=self.user_number,
+            content=self.content,
+        )
 
 
 class InboundSmsHistory(db.Model):
@@ -2027,6 +2235,15 @@ class InboundSmsHistory(db.Model):
     provider_reference = db.Column(db.String)
     provider = db.Column(db.String, nullable=False)
 
+    __extended_statistics__ = (
+        # dependencies
+        (
+            "st_dep_inb_sms_hist_service_id_ntfy_num_provider",
+            ("service_id", "notify_number", "provider"),
+            ("dependencies",),
+        ),
+    )
+
 
 class LetterRate(db.Model):
     __tablename__ = "letter_rates"
@@ -2039,13 +2256,13 @@ class LetterRate(db.Model):
     crown = db.Column(db.Boolean, nullable=False)
     post_class = db.Column(db.String, nullable=False)
 
-    def serialize(self):
-        return {
-            "sheet_count": self.sheet_count,
-            "start_date": self.start_date.isoformat(),
-            "rate": self.rate,
-            "post_class": self.post_class,
-        }
+    def serialize(self) -> SerializedLetterRate:
+        return SerializedLetterRate(
+            sheet_count=self.sheet_count,
+            start_date=self.start_date.isoformat(),
+            rate=self.rate,
+            post_class=self.post_class,
+        )
 
 
 class ServiceEmailReplyTo(db.Model):
@@ -2062,16 +2279,16 @@ class ServiceEmailReplyTo(db.Model):
     created_at = db.Column(db.DateTime, nullable=False, default=datetime.datetime.utcnow)
     updated_at = db.Column(db.DateTime, nullable=True, onupdate=datetime.datetime.utcnow)
 
-    def serialize(self):
-        return {
-            "id": str(self.id),
-            "service_id": str(self.service_id),
-            "email_address": self.email_address,
-            "is_default": self.is_default,
-            "archived": self.archived,
-            "created_at": self.created_at.strftime(DATETIME_FORMAT),
-            "updated_at": get_dt_string_or_none(self.updated_at),
-        }
+    def serialize(self) -> SerializedServiceEmailReplyTo:
+        return SerializedServiceEmailReplyTo(
+            id=str(self.id),
+            service_id=str(self.service_id),
+            email_address=self.email_address,
+            is_default=self.is_default,
+            archived=self.archived,
+            created_at=self.created_at.strftime(DATETIME_FORMAT),
+            updated_at=get_dt_string_or_none(self.updated_at),
+        )
 
 
 class ServiceLetterContact(db.Model):
@@ -2088,16 +2305,16 @@ class ServiceLetterContact(db.Model):
     created_at = db.Column(db.DateTime, nullable=False, default=datetime.datetime.utcnow)
     updated_at = db.Column(db.DateTime, nullable=True, onupdate=datetime.datetime.utcnow)
 
-    def serialize(self):
-        return {
-            "id": str(self.id),
-            "service_id": str(self.service_id),
-            "contact_block": self.contact_block,
-            "is_default": self.is_default,
-            "archived": self.archived,
-            "created_at": self.created_at.strftime(DATETIME_FORMAT),
-            "updated_at": get_dt_string_or_none(self.updated_at),
-        }
+    def serialize(self) -> SerializedServiceLetterContact:
+        return SerializedServiceLetterContact(
+            id=str(self.id),
+            service_id=str(self.service_id),
+            contact_block=self.contact_block,
+            is_default=self.is_default,
+            archived=self.archived,
+            created_at=self.created_at.strftime(DATETIME_FORMAT),
+            updated_at=get_dt_string_or_none(self.updated_at),
+        )
 
 
 class AuthType(db.Model):
@@ -2141,6 +2358,16 @@ class FactBilling(db.Model):
     notifications_sent = db.Column(db.Integer(), nullable=True)
     created_at = db.Column(db.DateTime, nullable=False, default=datetime.datetime.utcnow)
     updated_at = db.Column(db.DateTime, nullable=True, onupdate=datetime.datetime.utcnow)
+
+    __extended_statistics__ = (
+        # dependencies
+        ("st_dep_ft_billing_service_id_template_id", ("service_id", "template_id"), ("dependencies",)),
+        ("st_dep_ft_billing_ntfcn_type_template_id", ("notification_type", "template_id"), ("dependencies",)),
+        ("st_dep_ft_billing_ntfcn_type_provider", ("notification_type", "provider"), ("dependencies",)),
+        ("st_dep_ft_billing_ntfcn_type_intnl", ("notification_type", "international"), ("dependencies",)),
+        ("st_dep_ft_billing_ntfcn_type_postage", ("notification_type", "postage"), ("dependencies",)),
+        ("st_dep_ft_billing_provider_postage", ("provider", "postage"), ("dependencies",)),
+    )
 
 
 class FactNotificationStatus(db.Model):
@@ -2204,17 +2431,17 @@ class Complaint(db.Model):
     complaint_date = db.Column(db.DateTime, nullable=True)
     created_at = db.Column(db.DateTime, nullable=False, default=datetime.datetime.utcnow)
 
-    def serialize(self):
-        return {
-            "id": str(self.id),
-            "notification_id": str(self.notification_id),
-            "service_id": str(self.service_id),
-            "service_name": self.service.name,
-            "ses_feedback_id": str(self.ses_feedback_id),
-            "complaint_type": self.complaint_type,
-            "complaint_date": get_dt_string_or_none(self.complaint_date),
-            "created_at": self.created_at.strftime(DATETIME_FORMAT),
-        }
+    def serialize(self) -> SerializedComplaint:
+        return SerializedComplaint(
+            id=str(self.id),
+            notification_id=str(self.notification_id),
+            service_id=str(self.service_id),
+            service_name=self.service.name,
+            ses_feedback_id=str(self.ses_feedback_id),
+            complaint_type=self.complaint_type,
+            complaint_date=get_dt_string_or_none(self.complaint_date),
+            created_at=self.created_at.strftime(DATETIME_FORMAT),
+        )
 
 
 class ServiceDataRetention(db.Model):
@@ -2232,16 +2459,16 @@ class ServiceDataRetention(db.Model):
 
     __table_args__ = (UniqueConstraint("service_id", "notification_type", name="uix_service_data_retention"),)
 
-    def serialize(self):
-        return {
-            "id": str(self.id),
-            "service_id": str(self.service_id),
-            "service_name": self.service.name,
-            "notification_type": self.notification_type,
-            "days_of_retention": self.days_of_retention,
-            "created_at": self.created_at.strftime(DATETIME_FORMAT),
-            "updated_at": get_dt_string_or_none(self.updated_at),
-        }
+    def serialize(self) -> SerializedServiceDataRetention:
+        return SerializedServiceDataRetention(
+            id=str(self.id),
+            service_id=str(self.service_id),
+            service_name=self.service.name,
+            notification_type=self.notification_type,
+            days_of_retention=self.days_of_retention,
+            created_at=self.created_at.strftime(DATETIME_FORMAT),
+            updated_at=get_dt_string_or_none(self.updated_at),
+        )
 
 
 class ReturnedLetter(db.Model):
@@ -2298,19 +2525,18 @@ class ServiceContactList(db.Model):
             ).first()
         )
 
-    def serialize(self):
-        contact_list = {
-            "id": str(self.id),
-            "original_file_name": self.original_file_name,
-            "row_count": self.row_count,
-            "recent_job_count": self.job_count,
-            "has_jobs": self.has_jobs,
-            "template_type": self.template_type,
-            "service_id": str(self.service_id),
-            "created_by": self.created_by.name,
-            "created_at": self.created_at.strftime(DATETIME_FORMAT),
-        }
-        return contact_list
+    def serialize(self) -> SerializedServiceContactList:
+        return SerializedServiceContactList(
+            id=str(self.id),
+            original_file_name=self.original_file_name,
+            row_count=self.row_count,
+            recent_job_count=self.job_count,
+            has_jobs=self.has_jobs,
+            template_type=self.template_type,
+            service_id=str(self.service_id),
+            created_by=self.created_by.name,
+            created_at=self.created_at.strftime(DATETIME_FORMAT),
+        )
 
 
 class WebauthnCredential(db.Model):
@@ -2338,16 +2564,16 @@ class WebauthnCredential(db.Model):
 
     logged_in_at = db.Column(db.DateTime, nullable=True)
 
-    def serialize(self):
-        return {
-            "id": str(self.id),
-            "user_id": str(self.user_id),
-            "name": self.name,
-            "credential_data": self.credential_data,
-            "created_at": self.created_at.strftime(DATETIME_FORMAT),
-            "updated_at": get_dt_string_or_none(self.updated_at),
-            "logged_in_at": get_dt_string_or_none(self.logged_in_at),
-        }
+    def serialize(self) -> SerializedWebauthnCredential:
+        return SerializedWebauthnCredential(
+            id=str(self.id),
+            user_id=str(self.user_id),
+            name=self.name,
+            credential_data=self.credential_data,
+            created_at=self.created_at.strftime(DATETIME_FORMAT),
+            updated_at=get_dt_string_or_none(self.updated_at),
+            logged_in_at=get_dt_string_or_none(self.logged_in_at),
+        )
 
 
 class LetterAttachment(db.Model):
@@ -2363,16 +2589,16 @@ class LetterAttachment(db.Model):
     original_filename = db.Column(db.String, nullable=False)
     page_count = db.Column(db.SmallInteger, nullable=False)
 
-    def serialize(self):
-        return {
-            "id": str(self.id),
-            "created_at": self.created_at.strftime(DATETIME_FORMAT),
-            "created_by_id": str(self.created_by_id),
-            "archived_at": get_dt_string_or_none(self.archived_at),
-            "archived_by_id": get_uuid_string_or_none(self.archived_by_id),
-            "original_filename": self.original_filename,
-            "page_count": self.page_count,
-        }
+    def serialize(self) -> SerializedLetterAttachment:
+        return SerializedLetterAttachment(
+            id=str(self.id),
+            created_at=self.created_at.strftime(DATETIME_FORMAT),
+            created_by_id=get_uuid_string_or_none(self.created_by_id),
+            archived_at=get_dt_string_or_none(self.archived_at),
+            archived_by_id=get_uuid_string_or_none(self.archived_by_id),
+            original_filename=self.original_filename,
+            page_count=self.page_count,
+        )
 
 
 class UnsubscribeRequestReport(db.Model):
@@ -2392,36 +2618,36 @@ class UnsubscribeRequestReport(db.Model):
     def will_be_archived_at(self):
         return get_london_midnight_in_utc(self.created_at + datetime.timedelta(days=7))
 
-    def serialize(self):
-        return {
-            "batch_id": str(self.id),
-            "count": self.count,
-            "created_at": self.created_at.strftime(DATETIME_FORMAT),
-            "earliest_timestamp": self.earliest_timestamp.strftime(DATETIME_FORMAT),
-            "latest_timestamp": self.latest_timestamp.strftime(DATETIME_FORMAT),
-            "processed_by_service_at": (
+    def serialize(self) -> SerializedUnsubscribeRequestReport:
+        return SerializedUnsubscribeRequestReport(
+            batch_id=str(self.id),
+            count=self.count,
+            created_at=self.created_at.strftime(DATETIME_FORMAT),
+            earliest_timestamp=self.earliest_timestamp.strftime(DATETIME_FORMAT),
+            latest_timestamp=self.latest_timestamp.strftime(DATETIME_FORMAT),
+            processed_by_service_at=(
                 self.processed_by_service_at.strftime(DATETIME_FORMAT) if self.processed_by_service_at else None
             ),
-            "is_a_batched_report": True,
-            "will_be_archived_at": self.will_be_archived_at.strftime(DATETIME_FORMAT),
-            "service_id": str(self.service_id),
-        }
+            is_a_batched_report=True,
+            will_be_archived_at=self.will_be_archived_at.strftime(DATETIME_FORMAT),
+            service_id=str(self.service_id),
+        )
 
     @staticmethod
-    def serialize_unbatched_requests(unbatched_unsubscribe_requests):
-        return {
-            "batch_id": None,
-            "count": len(unbatched_unsubscribe_requests),
-            "created_at": None,
-            "earliest_timestamp": unbatched_unsubscribe_requests[-1].created_at.strftime(DATETIME_FORMAT),
-            "latest_timestamp": unbatched_unsubscribe_requests[0].created_at.strftime(DATETIME_FORMAT),
-            "processed_by_service_at": None,
-            "is_a_batched_report": False,
-            "will_be_archived_at": get_london_midnight_in_utc(
+    def serialize_unbatched_requests(unbatched_unsubscribe_requests) -> SerializedUnsubscribeRequestReport:
+        return SerializedUnsubscribeRequestReport(
+            batch_id=None,
+            count=len(unbatched_unsubscribe_requests),
+            created_at=None,
+            earliest_timestamp=unbatched_unsubscribe_requests[-1].created_at.strftime(DATETIME_FORMAT),
+            latest_timestamp=unbatched_unsubscribe_requests[0].created_at.strftime(DATETIME_FORMAT),
+            processed_by_service_at=None,
+            is_a_batched_report=False,
+            will_be_archived_at=get_london_midnight_in_utc(
                 unbatched_unsubscribe_requests[-1].created_at + datetime.timedelta(days=90)
             ).strftime(DATETIME_FORMAT),
-            "service_id": unbatched_unsubscribe_requests[0].service_id,
-        }
+            service_id=unbatched_unsubscribe_requests[0].service_id,
+        )
 
 
 class UnsubscribeRequest(db.Model):
@@ -2474,6 +2700,22 @@ class UnsubscribeRequest(db.Model):
         Index("ix_unsubscribe_request_unsubscribe_request_report_id", "unsubscribe_request_report_id"),
     )
 
+    __extended_statistics__ = (
+        # dependencies
+        (
+            "st_dep_unsub_req_service_id_tpt_id_ntfcn_id",
+            ("service_id", "template_id", "notification_id"),
+            ("dependencies",),
+        ),
+        (
+            "st_dep_unsub_req_service_id_unsub_req_rpt_id",
+            ("service_id", "unsubscribe_request_report_id"),
+            ("dependencies",),
+        ),
+    )
+
+    ## @TODO consider making this more explicit about which fields to include/exclude
+    ## This may cause data leakage issues if we add more fields in future.
     def serialize_for_history(self):
         return {
             column.key: getattr(self, column.key) for column in self.__table__.columns if column.key != "email_address"
@@ -2494,24 +2736,25 @@ class UnsubscribeRequestHistory(db.Model):
     created_at = db.Column(db.DateTime, nullable=False)
     unsubscribe_request_report_id = db.Column(UUID(as_uuid=True), index=True, nullable=True)
 
+    __extended_statistics__ = (
+        # dependencies
+        (
+            "st_dep_unsub_req_history_service_id_tpt_id_ntfcn_id",
+            ("service_id", "template_id", "notification_id"),
+            ("dependencies",),
+        ),
+        (
+            "st_dep_unsub_req_history_service_id_unsub_req_rpt_id",
+            ("service_id", "unsubscribe_request_report_id"),
+            ("dependencies",),
+        ),
+    )
+
 
 class ProtectedSenderId(db.Model):
     __tablename__ = "protected_sender_ids"
 
     sender_id = db.Column(db.String, primary_key=True, nullable=False)
-
-
-@dataclass
-class SerializedServiceJoinRequest:
-    id: str
-    service_id: str
-    created_at: str
-    status: str
-    status_changed_at: str | None
-    reason: str | None
-    contacted_service_users: list[str]
-    status_changed_by: User
-    requester: User
 
 
 contacted_users = db.Table(
@@ -2575,18 +2818,6 @@ class ServiceJoinRequest(db.Model):
         )
 
 
-@dataclass
-class SerializedReportRequest:
-    id: str
-    user_id: str
-    service_id: str
-    report_type: str
-    status: str
-    parameter: dict
-    created_at: str
-    updated_at: str
-
-
 class ReportRequest(db.Model):
     __tablename__ = "report_requests"
 
@@ -2605,6 +2836,11 @@ class ReportRequest(db.Model):
     _parameter = db.Column("parameter", JSONB, nullable=False, default={})
     created_at = db.Column(db.DateTime, nullable=False, default=datetime.datetime.utcnow)
     updated_at = db.Column(db.DateTime, nullable=True, onupdate=datetime.datetime.utcnow)
+
+    __extended_statistics__ = (
+        # dependencies
+        ("st_dep_report_requests_service_id_user_id", ("service_id", "user_id"), ("dependencies",)),
+    )
 
     _schema = {
         "type": "object",

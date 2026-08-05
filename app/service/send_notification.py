@@ -61,8 +61,6 @@ def send_one_off_notification(service_id, post_data):
 
     personalisation = post_data.get("personalisation", None)
 
-    validate_template(template.id, personalisation, service, template.template_type)
-
     check_service_over_daily_message_limit(service, KEY_TYPE_NORMAL, notification_type=template.template_type)
 
     recipient_data = validate_and_format_recipient(
@@ -72,6 +70,15 @@ def send_one_off_notification(service_id, post_data):
         notification_type=template.template_type,
         allow_guest_list_recipients=False,
     )
+
+    validate_template(
+        template_id=template.id,
+        personalisation=personalisation,
+        service=service,
+        notification_type=template.template_type,
+        recipient=recipient_data or post_data["to"],
+    )
+
     postage = None
     client_reference = None
     if template.template_type == LETTER_TYPE:
@@ -157,6 +164,12 @@ def send_pdf_letter_notification(service_id, post_data):
             "Letter %s.pdf not in transient %s bucket",
             post_data["file_id"],
             current_app.config["S3_BUCKET_TRANSIENT_UPLOADED_LETTERS"],
+            extra={
+                "service_id": service.id,
+                "file_id": post_data["file_id"],
+                "s3_key": file_location,
+                "s3_bucket": current_app.config["S3_BUCKET_TRANSIENT_UPLOADED_LETTERS"],
+            },
         )
 
         raise e

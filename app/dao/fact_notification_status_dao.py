@@ -1,7 +1,13 @@
-from datetime import datetime, timedelta
+from collections import namedtuple
+from collections.abc import Sequence
+from datetime import date, datetime, timedelta
+from itertools import chain, groupby
+from typing import Any, NamedTuple, cast
+from uuid import UUID
 
-from sqlalchemy import Date, case, func
+from sqlalchemy import CursorResult, Date, Row, case, delete, func
 from sqlalchemy.dialects.postgresql import insert
+from sqlalchemy.orm import Session, scoped_session
 from sqlalchemy.sql.expression import extract, literal
 from sqlalchemy.types import DateTime, Integer
 
@@ -33,68 +39,133 @@ from app.utils import (
     get_london_midnight_in_utc,
     get_london_month_from_utc_column,
     midnight_n_days_ago,
+    retryable_query,
 )
 
 
-@autocommit
-def update_fact_notification_status(process_day, notification_type, service_id):
-    start_date = get_london_midnight_in_utc(process_day)
-    end_date = get_london_midnight_in_utc(process_day + timedelta(days=1))
-
-    # delete any existing rows in case some no longer exist e.g. if all messages are sent
-    FactNotificationStatus.query.filter(
-        FactNotificationStatus.bst_date == process_day,
-        FactNotificationStatus.notification_type == notification_type,
-        FactNotificationStatus.service_id == service_id,
-    ).delete()
-
-    query = (
-        db.session.query(
-            literal(process_day).label("process_day"),
+@retryable_query()
+def _generate_fact_notification_status_rows_inner(
+    process_day: date,
+    notification_type: str,
+    service_id: UUID | str,
+    chunk_timedelta: timedelta,
+    chunk_start_dt: datetime,
+    end_dt: datetime,
+    session: Session | scoped_session = db.session,
+) -> Sequence[Row]:
+    return (
+        session.query(
+            literal(process_day).label("bst_date"),
             NotificationAllTimeView.template_id,
             literal(service_id).label("service_id"),
             func.coalesce(NotificationAllTimeView.job_id, "00000000-0000-0000-0000-000000000000").label("job_id"),
             literal(notification_type).label("notification_type"),
             NotificationAllTimeView.key_type,
-            NotificationAllTimeView.status,
+            NotificationAllTimeView.status.label("notification_status"),
             func.count().label("notification_count"),
         )
         .filter(
-            NotificationAllTimeView.created_at >= start_date,
-            NotificationAllTimeView.created_at < end_date,
+            NotificationAllTimeView.created_at >= chunk_start_dt,
+            NotificationAllTimeView.created_at < min(chunk_start_dt + chunk_timedelta, end_dt),
             NotificationAllTimeView.notification_type == notification_type,
             NotificationAllTimeView.service_id == service_id,
             NotificationAllTimeView.key_type.in_((KEY_TYPE_NORMAL, KEY_TYPE_TEAM)),
         )
         .group_by(
             NotificationAllTimeView.template_id,
-            NotificationAllTimeView.template_id,
             "job_id",
             NotificationAllTimeView.key_type,
             NotificationAllTimeView.status,
         )
+        .all()
     )
 
-    db.session.connection().execute(
-        insert(FactNotificationStatus.__table__).from_select(
-            [
-                FactNotificationStatus.bst_date,
-                FactNotificationStatus.template_id,
-                FactNotificationStatus.service_id,
-                FactNotificationStatus.job_id,
-                FactNotificationStatus.notification_type,
-                FactNotificationStatus.key_type,
-                FactNotificationStatus.notification_status,
-                FactNotificationStatus.notification_count,
-            ],
-            query,
+
+def generate_fact_notification_status_rows(
+    process_day: date,
+    notification_type: str,
+    service_id: UUID | str,
+    chunk_timedelta: timedelta = timedelta(minutes=15),
+    session: Session | scoped_session = db.session,
+    inner_retry_attempts: int = 0,
+) -> Sequence[NamedTuple]:
+    start_dt = get_london_midnight_in_utc(process_day)
+    end_dt = get_london_midnight_in_utc(process_day + timedelta(days=1))
+    status_data = []  # type: ignore
+
+    # sqlalchemy's public api doesn't give us a way of constructing a new instance of a Row type, so
+    # to do in-python aggregation, we need our own NamedTuple based of the fields of the Rows. but we
+    # can't set it up until we have the first Row
+    nt_type = None
+
+    chunk_start_dt = start_dt
+    while chunk_start_dt < end_dt:
+        partial_status_data = _generate_fact_notification_status_rows_inner(
+            process_day,
+            notification_type,
+            service_id,
+            chunk_timedelta,
+            chunk_start_dt,
+            end_dt,
+            session=session,
+            retry_attempts=inner_retry_attempts,  # type: ignore
         )
+        if partial_status_data:
+            if nt_type is None:
+                nt_type = NamedTuple("StatusRow", ((f, Any) for f in partial_status_data[0]._fields))  # type: ignore
+
+            # fold into running aggregation
+            status_data = [
+                nt_type(  # type: ignore
+                    *k,  # grp's common fields
+                    *(sum(v) for v in zip(*(r[-1:] for r in grp), strict=True)),
+                )
+                for k, grp in groupby(sorted(chain(status_data, partial_status_data)), key=lambda r: r[:-1])
+            ]
+
+        chunk_start_dt += chunk_timedelta
+
+    return status_data
+
+
+@autocommit
+def update_fact_notification_status(
+    rows: Sequence[NamedTuple], process_day: date, notification_type: str, service_id: UUID | str
+) -> int:
+    if rows and {row.bst_date for row in rows} != {process_day}:  # type: ignore
+        raise ValueError("Not all rows bst_date match process_day")
+
+    # delete any existing rows in case some no longer exist in `rows` e.g. if all messages are sent
+    # (an upsert alone would not be sufficient here)
+    deleted_row_count = cast(
+        CursorResult,
+        db.session.execute(
+            delete(FactNotificationStatus)
+            .where(
+                FactNotificationStatus.bst_date == process_day,
+                FactNotificationStatus.notification_type == notification_type,
+                FactNotificationStatus.service_id == service_id,
+            )
+            .execution_options(synchronize_session=False)
+        ),
+    ).rowcount
+
+    db.session.execute(
+        insert(FactNotificationStatus)
+        .on_conflict_do_nothing(constraint="ft_notification_status_pkey")
+        .execution_options(synchronize_session=False),
+        (row._asdict() for row in rows),  # type: ignore
     )
 
+    return deleted_row_count
 
-def fetch_notification_status_for_service_by_month(start_date, end_date, service_id):
+
+@retryable_query()
+def fetch_notification_status_for_service_by_month(
+    start_date, end_date, service_id, session: Session | scoped_session = db.session
+):
     return (
-        db.session.query(
+        session.query(
             func.date_trunc("month", FactNotificationStatus.bst_date).label("month"),
             FactNotificationStatus.notification_type,
             FactNotificationStatus.notification_status,
@@ -115,9 +186,10 @@ def fetch_notification_status_for_service_by_month(start_date, end_date, service
     )
 
 
-def fetch_notification_status_for_service_for_day(bst_day, service_id):
+@retryable_query()
+def fetch_notification_status_for_service_for_day(bst_day, service_id, session: Session | scoped_session = db.session):
     return (
-        db.session.query(
+        session.query(
             # return current month as a datetime so the data has the same shape as the ft_notification_status query
             literal(bst_day.replace(day=1), type_=DateTime).label("month"),
             Notification.notification_type,
@@ -135,69 +207,157 @@ def fetch_notification_status_for_service_for_day(bst_day, service_id):
     )
 
 
-def fetch_notification_status_for_service_for_today_and_7_previous_days(service_id, by_template=False, limit_days=7):
-    start_date = midnight_n_days_ago(limit_days)
-    now = datetime.utcnow()
-    stats_for_7_days = db.session.query(
-        FactNotificationStatus.notification_type.label("notification_type"),
-        FactNotificationStatus.notification_status.label("status"),
-        *([FactNotificationStatus.template_id.label("template_id")] if by_template else []),
-        FactNotificationStatus.notification_count.label("count"),
-    ).filter(
-        FactNotificationStatus.service_id == service_id,
-        FactNotificationStatus.bst_date >= start_date,
-        FactNotificationStatus.key_type != KEY_TYPE_TEST,
+@retryable_query()
+def _fetch_notification_status_for_service_for_today_and_7_previous_days_fact_query(
+    service_id: UUID | str, by_template: bool, limit_days: int, session: Session | scoped_session = db.session
+) -> Sequence[Row]:
+    start_dt = midnight_n_days_ago(limit_days)
+    return (
+        session.query(
+            *([FactNotificationStatus.template_id.label("template_id")] if by_template else []),
+            FactNotificationStatus.notification_type.label("notification_type"),
+            FactNotificationStatus.notification_status.label("status"),
+            func.sum(FactNotificationStatus.notification_count).label("count"),
+        )
+        .filter(
+            FactNotificationStatus.service_id == service_id,
+            FactNotificationStatus.bst_date >= start_dt,
+            FactNotificationStatus.key_type != KEY_TYPE_TEST,
+        )
+        .group_by(
+            *([FactNotificationStatus.template_id] if by_template else []),
+            FactNotificationStatus.notification_type,
+            FactNotificationStatus.notification_status,
+        )
+        .all()
     )
 
-    stats_for_today = (
-        db.session.query(
-            Notification.notification_type.cast(db.Text),
-            Notification.status,
+
+@retryable_query()
+def _fetch_notification_status_for_service_for_today_and_7_previous_days_notifications_query(
+    service_id: UUID | str,
+    by_template: bool,
+    chunk_start_dt: datetime,
+    chunk_timedelta: timedelta,
+    session: Session | scoped_session = db.session,
+) -> Sequence[Row]:
+    return (
+        session.query(
             *([Notification.template_id] if by_template else []),
+            Notification.notification_type.cast(db.Text).label("notification_type"),
+            Notification.status,
             func.count().label("count"),
         )
         .filter(
-            Notification.created_at >= get_london_midnight_in_utc(now),
+            Notification.created_at >= chunk_start_dt,
+            # any overshoot will be into the future so doesn't matter
+            Notification.created_at < chunk_start_dt + chunk_timedelta,
             Notification.service_id == service_id,
             Notification.key_type != KEY_TYPE_TEST,
         )
         .group_by(
-            Notification.notification_type, *([Notification.template_id] if by_template else []), Notification.status
+            *([Notification.template_id] if by_template else []),
+            Notification.notification_type,
+            Notification.status,
         )
+        .all()
     )
 
-    all_stats_table = stats_for_7_days.union_all(stats_for_today).subquery()
 
-    aggregation = (
-        db.session.query(
-            *([all_stats_table.c.template_id] if by_template else []),
-            all_stats_table.c.notification_type,
-            all_stats_table.c.status,
-            func.cast(func.sum(all_stats_table.c.count), Integer).label("count"),
+@retryable_query()
+def _fetch_notification_status_for_service_for_today_and_7_previous_days_template_query(
+    all_template_ids: set[UUID | str], session: Session | scoped_session = db.session
+) -> Sequence[Row]:
+    return (
+        session.query(
+            Template.name.label("template_name"), Template.is_precompiled_letter, Template.id.label("template_id")
         )
-        .group_by(
-            *([all_stats_table.c.template_id] if by_template else []),
-            all_stats_table.c.notification_type,
-            all_stats_table.c.status,
-        )
-        .subquery()
+        .filter(Template.id.in_(all_template_ids))
+        .all()
     )
 
-    query = db.session.query(
-        *(
-            [Template.name.label("template_name"), Template.is_precompiled_letter, aggregation.c.template_id]
-            if by_template
-            else []
-        ),
-        aggregation.c.notification_type,
-        aggregation.c.status,
-        aggregation.c.count,
+
+def fetch_notification_status_for_service_for_today_and_7_previous_days(
+    service_id,
+    by_template=False,
+    limit_days=7,
+    chunk_timedelta=timedelta(minutes=30),
+    inner_retry_attempts=0,
+    session=db.session,
+):
+    now = datetime.utcnow()
+    all_stats = _fetch_notification_status_for_service_for_today_and_7_previous_days_fact_query(
+        service_id,
+        by_template,
+        limit_days,
+        session=session,
+        retry_attempts=inner_retry_attempts,  # type: ignore
     )
 
-    if by_template:
-        query = query.filter(aggregation.c.template_id == Template.id)
+    # sqlalchemy's public api doesn't give us a way of constructing a new instance of a Row type, so
+    # to do in-python aggregation, we need our own namedtuple based of the fields of the Rows. but we
+    # can't set it up until we have the first Row.
+    nt_type = None
 
-    return query.all()
+    chunk_start_dt = get_london_midnight_in_utc(now)
+    while chunk_start_dt <= now:
+        partial_all_stats = _fetch_notification_status_for_service_for_today_and_7_previous_days_notifications_query(
+            service_id,
+            by_template,
+            chunk_start_dt,
+            chunk_timedelta,
+            session=session,
+            retry_attempts=inner_retry_attempts,  # type: ignore
+        )
+        if partial_all_stats:
+            if nt_type is None:
+                nt_type = namedtuple("StatsRow", partial_all_stats[0]._fields)  # type: ignore
+
+            # fold into running aggregation
+            all_stats = [
+                nt_type(
+                    *k,  # grp's common fields
+                    *(sum(v) for v in zip(*(r[-1:] for r in grp), strict=True)),  # summed values of grp's last field
+                )
+                # we're potentially mixing two types of Row together here (one from the FactNotificationStatus query,
+                # one from the Notification query), but that's ok because the query fields are compatible
+                for k, grp in groupby(sorted(chain(all_stats, partial_all_stats)), key=lambda r: r[:-1])
+            ]
+
+        chunk_start_dt += chunk_timedelta
+
+    if not all_stats:
+        return all_stats
+
+    if not by_template:
+        return all_stats
+
+    all_template_ids = {r.template_id for r in all_stats}
+    templates = {
+        r.template_id: r
+        for r in _fetch_notification_status_for_service_for_today_and_7_previous_days_template_query(
+            all_template_ids,
+            session=session,
+            retry_attempts=inner_retry_attempts,  # type: ignore
+        )
+    }
+
+    # again, we can't create our own instances of sqlalchemy Row types
+    template_nt_type = namedtuple(
+        "TemplateStatsRow",
+        # don't need final template_id field from templates row type, already have it
+        next(iter(templates.values()))._fields[:-1] + all_stats[0]._fields,
+    )  # type: ignore
+
+    return [
+        template_nt_type(
+            # fill out template fields with None if for some reason we didn't find it (just deleted?),
+            # also again stripping off final unneeded template_id field
+            *templates.get(r.template_id, (None, None, None))[:-1],
+            *r,
+        )
+        for r in all_stats
+    ]
 
 
 def fetch_notification_status_totals_for_all_services(start_date, end_date):
@@ -445,30 +605,28 @@ def get_total_notifications_for_date_range(start_date, end_date):
             FactNotificationStatus.bst_date.cast(db.Text).label("bst_date"),
             func.sum(
                 case(
-                    [(FactNotificationStatus.notification_type == "email", FactNotificationStatus.notification_count)],
+                    (FactNotificationStatus.notification_type == "email", FactNotificationStatus.notification_count),
                     else_=0,
                 )
             ).label("emails"),
             func.sum(
                 case(
-                    [(FactNotificationStatus.notification_type == "sms", FactNotificationStatus.notification_count)],
+                    (FactNotificationStatus.notification_type == "sms", FactNotificationStatus.notification_count),
                     else_=0,
                 )
             ).label("sms"),
             func.sum(
                 case(
-                    [(FactNotificationStatus.notification_type == "letter", FactNotificationStatus.notification_count)],
+                    (FactNotificationStatus.notification_type == "letter", FactNotificationStatus.notification_count),
                     else_=0,
                 )
             ).label("letters"),
             func.sum(
                 case(
-                    [
-                        (
-                            FactNotificationStatus.notification_type == "messagebox",
-                            FactNotificationStatus.notification_count,
-                        )
-                    ],
+                    (
+                        FactNotificationStatus.notification_type == "messagebox",
+                        FactNotificationStatus.notification_count,
+                    ),
                     else_=0,
                 )
             ).label("messagebox"),
@@ -484,80 +642,69 @@ def get_total_notifications_for_date_range(start_date, end_date):
     return query.all()
 
 
-def fetch_monthly_notification_statuses_per_service(start_date, end_date):
+@retryable_query()
+def fetch_monthly_notification_statuses_per_service(
+    start_date, end_date, session: Session | scoped_session = db.session
+):
     return (
-        db.session.query(
+        session.query(
             func.date_trunc("month", FactNotificationStatus.bst_date).cast(Date).label("date_created"),
             Service.id.label("service_id"),
-            Service.name.label("service_name"),
+            Service.name.label("service_name"),  # type: ignore[attr-defined]
             FactNotificationStatus.notification_type,
             func.sum(
                 case(
-                    [
-                        (
-                            FactNotificationStatus.notification_status.in_(
-                                [NOTIFICATION_SENDING, NOTIFICATION_PENDING]
-                            ),
-                            FactNotificationStatus.notification_count,
-                        )
-                    ],
+                    (
+                        FactNotificationStatus.notification_status.in_([NOTIFICATION_SENDING, NOTIFICATION_PENDING]),
+                        FactNotificationStatus.notification_count,
+                    ),
                     else_=0,
                 )
             ).label("count_sending"),
             func.sum(
                 case(
-                    [
-                        (
-                            FactNotificationStatus.notification_status == NOTIFICATION_DELIVERED,
-                            FactNotificationStatus.notification_count,
-                        )
-                    ],
+                    (
+                        FactNotificationStatus.notification_status == NOTIFICATION_DELIVERED,
+                        FactNotificationStatus.notification_count,
+                    ),
                     else_=0,
                 )
             ).label("count_delivered"),
             func.sum(
                 case(
-                    [
-                        (
-                            FactNotificationStatus.notification_status.in_(
-                                [NOTIFICATION_TECHNICAL_FAILURE, NOTIFICATION_FAILED]
-                            ),
-                            FactNotificationStatus.notification_count,
-                        )
-                    ],
+                    (
+                        FactNotificationStatus.notification_status.in_(
+                            [NOTIFICATION_TECHNICAL_FAILURE, NOTIFICATION_FAILED]
+                        ),
+                        FactNotificationStatus.notification_count,
+                    ),
                     else_=0,
                 )
             ).label("count_technical_failure"),
             func.sum(
                 case(
-                    [
-                        (
-                            FactNotificationStatus.notification_status == NOTIFICATION_TEMPORARY_FAILURE,
-                            FactNotificationStatus.notification_count,
-                        )
-                    ],
+                    (
+                        FactNotificationStatus.notification_status == NOTIFICATION_TEMPORARY_FAILURE,
+                        FactNotificationStatus.notification_count,
+                    ),
                     else_=0,
                 )
             ).label("count_temporary_failure"),
             func.sum(
                 case(
-                    [
-                        (
-                            FactNotificationStatus.notification_status == NOTIFICATION_PERMANENT_FAILURE,
-                            FactNotificationStatus.notification_count,
-                        )
-                    ],
+                    (
+                        FactNotificationStatus.notification_status == NOTIFICATION_PERMANENT_FAILURE,
+                        FactNotificationStatus.notification_count,
+                    ),
                     else_=0,
                 )
             ).label("count_permanent_failure"),
             func.sum(
                 case(
-                    [
-                        (
-                            FactNotificationStatus.notification_status == NOTIFICATION_SENT,
-                            FactNotificationStatus.notification_count,
-                        )
-                    ],
+                    (
+                        FactNotificationStatus.notification_status == NOTIFICATION_SENT,
+                        FactNotificationStatus.notification_count,
+                    ),
                     else_=0,
                 )
             ).label("count_sent"),

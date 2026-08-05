@@ -1,7 +1,7 @@
 import logging
 from datetime import datetime, timedelta
 
-import iso8601
+from celery import Task
 from celery.exceptions import Retry
 from flask import current_app, json
 from sqlalchemy.orm.exc import NoResultFound
@@ -17,12 +17,17 @@ from app.notifications.notifications_ses_callback import (
     determine_notification_bounce_type,
     handle_complaint,
 )
+from app.otel_metrics.notification import record_deliver_duration
 
 
 @notify_celery.task(
     bind=True, name="process-ses-result", max_retries=5, default_retry_delay=300, early_log_level=logging.DEBUG
 )
-def process_ses_results(self, response):
+def process_ses_results(  # noqa: C901
+    self: Task,
+    response: dict,
+    receipt_iso_timestamp: str | None = None,
+):
     try:
         ses_message = json.loads(response["Message"])
         notification_type = ses_message["notificationType"]
@@ -39,21 +44,50 @@ def process_ses_results(self, response):
         notification_status = aws_response_dict["notification_status"]
         reference = ses_message["mail"]["messageId"]
 
+        delivery_dt = None
+        if delivery_iso_timestamp := (ses_message.get("delivery") or ses_message.get("bounce", {})).get("timestamp"):
+            try:
+                delivery_dt = datetime.fromisoformat(delivery_iso_timestamp).replace(tzinfo=None)
+            except ValueError:
+                pass  # None it is, then
+
+        receipt_dt = None
+        if receipt_iso_timestamp is not None:
+            try:
+                receipt_dt = datetime.fromisoformat(receipt_iso_timestamp).replace(tzinfo=None)
+            except ValueError:
+                pass  # None it is, then
+
+        uniform_now = datetime.utcnow()
+        common_extra = {
+            "receipt_received_at": receipt_dt,
+            "receipt_received_ago": (uniform_now - receipt_dt).total_seconds() if receipt_dt is not None else None,
+        }
         try:
             notification = notifications_dao.dao_get_notification_or_history_by_reference(reference=reference)
         except NoResultFound:
-            message_time = iso8601.parse_date(ses_message["mail"]["timestamp"]).replace(tzinfo=None)
-            if datetime.utcnow() - message_time < timedelta(minutes=5):
+            sent_dt = datetime.fromisoformat(ses_message["mail"]["timestamp"]).replace(tzinfo=None)
+            extra = {
+                "notification_reference": reference,
+                "notification_status": notification_status,
+                **common_extra,
+            }
+            if datetime.utcnow() - sent_dt < timedelta(minutes=5):
                 current_app.logger.info(
-                    "notification not found for reference: %s (update to %s). "
-                    "Callback may have arrived before notification was persisted to the DB. Adding task to retry queue",
-                    reference,
-                    notification_status,
+                    "notification not found for reference: %(notification_reference)s "
+                    "(update to %(notification_status)s). "
+                    "Callback may have arrived before notification's reference was persisted to the DB. "
+                    "Adding task to retry queue",
+                    extra,
+                    extra=extra,
                 )
                 self.retry(queue=QueueNames.RETRY)
             else:
                 current_app.logger.warning(
-                    "notification not found for reference: %s (update to %s)", reference, notification_status
+                    "notification not found for reference: %(notification_reference)s "
+                    "(update to %(notification_status)s)",
+                    extra,
+                    extra=extra,
                 )
             return
 
@@ -61,12 +95,24 @@ def process_ses_results(self, response):
             current_app.logger.info(
                 "SES bounce for notification ID %s",
                 notification.id,
-                extra={"bounce_message": json.dumps(bounce_message)},
+                extra={
+                    "notification_id": notification.id,
+                    "bounce_message": json.dumps(bounce_message),
+                    "bounced_at": delivery_dt,
+                    "bounced_ago": (uniform_now - delivery_dt).total_seconds() if delivery_dt is not None else None,
+                    **common_extra,
+                },
             )
         else:
             current_app.logger.info(
                 "SES successful delivery for notification ID %s",
                 notification.id,
+                extra={
+                    "notification_id": notification.id,
+                    "delivered_at": delivery_dt,
+                    "delivered_ago": (uniform_now - delivery_dt).total_seconds() if delivery_dt is not None else None,
+                    **common_extra,
+                },
             )
 
         if notification.status not in [NOTIFICATION_SENDING, NOTIFICATION_PENDING]:
@@ -78,6 +124,15 @@ def process_ses_results(self, response):
             )
 
         statsd_client.incr(f"callback.ses.{notification_status}")
+
+        record_deliver_duration(
+            callback_duration=(receipt_dt - notification.created_at).total_seconds() if receipt_dt else None,
+            deliver_duration=(delivery_dt - notification.created_at).total_seconds() if delivery_dt else None,
+            key_type=notification.key_type,
+            notification_status=notification.status,
+            notification_type="email",
+            provider_name="ses",
+        )
 
         if notification.sent_at:
             statsd_client.timing_with_dates(

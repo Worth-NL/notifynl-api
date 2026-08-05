@@ -1,4 +1,4 @@
-from app.constants import BRANDING_TYPES
+from app.constants import BRANDING_ALIGNMENTS, BRANDING_TYPES
 
 post_create_email_branding_schema = {
     "$schema": "http://json-schema.org/draft-07/schema#",
@@ -11,6 +11,8 @@ post_create_email_branding_schema = {
         "text": {"type": ["string", "null"]},
         "logo": {"type": ["string", "null"]},
         "brand_type": {"enum": BRANDING_TYPES},
+        "alignment": {"enum": BRANDING_ALIGNMENTS},
+        "height": {"type": ["integer", "null"]},
         "created_by": {"type": ["string"], "required": False},
     },
     "required": ["name"],
@@ -27,6 +29,8 @@ post_update_email_branding_schema = {
         "text": {"type": ["string", "null"]},
         "logo": {"type": ["string", "null"]},
         "brand_type": {"enum": BRANDING_TYPES},
+        "alignment": {"enum": BRANDING_ALIGNMENTS},
+        "height": {"type": ["integer", "null"]},
         "updated_by": {"type": ["string"], "required": False},
     },
     "required": [],

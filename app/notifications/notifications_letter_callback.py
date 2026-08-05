@@ -14,7 +14,7 @@ from app.celery.service_callback_tasks import (
     send_delivery_status_to_service,
 )
 from app.config import QueueNames
-from app.constants import DVLA_NOTIFICATION_DISPATCHED, DVLA_NOTIFICATION_REJECTED
+from app.constants import DVLA_NOTIFICATION_DISPATCHED, DVLA_NOTIFICATION_REJECTED, POSTAGE_TYPES
 from app.dao.service_callback_api_dao import (
     get_delivery_status_callback_api_for_service,
 )
@@ -53,7 +53,7 @@ dvla_letter_callback_schema = {
                             {
                                 "properties": {
                                     "key": {"const": "postageClass"},
-                                    "value": {"enum": ["1ST", "2ND", "INTERNATIONAL"]},
+                                    "value": {"enum": POSTAGE_TYPES},
                                 }
                             },
                             {
@@ -96,8 +96,11 @@ dvla_letter_callback_schema = {
                 "jobStatus": {"type": "string", "enum": [DVLA_NOTIFICATION_DISPATCHED, DVLA_NOTIFICATION_REJECTED]},
                 "templateReference": {"type": "string"},
                 "transitionDate": {"type": "string", "format": "date-time"},
+                "comment": {"type": "string"},
             },
-            "required": ["despatchProperties", "jobId", "jobStatus", "transitionDate"],
+            "required": ["jobId", "jobStatus", "transitionDate"],
+            "if": {"properties": {"jobStatus": {"const": DVLA_NOTIFICATION_DISPATCHED}}},
+            "then": {"required": ["despatchProperties"]},
         },
         "metadata": {
             "type": "object",
@@ -121,7 +124,9 @@ def process_letter_callback():
         current_app.logger.error("Received invalid json schema: %s", request_data)
         raise
 
-    current_app.logger.info("Letter callback for notification id %s received", notification_id)
+    current_app.logger.info(
+        "Letter callback for notification id %s received", notification_id, extra={"notification_id": notification_id}
+    )
 
     check_token_matches_payload(token_id=notification_id, json_id=request_data["data"]["jobId"])
 
@@ -146,7 +151,7 @@ def parse_token(token):
         notification_id = signing.decode(token)
         return notification_id
     except BadSignature:
-        current_app.logger.info("Letter callback with invalid token of %s received", token)
+        current_app.logger.info("Letter callback with invalid token of %s received", token, extra={"token": token})
         raise InvalidRequest("A valid token must be provided in the query string", 403) from None
 
 
@@ -156,31 +161,45 @@ def check_token_matches_payload(token_id, json_id):
             "Notification ID in token does not match json. token: %s - json: %s",
             token_id,
             json_id,
+            extra={
+                "notification_id": json_id,
+                "notification_id_token": token_id,
+            },
         )
         raise InvalidRequest("Notification ID in letter callback data does not match ID in token", 400)
 
 
 @dataclass
 class LetterUpdate:
-    page_count: int
+    page_count: int | None
     status: str
-    cost_threshold: LetterCostThreshold
+    cost_threshold: LetterCostThreshold | None
     despatch_date: datetime.date
 
 
 def extract_properties_from_request(request_data) -> LetterUpdate:
-    despatch_properties = request_data["data"]["despatchProperties"]
+    data = request_data["data"]
+    status = data["jobStatus"]
+    despatch_datetime = data["transitionDate"]
+
+    despatch_date = convert_utc_to_bst(datetime.datetime.strptime(despatch_datetime, "%Y-%m-%dT%H:%M:%SZ")).date()
+
+    if status == DVLA_NOTIFICATION_REJECTED:
+        return LetterUpdate(
+            page_count=None,
+            status=status,
+            cost_threshold=None,
+            despatch_date=despatch_date,
+        )
+
+    despatch_properties = data["despatchProperties"]
 
     # Since validation guarantees the presence of "totalSheets", we can directly extract it
     page_count = int(next(item["value"] for item in despatch_properties if item["key"] == "totalSheets"))
-    status = request_data["data"]["jobStatus"]
 
     mailing_product = next(item["value"] for item in despatch_properties if item["key"] == "mailingProduct")
     postage = next(item["value"] for item in despatch_properties if item["key"] == "postageClass")
     cost_threshold = _get_cost_threshold(mailing_product, postage)
-
-    despatch_datetime = request_data["data"]["transitionDate"]
-    despatch_date = convert_utc_to_bst(datetime.datetime.strptime(despatch_datetime, "%Y-%m-%dT%H:%M:%SZ")).date()
 
     return LetterUpdate(
         page_count=page_count,

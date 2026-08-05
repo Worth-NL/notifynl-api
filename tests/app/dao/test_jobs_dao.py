@@ -8,6 +8,7 @@ import pytest
 from freezegun import freeze_time
 from sqlalchemy.exc import IntegrityError
 
+from app import db
 from app.constants import EMAIL_TYPE, JOB_STATUS_FINISHED, LETTER_TYPE, SMS_TYPE
 from app.dao.jobs_dao import (
     can_letter_job_be_cancelled,
@@ -18,8 +19,10 @@ from app.dao.jobs_dao import (
     dao_get_jobs_older_than_data_retention,
     dao_get_notification_outcomes_for_job,
     dao_get_scheduled_job_by_id_and_service_id,
+    dao_get_scheduled_job_stats,
     dao_set_scheduled_jobs_to_pending,
     dao_update_job,
+    find_jobs_that_completed_processing,
     find_jobs_with_missing_rows,
     find_missing_row_for_job,
     get_possibly_cached_notification_outcomes_for_job,
@@ -33,6 +36,7 @@ from tests.app.db import (
     create_service_contact_list,
     create_template,
 )
+from tests.utils import QueryRecorder
 
 
 def test_should_count_of_statuses_for_notifications_associated_with_job(sample_template, sample_job):
@@ -158,6 +162,29 @@ def test_get_jobs_for_service_in_processed_at_then_created_at_order(notify_db_se
 
     for index in range(len(created_jobs)):
         assert jobs[index].id == created_jobs[index].id
+
+
+@pytest.mark.parametrize(
+    "session,expected_bind_key",
+    (
+        (db.session, None),
+        (db.session_bulk, "bulk"),
+    ),
+    ids=("default", "bulk"),
+)
+def test_dao_get_scheduled_job_stats_uses_expected_session_binding(notify_db_session, session, expected_bind_key):
+    service = create_service(service_name="service with scheduled jobs")
+    template = create_template(service=service)
+    create_job(template, job_status="scheduled", scheduled_for=datetime.utcnow() + timedelta(hours=1))
+    service_id = service.id
+
+    with QueryRecorder() as query_recorder:
+        count, soonest_scheduled_for = dao_get_scheduled_job_stats(service_id, session=session)
+
+    assert {query_info.bind_key for query_info in query_recorder.queries} == {expected_bind_key}
+
+    assert count == 1
+    assert soonest_scheduled_for is not None
 
 
 def test_get_jobs_for_service_by_contact_list(sample_template):
@@ -381,7 +408,7 @@ def test_can_letter_job_be_cancelled_returns_false_and_error_message_if_not_stat
     create_notification(template=job.template, job=job, status="created")
     result, errors = can_letter_job_be_cancelled(job)
     assert not result
-    assert errors == "We are still processing these letters, please try again in a minute."
+    assert errors == "We are still processing these letters, please try again in 5 minutes."
 
 
 @freeze_time("2019-06-13 13:00")
@@ -430,7 +457,7 @@ def test_can_letter_job_be_cancelled_returns_false_and_error_message_if_job_not_
     create_notification(template=job.template, job=job, status="created")
     result, errors = can_letter_job_be_cancelled(job)
     assert not result
-    assert errors == "We are still processing these letters, please try again in a minute."
+    assert errors == "We are still processing these letters, please try again in 5 minutes."
 
 
 def test_can_letter_job_be_cancelled_respects_bst(sample_letter_template):
@@ -523,6 +550,91 @@ def test_find_jobs_with_missing_rows_doesnt_return_jobs_that_are_not_finished(sa
 
     assert results_missing == []
     assert results_nomissing == []
+
+
+def test_find_jobs_that_completed_processing(sample_email_template):
+    healthy_job = create_job(
+        template=sample_email_template,
+        notification_count=3,
+        job_status=JOB_STATUS_FINISHED,
+        processing_finished=datetime.utcnow() - timedelta(minutes=5),
+    )
+    for i in range(3):
+        create_notification(job=healthy_job, job_row_number=i)
+
+    job_with_missing_rows = create_job(
+        template=sample_email_template,
+        notification_count=5,
+        job_status=JOB_STATUS_FINISHED,
+        processing_finished=datetime.utcnow() - timedelta(minutes=5),
+    )
+    for i in range(4):
+        create_notification(job=job_with_missing_rows, job_row_number=i)
+
+    completed_jobs = find_jobs_that_completed_processing()
+
+    assert completed_jobs == [healthy_job]
+
+
+def test_find_jobs_that_completed_processing_returns_nothing_for_job_that_finished_less_than_1_min_ago(
+    sample_email_template,
+):
+    healthy_job = create_job(
+        template=sample_email_template,
+        notification_count=3,
+        job_status=JOB_STATUS_FINISHED,
+        processing_finished=datetime.utcnow() - timedelta(minutes=0),
+    )
+    for i in range(3):
+        create_notification(job=healthy_job, job_row_number=i)
+
+    completed_jobs = find_jobs_that_completed_processing()
+
+    assert completed_jobs == []
+
+
+def test_find_jobs_that_completed_processing_returns_nothing_for_job_that_finished_more_than_than_20_min_ago(
+    sample_email_template,
+):
+    healthy_job = create_job(
+        template=sample_email_template,
+        notification_count=3,
+        job_status=JOB_STATUS_FINISHED,
+        processing_finished=datetime.utcnow() - timedelta(minutes=21),
+    )
+    for i in range(3):
+        create_notification(job=healthy_job, job_row_number=i)
+
+    completed_jobs = find_jobs_that_completed_processing()
+
+    assert completed_jobs == []
+
+
+@pytest.mark.parametrize(
+    "status",
+    [
+        "pending",
+        "in progress",
+        "cancelled",
+        "scheduled",
+        "finished all notifications created",
+    ],
+)
+def test_find_jobs_that_completed_processing_returns_nothing_for_job_in_statuses_other_than_finished(
+    sample_email_template, status
+):
+    healthy_job = create_job(
+        template=sample_email_template,
+        notification_count=3,
+        job_status=status,
+        processing_finished=datetime.utcnow() - timedelta(minutes=21),
+    )
+    for i in range(3):
+        create_notification(job=healthy_job, job_row_number=i)
+
+    completed_jobs = find_jobs_that_completed_processing()
+
+    assert completed_jobs == []
 
 
 def test_find_missing_row_for_job(sample_email_template):

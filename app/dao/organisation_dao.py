@@ -1,4 +1,5 @@
 from flask import current_app
+from sqlalchemy.orm import Session, scoped_session
 from sqlalchemy.sql.expression import func
 
 from app import db
@@ -17,7 +18,7 @@ from app.models import (
     Service,
     User,
 )
-from app.utils import escape_special_characters, get_archived_db_column_value
+from app.utils import escape_special_characters, get_archived_db_column_value, retryable_query
 
 
 def dao_get_organisations():
@@ -46,12 +47,13 @@ def dao_get_organisation_by_id(organisation_id):
     return Organisation.query.filter_by(id=organisation_id).one()
 
 
-def dao_get_organisation_by_email_address(email_address):
+@retryable_query()
+def dao_get_organisation_by_email_address(email_address: str, session: Session | scoped_session = db.session):
     email_address = email_address.lower().replace(".gsi.gov.uk", ".gov.uk")
 
-    for domain in Domain.query.order_by(func.char_length(Domain.domain).desc()).all():
+    for domain in session.query(Domain).order_by(func.char_length(Domain.domain).desc()).all():
         if email_address.endswith((f"@{domain.domain}", f".{domain.domain}")):
-            return Organisation.query.filter_by(id=domain.organisation_id).one()
+            return session.query(Organisation).filter_by(id=domain.organisation_id).one()
 
     return None
 
@@ -217,8 +219,11 @@ def dao_remove_user_from_organisation(organisation, user):
 def dao_add_email_branding_to_organisation_pool(organisation_id, email_branding_id):
     organisation = dao_get_organisation_by_id(organisation_id)
     email_branding = EmailBranding.query.filter_by(id=email_branding_id).one()
-    organisation.email_branding_pool.append(email_branding)
-    db.session.add(organisation)
+
+    if email_branding not in organisation.email_branding_pool:
+        organisation.email_branding_pool.append(email_branding)
+        db.session.add(organisation)
+
     return email_branding
 
 
@@ -277,10 +282,12 @@ def dao_get_letter_branding_pool_for_organisation(organisation_id):
 @autocommit
 def dao_add_letter_branding_list_to_organisation_pool(organisation_id, letter_branding_ids):
     organisation = dao_get_organisation_by_id(organisation_id)
-    letter_brandings = [dao_get_letter_branding_by_id(branding_id) for branding_id in letter_branding_ids]
+    existing_branding_ids = {b.id for b in organisation.letter_branding_pool}
 
-    organisation.letter_branding_pool.extend(letter_brandings)
-
+    for branding_id in letter_branding_ids:
+        if branding_id not in existing_branding_ids:
+            branding = dao_get_letter_branding_by_id(branding_id)
+            organisation.letter_branding_pool.append(branding)
     db.session.add(organisation)
 
 

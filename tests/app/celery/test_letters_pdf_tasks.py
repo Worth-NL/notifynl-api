@@ -1,15 +1,16 @@
+import uuid
 from collections import namedtuple
-from datetime import datetime
+from datetime import UTC, datetime
 from unittest.mock import ANY, call
 
 import boto3
 import pytest
-import pytz
 from botocore.exceptions import ClientError
 from celery.exceptions import MaxRetriesExceededError
 from flask import current_app
 from freezegun import freeze_time
 from moto import mock_aws
+from notifications_utils.testing.comparisons import AnyStringMatching
 from sqlalchemy.orm.exc import NoResultFound
 
 from app import signing
@@ -22,6 +23,7 @@ from app.celery.letters_pdf_tasks import (
     process_virus_scan_error,
     process_virus_scan_failed,
     replay_letters_in_error,
+    resanitise_letter_attachment,
     resanitise_pdf,
     sanitise_letter,
     send_dvla_letters_via_api,
@@ -54,6 +56,7 @@ from tests.app.db import (
     create_notification,
     create_service,
 )
+from tests.conftest import _with_message_group_id
 
 
 def test_should_have_decorated_tasks_functions():
@@ -75,7 +78,8 @@ def test_get_pdf_for_templated_letter_happy_path(mocker, sample_letter_notificat
     mock_generate_letter_pdf_filename = mocker.patch(
         "app.celery.letters_pdf_tasks.generate_letter_pdf_filename", return_value="LETTER.PDF"
     )
-    get_pdf_for_templated_letter(sample_letter_notification.id)
+    with _with_message_group_id(get_pdf_for_templated_letter, str(sample_letter_notification.service_id)):
+        get_pdf_for_templated_letter(sample_letter_notification.id)
 
     letter_data = {
         "letter_contact_block": sample_letter_notification.reply_to_text,
@@ -94,10 +98,19 @@ def test_get_pdf_for_templated_letter_happy_path(mocker, sample_letter_notificat
         "letter_filename": "LETTER.PDF",
         "notification_id": str(sample_letter_notification.id),
         "key_type": sample_letter_notification.key_type,
+        "date": AnyStringMatching(
+            # There’s a few ms delay between calling the task and creating the datetime here.
+            # Celery evades `freeze_time` so the best we can say is the date is close enough
+            # to not be in the wrong timezone or format, for example.
+            datetime.now(UTC).strftime(r"^%Y-%m-%dT%H:\d{2}:\d{2}\.\d{6}\+00:00$")
+        ),
     }
 
     mock_celery.assert_called_once_with(
-        name=TaskNames.CREATE_PDF_FOR_TEMPLATED_LETTER, args=(ANY,), queue=QueueNames.SANITISE_LETTERS
+        name=TaskNames.CREATE_PDF_FOR_TEMPLATED_LETTER,
+        args=(ANY,),
+        queue=QueueNames.SANITISE_LETTERS,
+        MessageGroupId=str(sample_letter_notification.service_id),
     )
 
     actual_data = signing.decode(mock_celery.call_args.kwargs["args"][0])
@@ -117,7 +130,8 @@ def test_get_pdf_for_templated_letter_with_letter_attachment(mocker, sample_lett
 
     mock_celery = mocker.patch("app.celery.letters_pdf_tasks.notify_celery.send_task")
     mocker.patch("app.celery.letters_pdf_tasks.generate_letter_pdf_filename", return_value="LETTER.PDF")
-    get_pdf_for_templated_letter(sample_letter_notification.id)
+    with _with_message_group_id(get_pdf_for_templated_letter, str(sample_letter_notification.service_id)):
+        get_pdf_for_templated_letter(sample_letter_notification.id)
 
     actual_data = signing.decode(mock_celery.call_args.kwargs["args"][0])
 
@@ -134,13 +148,14 @@ def test_get_pdf_for_templated_letter_retries_upon_error(mocker, sample_letter_n
     mocker.patch("app.celery.letters_pdf_tasks.generate_letter_pdf_filename", return_value="LETTER.PDF")
     mock_retry = mocker.patch("app.celery.letters_pdf_tasks.get_pdf_for_templated_letter.retry")
 
-    with caplog.at_level("ERROR"):
-        get_pdf_for_templated_letter(sample_letter_notification.id)
+    with _with_message_group_id(get_pdf_for_templated_letter, str(sample_letter_notification.service_id)):
+        with caplog.at_level("ERROR"):
+            get_pdf_for_templated_letter(sample_letter_notification.id)
 
     assert mock_celery.called
     assert mock_retry.called
     assert (
-        f"RETRY: calling create-letter-pdf task for notification {sample_letter_notification.id} failed"
+        f"RETRY: calling get-pdf-for-templated-letter task for notification {sample_letter_notification.id} failed"
         in caplog.messages
     )
 
@@ -153,12 +168,13 @@ def test_get_pdf_for_templated_letter_sets_technical_failure_max_retries(mocker,
     )
     mock_update_noti = mocker.patch("app.celery.letters_pdf_tasks.update_notification_status_by_id")
 
-    with pytest.raises(NotificationTechnicalFailureException) as e:
-        get_pdf_for_templated_letter(sample_letter_notification.id)
+    with _with_message_group_id(get_pdf_for_templated_letter, str(sample_letter_notification.service_id)):
+        with pytest.raises(NotificationTechnicalFailureException) as e:
+            get_pdf_for_templated_letter(sample_letter_notification.id)
 
     assert (
         e.value.args[0] == f"RETRY FAILED: Max retries reached. "
-        f"The task create-letter-pdf failed for notification id {sample_letter_notification.id}. "
+        f"The task get-pdf-for-templated-letter failed for notification id {sample_letter_notification.id}. "
         f"Notification has been updated to technical-failure"
     )
     assert mock_celery.called
@@ -283,15 +299,15 @@ class TestCollateLetterPdfsToBeSent:
             (
                 # The 16:50 UTC run ran a second ago:
                 # the next run should be in 3,599 seconds at 17:50 UTC
-                datetime(2023, 6, 1, 16, 50, 0, tzinfo=pytz.UTC),
-                datetime(2023, 6, 1, 16, 50, 1, tzinfo=pytz.UTC),
+                datetime(2023, 6, 1, 16, 50, 0, tzinfo=UTC),
+                datetime(2023, 6, 1, 16, 50, 1, tzinfo=UTC),
                 3599,
             ),
             (
                 # The 17:50 UTC run ran a second ago:
                 # the next run should be in 82,799 seconds at 16:50 UTC the next day
-                datetime(2023, 6, 1, 17, 50, 0, tzinfo=pytz.UTC),
-                datetime(2023, 6, 1, 17, 50, 1, tzinfo=pytz.UTC),
+                datetime(2023, 6, 1, 17, 50, 0, tzinfo=UTC),
+                datetime(2023, 6, 1, 17, 50, 1, tzinfo=UTC),
                 82799,
             ),
         ),
@@ -398,9 +414,17 @@ def test_send_letters_volume_email_to_dvla(notify_db_session, mock_celery_task, 
 
     emails_to_dvla = Notification.query.all()
     assert len(emails_to_dvla) == 2
-    send_mock.called = 2
-    send_mock.assert_any_call([str(emails_to_dvla[0].id)], queue=QueueNames.NOTIFY)
-    send_mock.assert_any_call([str(emails_to_dvla[1].id)], queue=QueueNames.NOTIFY)
+    assert send_mock.call_count == 2
+    send_mock.assert_any_call(
+        [str(emails_to_dvla[0].id)],
+        queue=QueueNames.NOTIFY,
+        MessageGroupId=str(emails_to_dvla[0].service_id),
+    )
+    send_mock.assert_any_call(
+        [str(emails_to_dvla[1].id)],
+        queue=QueueNames.NOTIFY,
+        MessageGroupId=str(emails_to_dvla[1].service_id),
+    )
     for email in emails_to_dvla:
         assert str(email.template_id) == current_app.config["LETTERS_VOLUME_EMAIL_TEMPLATE_ID"]
         assert email.to in current_app.config["DVLA_EMAIL_ADDRESSES"]
@@ -459,7 +483,8 @@ def test_sanitise_letter_calls_template_preview_sanitise_task(
     sample_letter_notification.service = create_service(service_permissions=permissions)
     sample_letter_notification.status = NOTIFICATION_PENDING_VIRUS_CHECK
 
-    sanitise_letter(filename)
+    with _with_message_group_id(sanitise_letter, str(sample_letter_notification.service_id)):
+        sanitise_letter(filename)
 
     mock_celery.assert_called_once_with(
         name=TaskNames.SANITISE_LETTER,
@@ -469,6 +494,7 @@ def test_sanitise_letter_calls_template_preview_sanitise_task(
             "allow_international_letters": expected_international_letters_allowed,
         },
         queue=QueueNames.SANITISE_LETTERS,
+        MessageGroupId=str(sample_letter_notification.service_id),
     )
 
 
@@ -892,7 +918,8 @@ def test_resanitise_pdf_calls_template_preview_with_letter_details(
     sample_letter_notification.created_at = datetime(2021, 2, 7, 12)
     sample_letter_notification.service = create_service(service_permissions=permissions)
 
-    resanitise_pdf(sample_letter_notification.id)
+    with _with_message_group_id(resanitise_pdf, str(sample_letter_notification.service_id)):
+        resanitise_pdf(sample_letter_notification.id)
 
     mock_celery.assert_called_once_with(
         name=TaskNames.RECREATE_PDF_FOR_PRECOMPILED_LETTER,
@@ -902,4 +929,29 @@ def test_resanitise_pdf_calls_template_preview_with_letter_details(
             "allow_international_letters": expected_international_letters_allowed,
         },
         queue=QueueNames.SANITISE_LETTERS,
+        MessageGroupId=str(sample_letter_notification.service_id),
+    )
+
+
+def test_resanitise_letter_attachment_calls_template_preview_with_attachment_details(
+    mocker,
+):
+    mock_celery = mocker.patch("app.celery.letters_pdf_tasks.notify_celery.send_task")
+
+    service_id = str(uuid.uuid4())
+    attachment_id = str(uuid.uuid4())
+    original_filename = "test-123abc.pdf"
+
+    with _with_message_group_id(resanitise_letter_attachment, service_id):
+        resanitise_letter_attachment(service_id, attachment_id, original_filename)
+
+    mock_celery.assert_called_once_with(
+        name=TaskNames.RECREATE_PDF_FOR_TEMPLATE_LETTER_ATTACHMENTS,
+        kwargs={
+            "service_id": service_id,
+            "attachment_id": attachment_id,
+            "original_filename": original_filename,
+        },
+        queue=QueueNames.SANITISE_LETTERS,
+        MessageGroupId=service_id,
     )
