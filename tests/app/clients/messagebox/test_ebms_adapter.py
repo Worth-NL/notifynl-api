@@ -84,6 +84,8 @@ def test_try_send_messagebox_builds_and_sends_message_request(mocker, messagebox
     assert CLIENT_ORG_OIN in xml_content
     assert "123456789" in xml_content
     assert "<bericht:BerichtType>test-123</bericht:BerichtType>" in xml_content
+    # 0 attachments (mocked above) -- no Bijlagen element should be emitted.
+    assert "Bijlagen" not in xml_content
 
     # notifynl-api reuses the notification id as both BatchID and BerichtID (one
     # notification == one batch always), so messagebox_scheduled_tasks can fall back to

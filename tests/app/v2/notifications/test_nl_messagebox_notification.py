@@ -94,9 +94,17 @@ def _valid_messagebox_data(**overrides):
         (
             {
                 "recipient": str(fake.random_number(digits=9, fix_len=True)),
-                "message": "This is missing attachments",
+                "message": "This has no attachments at all, which is now valid",
             },
-            False,
+            True,
+        ),
+        (
+            {
+                "recipient": str(fake.random_number(digits=9, fix_len=True)),
+                "attachments": [],
+                "message": "This has an explicitly empty attachments list, which is also valid",
+            },
+            True,
         ),
         (
             {

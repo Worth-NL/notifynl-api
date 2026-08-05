@@ -68,7 +68,7 @@ def process_messagebox_notification(*, messagebox_data, api_key, service):
         raise BadRequestError(message="Cannot send messagebox messages when service is in trial mode", status_code=403)
 
     check_service_has_oin(service)
-    check_messagebox_attachments_within_size_limit(messagebox_data["attachments"])
+    check_messagebox_attachments_within_size_limit(messagebox_data.get("attachments", []))
 
     status = NOTIFICATION_PENDING_VIRUS_CHECK
     updated_at = None
@@ -107,7 +107,7 @@ def process_messagebox_notification(*, messagebox_data, api_key, service):
             notification.to = None
             notification.normalised_to = None
 
-        upload_messagebox_attachments(notification, messagebox_data.get("attachments"))
+        upload_messagebox_attachments(notification, messagebox_data.get("attachments", []))
 
     resp = {"id": notification.id, "uri": f"{request.url_root}v2/notifications/{str(notification.id)}"}
 

@@ -345,12 +345,11 @@ post_messagebox_request = {
                 "required": ["file", "filename"],
                 "additionalProperties": False,
             },
-            "minItems": 1,
             "maxItems": 2,
         },
         "reference": {"type": "string", "maxLength": 1_000},
     },
-    "required": ["recipient", "message", "attachments"],
+    "required": ["recipient", "message"],
     "additionalProperties": False,
 }
 
