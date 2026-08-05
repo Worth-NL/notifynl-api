@@ -341,7 +341,7 @@ class ServiceSchema(BaseSchema, UUIDsAsStringsMixin):
             raise ValidationError(f"Duplicate Service Permission: {duplicates}")
 
     @validates("oin")
-    def validate_oin(self, value):
+    def validate_oin(self, value, data_key):
         if value and not (len(value) == 20 and value.isdigit()):
             raise ValidationError("OIN must be exactly 20 digits")
 
