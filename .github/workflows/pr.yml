@@ -229,6 +229,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
+          path: notifynl-api
+        name: Checkout notifynl-api (this PR)
+
+      - uses: actions/checkout@v4
+        with:
           repository: Worth-NL/notifynl-charts-private
           ref: main
           token: ${{ secrets.RELEASE_TOKEN }}
@@ -242,6 +247,21 @@ jobs:
         run: helm dependency build
         working-directory: ${{ github.workspace }}/notifynl-full
 
+      # notifynl-full pins migrations.apiUpgrade.{alphagovRevision,nlRevision}
+      # explicitly per release rather than implicitly running whatever HEAD
+      # the image bundles. A PR build's image can bundle newer migrations
+      # than the chart's currently pinned defaults, so derive the two heads
+      # from this PR's own migration trees (mirrors tests/test_migrations.py's
+      # "sorted glob, last file wins" head detection) and override them below.
+      - name: Determine migration revisions
+        id: migration-revisions
+        run: |
+          set -euo pipefail
+          alphagov_revision=$(basename "$(ls notifynl-api/migrations/versions/*.py | sort | tail -1)" .py)
+          nl_revision=$(basename "$(ls notifynl-api/migrations_nl/versions/*.py | sort | tail -1)" .py | cut -d_ -f1)
+          echo "alphagov-revision=$alphagov_revision" >> "$GITHUB_OUTPUT"
+          echo "nl-revision=$nl_revision" >> "$GITHUB_OUTPUT"
+
       # Renders the chart and validates against the live cluster API/CRDs
       # (required/fail template checks included) without persisting anything
       # or scheduling any pods. Uses the exact same flags as the real deploy
@@ -254,6 +274,9 @@ jobs:
           -n ${{ vars.NAMESPACE }} \
           --reset-then-reuse-values \
           $HELM_SET_ARGS \
+          --set migrations.apiUpgrade.alphagovRevision=${{ steps.migration-revisions.outputs.alphagov-revision }} \
+          --set migrations.apiUpgrade.nlRevision=${{ steps.migration-revisions.outputs.nl-revision }} \
+          --atomic \
           --dry-run=server
 
       - name: Deploy new tag
@@ -264,7 +287,9 @@ jobs:
           -n ${{ vars.NAMESPACE }} \
           --reset-then-reuse-values \
           $HELM_SET_ARGS \
-          --wait \
+          --set migrations.apiUpgrade.alphagovRevision=${{ steps.migration-revisions.outputs.alphagov-revision }} \
+          --set migrations.apiUpgrade.nlRevision=${{ steps.migration-revisions.outputs.nl-revision }} \
+          --atomic \
           --timeout 300s
 
       - name: Comment on PR if deployment fails
