@@ -123,6 +123,7 @@ def run_migrations_online():
     except Exception as e:
         print("Migrations failed because: ", e)
         connection.rollback()
+        raise
     finally:
         connection.close()
 

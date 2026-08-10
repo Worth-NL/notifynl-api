@@ -19,10 +19,16 @@ case "$1" in
     exec flask run --host 0.0.0.0 --port $PORT
     ;;
   migration)
-    exec flask db upgrade
+    exec flask db upgrade "${2:-head}"
     ;;
   migration-nl)
-    exec flask db upgrade --directory migrations_nl
+    exec flask db upgrade --directory migrations_nl "${2:-head}"
+    ;;
+  migration-downgrade)
+    exec flask db downgrade "${2:?migration-downgrade requires a target revision as \$2}"
+    ;;
+  migration-nl-downgrade)
+    exec flask db downgrade --directory migrations_nl "${2:?migration-nl-downgrade requires a target revision as \$2}"
     ;;
   functional-test-fixtures)
     exec flask command functional-test-fixtures
