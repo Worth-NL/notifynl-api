@@ -209,6 +209,23 @@ jobs:
       contents: read
       pull-requests: write
 
+    env:
+      HELM_SET_ARGS: >-
+        --set apps.api.image.tag=${{ needs.build.outputs.tag }}
+        --set apps.apiWorkerRetryTasks.image.tag=${{ needs.build.outputs.tag }}
+        --set apps.apiWorkerLetters.image.tag=${{ needs.build.outputs.tag }}
+        --set apps.apiWorkerJobs.image.tag=${{ needs.build.outputs.tag }}
+        --set apps.apiWorkerResearch.image.tag=${{ needs.build.outputs.tag }}
+        --set apps.apiWorkerSender.image.tag=${{ needs.build.outputs.tag }}
+        --set apps.apiWorkerSenderLetters.image.tag=${{ needs.build.outputs.tag }}
+        --set apps.apiWorkerPeriodic.image.tag=${{ needs.build.outputs.tag }}
+        --set apps.apiWorkerReporting.image.tag=${{ needs.build.outputs.tag }}
+        --set apps.apiWorkerInternal.image.tag=${{ needs.build.outputs.tag }}
+        --set apps.apiWorkerReceipts.image.tag=${{ needs.build.outputs.tag }}
+        --set apps.apiWorkerServiceCallbacks.image.tag=${{ needs.build.outputs.tag }}
+        --set apps.apiWorkerReportRequestsNotificationsTasks.image.tag=${{ needs.build.outputs.tag }}
+        --set apps.celeryBeat.image.tag=${{ needs.build.outputs.tag }}
+
     steps:
       - uses: actions/checkout@v4
         with:
@@ -225,54 +242,70 @@ jobs:
         run: helm dependency build
         working-directory: ${{ github.workspace }}/notifynl-full
 
+      # Renders the chart and validates against the live cluster API/CRDs
+      # (required/fail template checks included) without persisting anything
+      # or scheduling any pods. Uses the exact same flags as the real deploy
+      # below so it can't drift out of sync and give a false pass.
+      - name: Pre-flight validation (dry-run, no cluster mutation)
+        id: helm-dry-run
+        run: |
+          set -x
+          helm upgrade --install notifynl notifynl-full/ \
+          -n ${{ vars.NAMESPACE }} \
+          --reset-then-reuse-values \
+          $HELM_SET_ARGS \
+          --dry-run=server
+
       - name: Deploy new tag
         id: helm-deploy
         run: |
           set -x
           helm upgrade --install notifynl notifynl-full/ \
           -n ${{ vars.NAMESPACE }} \
-          --reuse-values \
-          --set apps.api.image.tag=${{ needs.build.outputs.tag }} \
-          --set apps.apiWorkerRetryTasks.image.tag=${{ needs.build.outputs.tag }} \
-          --set apps.apiWorkerLetters.image.tag=${{ needs.build.outputs.tag }} \
-          --set apps.apiWorkerJobs.image.tag=${{ needs.build.outputs.tag }} \
-          --set apps.apiWorkerResearch.image.tag=${{ needs.build.outputs.tag }} \
-          --set apps.apiWorkerSender.image.tag=${{ needs.build.outputs.tag }} \
-          --set apps.apiWorkerSenderLetters.image.tag=${{ needs.build.outputs.tag }} \
-          --set apps.apiWorkerPeriodic.image.tag=${{ needs.build.outputs.tag }} \
-          --set apps.apiWorkerReporting.image.tag=${{ needs.build.outputs.tag }} \
-          --set apps.apiWorkerInternal.image.tag=${{ needs.build.outputs.tag }} \
-          --set apps.apiWorkerReceipts.image.tag=${{ needs.build.outputs.tag }} \
-          --set apps.apiWorkerServiceCallbacks.image.tag=${{ needs.build.outputs.tag }} \
-          --set apps.apiWorkerReportRequestsNotificationsTasks.image.tag=${{ needs.build.outputs.tag }} \
-          --set apps.celeryBeat.image.tag=${{ needs.build.outputs.tag }} \
+          --reset-then-reuse-values \
+          $HELM_SET_ARGS \
           --wait \
           --timeout 300s
 
       - name: Comment on PR if deployment fails
-        if: failure() && steps.helm-deploy.outcome == 'failure' && github.event_name == 'pull_request'
+        if: failure() && (steps.helm-dry-run.outcome == 'failure' || steps.helm-deploy.outcome == 'failure') && github.event_name == 'pull_request'
         uses: actions/github-script@v7
         with:
           script: |
+            const dryRunFailed = "${{ steps.helm-dry-run.outcome }}" === "failure";
+            const body = dryRunFailed
+              ? [
+                  "⚠️ **Test environment deployment blocked (pre-flight check failed)**",
+                  "",
+                  "- Environment: `Test`",
+                  "- Image tag: `${{ needs.build.outputs.tag }}`",
+                  "",
+                  "The pre-flight `helm upgrade --dry-run=server` check failed, so the real deploy never ran — **the cluster was not touched**, nothing to clean up.",
+                  "",
+                  "Check the workflow logs for the Helm error output. Most likely cause: `notifynl-full` added a new value with no chart default that this release doesn't have set yet — seed it once with a manual `helm upgrade --set <key>=<value>`, and future deploys will carry it forward automatically."
+                ].join("\n")
+              : [
+                  "❌ **Test environment deployment failed**",
+                  "",
+                  "- Environment: `Test`",
+                  "- Image tag: `${{ needs.build.outputs.tag }}`",
+                  "",
+                  "The pre-flight check passed but the real deploy failed — the cluster may be in a partial state.",
+                  "",
+                  "Check the workflow logs for the Helm error output.",
+                  "",
+                  "Check the test env k8s state/logs.",
+                  "",
+                  "Check if the helm release needs a rollback.",
+                  "",
+                  "Most likely issues:",
+                  "- DB migration desync",
+                  "- Package visibility",
+                  "- ghcr.io credentials expiration or change"
+                ].join("\n");
             github.rest.issues.createComment({
               owner: context.repo.owner,
               repo: context.repo.repo,
               issue_number: context.issue.number,
-              body: [
-                "❌ **Test environment deployment failed**",
-                "",
-                "- Environment: `Test`",
-                "- Image tag: `${{ needs.build.outputs.tag }}`",
-                "",
-                "Check the workflow logs for the Helm error output.",
-                "",
-                "Check the test env k8s state/logs.",
-                "",
-                "Check if the helm release needs a rollback.",
-                "",
-                "Most likely issues:",
-                "- DB migration desync",
-                "- Package visibility",
-                "- ghcr.io credentials expiration or change"
-              ].join("\n")
+              body
             })
