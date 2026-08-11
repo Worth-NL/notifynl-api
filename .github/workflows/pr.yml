@@ -286,7 +286,7 @@ jobs:
           $HELM_SET_ARGS \
           --set migrations.apiUpgrade.alphagovRevision=${{ steps.migration-revisions.outputs.alphagov-revision }} \
           --set migrations.apiUpgrade.nlRevision=${{ steps.migration-revisions.outputs.nl-revision }} \
-          --atomic \
+          --rollback-on-failure \
           --dry-run=server
 
       - name: Deploy new tag
@@ -299,7 +299,7 @@ jobs:
           $HELM_SET_ARGS \
           --set migrations.apiUpgrade.alphagovRevision=${{ steps.migration-revisions.outputs.alphagov-revision }} \
           --set migrations.apiUpgrade.nlRevision=${{ steps.migration-revisions.outputs.nl-revision }} \
-          --atomic \
+          --rollback-on-failure \
           --timeout 300s
 
       - name: Comment on PR if deployment fails
