@@ -249,10 +249,23 @@ jobs:
           path: notifynl-api
         name: Checkout notifynl-api (this PR)
 
+      # K8S_CONFIG is stored base64-encoded (shared with the other submodules'
+      # workflows, which still use bwvolleyball/k8s-toolkit and decode it
+      # internally). azure/k8s-set-context's `kubeconfig` method expects raw
+      # kubeconfig YAML, not base64, so decode it here first.
+      - name: Decode kubeconfig
+        id: decode-kubeconfig
+        run: |
+          {
+            echo "content<<KUBECONFIG_EOF"
+            echo "${{ secrets.K8S_CONFIG }}" | base64 -d
+            echo "KUBECONFIG_EOF"
+          } >> "$GITHUB_OUTPUT"
+
       - uses: azure/k8s-set-context@v4
         with:
           method: kubeconfig
-          kubeconfig: ${{ secrets.K8S_CONFIG }}
+          kubeconfig: ${{ steps.decode-kubeconfig.outputs.content }}
 
       - uses: azure/setup-helm@v4
         with:
