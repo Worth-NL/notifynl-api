@@ -249,9 +249,14 @@ jobs:
           path: notifynl-api
         name: Checkout notifynl-api (this PR)
 
-      - uses: bwvolleyball/k8s-toolkit@v1.0.0
+      - uses: azure/k8s-set-context@v4
         with:
-          config: ${{ secrets.K8S_CONFIG }}
+          method: kubeconfig
+          kubeconfig: ${{ secrets.K8S_CONFIG }}
+
+      - uses: azure/setup-helm@v4
+        with:
+          version: v4.2.2
 
       - name: Helm chart dependency build
         run: helm dependency build
