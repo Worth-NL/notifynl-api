@@ -231,17 +231,23 @@ jobs:
         --set apps.celeryBeat.image.tag=${{ needs.build.outputs.tag }}
 
     steps:
-      - uses: actions/checkout@v4
-        with:
-          path: notifynl-api
-        name: Checkout notifynl-api (this PR)
-
+      # Order matters: actions/checkout defaults to `clean: true`, which runs
+      # `git clean -ffdx` in its checkout path. A checkout with no `path:`
+      # (this one) targets the workspace root, and that clean can wipe a
+      # sibling directory checked out earlier by a separate actions/checkout
+      # step (https://github.com/orgs/community/discussions/27030) — so the
+      # root-targeting checkout must run first, before notifynl-api exists.
       - uses: actions/checkout@v4
         with:
           repository: Worth-NL/notifynl-charts-private
           ref: main
           token: ${{ secrets.RELEASE_TOKEN }}
         name: Checkout Worth-NL/notifynl-charts-private
+
+      - uses: actions/checkout@v4
+        with:
+          path: notifynl-api
+        name: Checkout notifynl-api (this PR)
 
       - uses: bwvolleyball/k8s-toolkit@v1.0.0
         with:
