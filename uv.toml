@@ -2,5 +2,11 @@
 
 exclude-newer = "7 days"
 
+# pypdf>=6.15.0 is required (requirements_nl.in) to fix a DoS advisory; the
+# rolling 7-day quarantine above would otherwise reject it until it ages out.
+# Keep this in sync with the --exclude-newer-package value used to compile
+# requirements_nl.txt/requirements_nl_test.txt.
+exclude-newer-package = { pypdf = "2026-08-11T00:00:00Z" }
+
 [pip]
 generate-hashes = true
