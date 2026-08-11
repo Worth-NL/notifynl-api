@@ -26,6 +26,10 @@ notifications-python-client==10.0
 # Run `make bump-utils` to update to the latest version
 notifications-utils @ git+https://github.com/Worth-NL/notifynl-utils.git@101.2.0
 
+# pypdf is a transitive dep of notifications-utils; pin the floor above
+# GHSA-fwg2-594c-jp42 / GHSA-fp3f-mc75-235c (DoS advisories, fixed in 6.15.0) -- 2026-08-11
+pypdf>=6.15.0
+
 git+https://github.com/alphagov/gds_metrics_python.git@6f1840a57b6fb1ee40b7e84f2f18ec229de8aa72
 
 sentry-sdk[flask,celery,sqlalchemy]==2.35.0
