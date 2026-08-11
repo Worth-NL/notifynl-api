@@ -359,8 +359,9 @@ def test_post_messagebox_notification_antivirus_disabled_dispatches_deliver(
     mocker, api_client_request, sample_template_with_placeholders
 ):
     sample_template_with_placeholders.service.oin = str(fake.random_number(digits=20, fix_len=True))
-    current_app.config["S3_BUCKET_MESSAGEBOX_SCAN"] = "notifynl-test-messagebox-scan"
-    current_app.config["ANTIVIRUS_ENABLED"] = False
+    mocker.patch.dict(
+        current_app.config, {"S3_BUCKET_MESSAGEBOX_SCAN": "notifynl-test-messagebox-scan", "ANTIVIRUS_ENABLED": False}
+    )
     mocker.patch("app.messagebox.utils.s3upload")
     mock_send_task = mocker.patch("app.v2.notifications.post_notifications_messagebox.notify_celery.send_task")
     data = _valid_messagebox_data()

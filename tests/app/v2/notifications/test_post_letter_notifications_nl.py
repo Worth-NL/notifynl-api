@@ -242,7 +242,7 @@ def test_post_letter_notification_with_attachments_for_test_key_skips_antivirus(
 def test_post_letter_notification_with_attachments_antivirus_disabled_dispatches_success_directly(
     api_client_request, sample_letter_template, mocker
 ):
-    current_app.config["ANTIVIRUS_ENABLED"] = False
+    mocker.patch.dict(current_app.config, {"ANTIVIRUS_ENABLED": False})
     mocker.patch("app.v2.notifications.post_notifications.upload_letter_attachments")
     mock_success_task = mocker.patch(
         "app.v2.notifications.post_notifications.process_virus_scan_success_letter_attachments.apply_async"
