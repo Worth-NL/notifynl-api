@@ -330,7 +330,7 @@ class ServiceSchema(BaseSchema, UUIDsAsStringsMixin):
         )
 
     @validates("letter_address_placement")
-    def validate_letter_address_placement(self, value):
+    def validate_letter_address_placement(self, value, data_key):
         if value is not None and value not in {"50mm", "60mm"}:
             raise ValidationError("letter_address_placement must be '50mm' or '60mm'")
 
