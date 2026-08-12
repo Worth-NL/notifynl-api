@@ -9,11 +9,12 @@ from jsonschema import ValidationError
 from app import encryption
 from app.config import QueueNamesNL, TaskNamesNL
 from app.constants import MESSAGEBOX_TYPE, NOTIFICATION_CREATED, NOTIFICATION_PENDING_VIRUS_CHECK
+from app.dao.organisation_dao import dao_add_service_to_organisation
 from app.models import Notification
 from app.notifications.validators import check_rate_limiting
 from app.schema_validation import validate
 from app.v2.notifications.notification_schemas import post_messagebox_request, post_messagebox_response
-from tests.app.db import create_api_key, create_service
+from tests.app.db import create_api_key, create_organisation, create_service
 
 fake = Faker()
 
@@ -252,6 +253,30 @@ def test_post_messagebox_notification_returns_201(
     assert resp_json["id"] == str(notification_id)
     assert resp_json.get("organisation_id") is None
     assert f"v2/notifications/{notification_id}" in resp_json["uri"]
+
+
+def test_post_messagebox_notification_returns_organisation_id_as_plain_string(
+    mocker, api_client_request, sample_template_with_placeholders
+):
+    sample_template_with_placeholders.service.oin = str(fake.random_number(digits=20, fix_len=True))
+    current_app.config["S3_BUCKET_MESSAGEBOX_SCAN"] = "notifynl-test-messagebox-scan"
+    mocker.patch("app.messagebox.utils.s3upload")
+    mocker.patch("app.v2.notifications.post_notifications_messagebox.notify_celery.send_task")
+
+    organisation = create_organisation()
+    dao_add_service_to_organisation(service=sample_template_with_placeholders.service, organisation_id=organisation.id)
+
+    data = _valid_messagebox_data()
+
+    resp_json = api_client_request.post(
+        sample_template_with_placeholders.service_id,
+        "v2_notifications.post_notification_messagebox",
+        notification_type=MESSAGEBOX_TYPE,
+        _data=data,
+    )
+
+    assert validate(resp_json, post_messagebox_response) == resp_json
+    assert resp_json["organisation_id"] == str(organisation.id)
 
 
 def test_post_messagebox_notification_persists_message_and_subject(

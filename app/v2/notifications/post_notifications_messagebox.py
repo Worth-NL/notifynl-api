@@ -117,7 +117,7 @@ def process_messagebox_notification(*, messagebox_data, api_key, service):
     resp = {"id": notification.id, "uri": f"{request.url_root}v2/notifications/{str(notification.id)}"}
 
     if template.service.organisation_id:
-        resp["organisation_id"] = (template.service.organisation_id,)
+        resp["organisation_id"] = template.service.organisation_id
 
     if current_app.config["ANTIVIRUS_ENABLED"]:
         current_app.logger.info("Calling task scan-file for %s", notification.id)
