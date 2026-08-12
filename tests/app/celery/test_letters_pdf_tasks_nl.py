@@ -207,10 +207,14 @@ def test_process_sanitised_letter_sets_postage_international(
 
 
 @pytest.mark.parametrize("branding_name,logo_filename", [(None, None), ["Test Brand", "test-brand"]])
-def test_get_pdf_for_templated_letter_happy_path(mocker, sample_letter_notification, branding_name, logo_filename):
+@pytest.mark.parametrize("letter_address_placement", ["50mm", "60mm", None])
+def test_get_pdf_for_templated_letter_happy_path(
+    mocker, sample_letter_notification, branding_name, logo_filename, letter_address_placement
+):
     if branding_name:
         letter_branding = create_letter_branding(name=branding_name, filename=logo_filename)
         sample_letter_notification.service.letter_branding = letter_branding
+    sample_letter_notification.service.letter_address_placement = letter_address_placement
     mock_celery = mocker.patch("app.celery.letters_pdf_tasks.notify_celery.send_task")
     mock_generate_letter_pdf_filename = mocker.patch(
         "app.celery.letters_pdf_tasks.generate_letter_pdf_filename", return_value="LETTER.PDF"
@@ -232,6 +236,7 @@ def test_get_pdf_for_templated_letter_happy_path(mocker, sample_letter_notificat
         },
         "values": sample_letter_notification.personalisation,
         "logo_filename": logo_filename,
+        "letter_address_placement": letter_address_placement,
         "letter_filename": "LETTER.PDF",
         "notification_id": str(sample_letter_notification.id),
         "key_type": sample_letter_notification.key_type,

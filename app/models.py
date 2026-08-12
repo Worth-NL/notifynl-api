@@ -595,6 +595,10 @@ class Service(db.Model, Versioned):
     contact_link = db.Column(db.String(255), nullable=True, unique=False)
 
     letter_message_limit = db.Column(db.BigInteger, index=False, unique=False, nullable=False, default=999_999_999)
+    # Address-box vertical offset for letter PDFs: "50mm" (standard) or "60mm" (Pingen, the
+    # default delivery provider whenever a service's organisation has no custom Printstraat
+    # integration configured). See notifications_utils BaseLetterTemplate._extras.
+    letter_address_placement = db.Column(db.String(5), index=False, unique=False, nullable=True, default="60mm")
     sms_message_limit = db.Column(db.BigInteger, index=False, unique=False, nullable=False, default=999_999_999)
     international_sms_message_limit = db.Column(
         db.BigInteger, index=False, unique=False, nullable=False, default=250_000

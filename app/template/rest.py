@@ -323,6 +323,7 @@ def preview_letter_template_by_notification_id(service_id, notification_id, file
             "values": notification.personalisation,
             "date": notification.created_at.isoformat(),
             "filename": letter_logo_filename,
+            "letter_address_placement": service.letter_address_placement,
         }
 
         url = "{}/preview.{}{}".format(

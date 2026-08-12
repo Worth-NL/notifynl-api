@@ -82,6 +82,7 @@ def get_pdf_for_templated_letter(self, notification_id):
             },
             "values": notification.personalisation,
             "logo_filename": notification.service.letter_branding and notification.service.letter_branding.filename,
+            "letter_address_placement": notification.service.letter_address_placement,
             "letter_filename": letter_filename,
             "notification_id": str(notification_id),
             "key_type": notification.key_type,

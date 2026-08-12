@@ -329,6 +329,11 @@ class ServiceSchema(BaseSchema, UUIDsAsStringsMixin):
             "_email_sender_local_part",
         )
 
+    @validates("letter_address_placement")
+    def validate_letter_address_placement(self, value):
+        if value is not None and value not in {"50mm", "60mm"}:
+            raise ValidationError("letter_address_placement must be '50mm' or '60mm'")
+
     @validates("permissions")
     def validate_permissions(self, value, data_key):
         permissions = [v.permission for v in value]
