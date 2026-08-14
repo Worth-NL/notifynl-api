@@ -10,9 +10,6 @@ info:
     Je kunt deze API direct integreren als je geen gebruik kunt maken van de beschikbare
     client libraries, of wanneer je besluit dat je niet alles via het OMC kunt doen.
 
-    > **Let op:** Niet alle functionaliteit die hieronder wordt beschreven (zoals het
-    > versturen van brieven) wordt in Nederland al ondersteund.
-
     Ontwikkelaars kunnen ook gebruik maken van ons
     [OpenAPI-bestand](./openapi.yaml) in combinatie met tools zoals
     [Swagger](https://swagger.io/) en [Redoc](https://github.com/Redocly/redoc).
@@ -785,8 +782,9 @@ paths:
       tags: [Berichten versturen]
       summary: Brief versturen
       description: >
-        **Let op:** Het versturen van brieven wordt in Nederland nog niet ondersteund.
-        Dit endpoint is beschikbaar voor toekomstig gebruik.
+        Verstuurt een briefnotificatie, hetzij vanuit een template
+        (`PostLetterRequest`), hetzij als vooraf samengestelde PDF
+        (`PostPrecompiledLetterRequest`).
       operationId: postLetter
       requestBody:
         required: true
@@ -1367,7 +1365,7 @@ components:
     PostLetterRequest:
       type: object
       required: [template_id, personalisation]
-      description: Brief via template (toekomstig — nog niet beschikbaar in Nederland).
+      description: Brief via template.
       properties:
         template_id:
           type: string
