@@ -1148,7 +1148,19 @@ paths:
                   reference: "zaaknummer-2024-00123"
       responses:
         "201":
-          description: Verificatieverzoek aangemaakt
+          description: Nieuw verificatieverzoek aangemaakt
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+        "200":
+          description: >
+            Bestaand verificatieverzoek voor dezelfde referentie/ontvanger bijgewerkt
+            (nieuwe code gegenereerd en verstuurd).
           content:
             application/json:
               schema:
@@ -1158,11 +1170,27 @@ paths:
                     type: boolean
                     example: true
         "400":
-          description: Ontbrekende of conflicterende invoer
+          description: >
+            Ontbrekende of conflicterende invoer — bijvoorbeeld zowel `email` als
+            `phoneNumber` (of geen van beide), een ontbrekende `apiKey`, of een
+            ontbrekend `templateId`.
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ErrorResponse'
+                $ref: '#/components/schemas/VerificationErrorResponse'
+              examples:
+                conflictingInput:
+                  summary: Zowel/geen van email en phoneNumber opgegeven
+                  value:
+                    error: "Provide either email or phoneNumber, not both or neither."
+                missingApiKey:
+                  summary: Geen API-sleutel beschikbaar
+                  value:
+                    error: "API Key is required"
+                missingTemplateId:
+                  summary: Geen passend templateId beschikbaar
+                  value:
+                    error: "Appropriate templateId is missing in the request or environment variables."
         "500":
           $ref: '#/components/responses/ServerError'
 
@@ -1179,6 +1207,9 @@ paths:
         1. `reference` — eigen referentie-ID
         2. `email` — e-mailadres als fallback
         3. `phoneNumber` — telefoonnummer als fallback
+
+        Bij een geslaagde verificatie wordt het verificatieverzoek verwijderd — dezelfde
+        code/referentie kan dus niet nogmaals worden geverifieerd.
       servers:
         - url: https://verify.notifynl.nl/api
       requestBody:
@@ -1209,18 +1240,38 @@ paths:
                 verified: true
                 verifiedOn: "2026-01-05T14:32:41+01:00"
         "400":
-          description: Ongeldige code of invoer
+          description: >
+            Ongeldige code, of ontbrekende invoer. Let op: dit zijn twee verschillende
+            responsvormen — een ongeldige/verlopen code retourneert
+            `{verified, reason}`, ontbrekende invoer (`code`, of geen van
+            `reference`/`email`/`phoneNumber`) retourneert `{error}`.
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  verified:
-                    type: boolean
-                    example: false
-                  reason:
-                    type: string
-                    example: "Code is onjuist of verlopen"
+                oneOf:
+                  - type: object
+                    properties:
+                      verified:
+                        type: boolean
+                        example: false
+                      reason:
+                        type: string
+                        example: "Invalid code"
+                  - $ref: '#/components/schemas/VerificationErrorResponse'
+              examples:
+                invalidCode:
+                  summary: Code onjuist of verlopen
+                  value:
+                    verified: false
+                    reason: "Invalid code"
+                missingCode:
+                  summary: Geen code opgegeven
+                  value:
+                    error: "Code is required"
+                missingIdentifier:
+                  summary: Geen reference/email/phoneNumber opgegeven
+                  value:
+                    error: "Either reference, email, or phoneNumber must be provided"
         "404":
           description: Verificatieverzoek niet gevonden
           content:
@@ -1839,6 +1890,15 @@ components:
                 type: string
               message:
                 type: string
+
+    VerificationErrorResponse:
+      type: object
+      description: >
+        Foutrespons van de verificatie-endpoints (verify.notifynl.nl) — deze
+        gebruiken een ander, plat formaat dan de rest van de API.
+      properties:
+        error:
+          type: string
 
   responses:
     BadRequest:
