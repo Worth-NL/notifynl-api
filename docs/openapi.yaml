@@ -979,7 +979,7 @@ paths:
           description: Inclusief notificaties verstuurd als onderdeel van een batch-upload.
           schema:
             type: string
-            enum: ["true"]
+            enum: ["true", "True"]
       responses:
         "200":
           description: Lijst van notificaties
