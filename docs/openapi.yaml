@@ -1356,6 +1356,10 @@ components:
               format: email
             subject:
               type: string
+            one_click_unsubscribe_url:
+              type: string
+              format: uri
+              nullable: true
         uri:
           type: string
           format: uri
@@ -1611,7 +1615,12 @@ components:
           type: string
           format: date-time
           nullable: true
-        one_click_unsubscribe:
+        estimated_delivery:
+          type: string
+          format: date-time
+          nullable: true
+          description: Geschatte bezorgdatum (alleen bij brieven).
+        one_click_unsubscribe_url:
           type: string
           format: uri
           nullable: true
