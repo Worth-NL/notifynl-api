@@ -1109,7 +1109,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/TemplateResponse'
+                $ref: '#/components/schemas/TemplatePreviewResponse'
         "400":
           $ref: '#/components/responses/BadRequest'
         "403":
@@ -1700,10 +1700,6 @@ components:
           type: string
           nullable: true
           description: Onderwerpregel (alleen bij e-mail).
-        html:
-          type: string
-          nullable: true
-          description: Gerenderde HTML-inhoud (alleen bij template preview).
         postage:
           type: string
           nullable: true
@@ -1716,6 +1712,38 @@ components:
           type: object
           additionalProperties:
             type: object
+
+    TemplatePreviewResponse:
+      type: object
+      required: [id, type, version, body]
+      additionalProperties: false
+      description: >
+        Respons van POST /v2/template/{template_id}/preview — een smallere set
+        velden dan TemplateResponse; bevat geen `name`, `created_at`,
+        `updated_at`, `created_by`, `letter_contact_block` of `personalisation`.
+      properties:
+        id:
+          type: string
+          format: uuid
+        type:
+          type: string
+          enum: [sms, email, letter, messagebox]
+        version:
+          type: integer
+        body:
+          type: string
+        subject:
+          type: string
+          nullable: true
+          description: Onderwerpregel (alleen bij e-mail).
+        postage:
+          type: string
+          nullable: true
+          description: Verzendklasse (alleen bij brief-templates).
+        html:
+          type: string
+          nullable: true
+          description: Gerenderde HTML-inhoud.
 
     CreateVerificationRequest:
       type: object
