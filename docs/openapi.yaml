@@ -1393,17 +1393,39 @@ components:
         reference:
           type: string
           maxLength: 1000
+        attachments:
+          type: array
+          minItems: 1
+          maxItems: 2
+          items:
+            type: string
+          description: >
+            Maximaal 2 aanvullende, base64-gecodeerde PDF-bestanden. Deze worden na
+            de eventuele vaste bijlage van het template toegevoegd aan de gegenereerde
+            brief.
 
     PostPrecompiledLetterRequest:
       type: object
-      required: [reference, content]
-      description: Vooraf samengestelde brief als PDF (toekomstig — nog niet beschikbaar in Nederland).
+      required: [reference]
+      description: >
+        Vooraf samengestelde brief als PDF. Geef precies één van `content` of
+        `contents` op.
       properties:
         reference:
           type: string
         content:
           type: string
           description: Base64-gecodeerd PDF-bestand.
+        contents:
+          type: array
+          minItems: 1
+          maxItems: 3
+          items:
+            type: string
+          description: >
+            Maximaal 3 base64-gecodeerde PDF-bestanden, die in de opgegeven volgorde
+            worden samengevoegd tot één brief. Alternatief voor `content` — geef niet
+            beide op.
         postage:
           type: string
           enum: [first, second, economy]
