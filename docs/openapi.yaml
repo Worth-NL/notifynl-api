@@ -810,28 +810,31 @@ paths:
         "500":
           $ref: '#/components/responses/ServerError'
 
-  /v2/notifications/berichtenbox:
+  /v2/notifications/messagebox:
     post:
       tags: [Berichten versturen]
       summary: Berichtenbox-bericht versturen
       description: |
         Verstuurt een bericht naar de berichtenbox van de burger via MijnOverheid.
 
-        Het bericht wordt opgebouwd aan de hand van het berichtenbox-template dat is
-        geconfigureerd voor jouw dienst. Er is geen `template_id` of `personalisation`
-        nodig in het verzoek — die zijn vastgelegd in de dienstconfiguratie.
+        In tegenstelling tot sms, e-mail en brief is dit endpoint **niet**
+        template-gebaseerd: je geeft de ontvanger en de berichtinhoud rechtstreeks
+        mee in het verzoek. Er is geen `template_id` of `personalisation` nodig.
 
         **Beperkingen:**
         - Niet beschikbaar met een team-API-sleutel.
         - Niet beschikbaar wanneer de dienst in proefmodus staat (tenzij testsleutel).
-      operationId: postBerichtenbox
+      operationId: postMessagebox
       requestBody:
-        required: false
+        required: true
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/PostBerichtenboxRequest'
+              $ref: '#/components/schemas/PostMessageboxRequest'
             example:
+              recipient: "123456782"
+              message: "Uw aanvraag is ontvangen en wordt verwerkt."
+              subject: "Update over uw aanvraag"
               reference: "zaaknummer-2024-00123"
       responses:
         "201":
@@ -839,7 +842,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/PostBerichtenboxResponse'
+                $ref: '#/components/schemas/PostMessageboxResponse'
               example:
                 id: "740e5834-3a29-46b4-9a6f-16142fde533a"
                 organisation_id: "c9f0b6d1-4f3e-4b2a-9d1e-123456789abc"
@@ -935,7 +938,7 @@ paths:
           description: Filter op type bericht.
           schema:
             type: string
-            enum: [email, sms, letter]
+            enum: [email, sms, letter, messagebox]
         - name: status
           in: query
           description: >
@@ -1054,7 +1057,7 @@ paths:
           description: Filter op type template.
           schema:
             type: string
-            enum: [email, sms, letter]
+            enum: [email, sms, letter, messagebox]
       responses:
         "200":
           description: Lijst van templates
@@ -1455,20 +1458,48 @@ components:
         template:
           $ref: '#/components/schemas/TemplateRef'
 
-    PostBerichtenboxRequest:
+    PostMessageboxRequest:
       type: object
-      description: |
-        Verzoek om een berichtenbox-bericht te versturen. Alle velden zijn optioneel —
-        de berichtinhoud wordt bepaald door het berichtenbox-template van je dienst.
+      required: [recipient, message]
+      description: Verzoek om een berichtenbox-bericht te versturen.
       properties:
+        recipient:
+          type: string
+          pattern: "^[0-9]{9}$"
+          description: BSN van de ontvanger (9 cijfers).
+          example: "123456782"
+        message:
+          type: string
+          description: Inhoud van het bericht.
+        subject:
+          type: string
+          default: "Berichtenboxbericht"
+          description: Onderwerp van het bericht.
+        message_type:
+          type: string
+          description: Overschrijft het standaard berichttype (BerichtType) voor dit bericht.
         reference:
           type: string
           maxLength: 1000
           description: Eigen referentie; mag geen persoonsgegevens bevatten.
           example: "zaaknummer-2024-00123"
+        attachments:
+          type: array
+          maxItems: 2
+          description: Maximaal 2 bijlagen bij het bericht.
+          items:
+            type: object
+            required: [file, filename]
+            additionalProperties: false
+            properties:
+              file:
+                type: string
+                description: Base64-gecodeerde bestandsinhoud.
+              filename:
+                type: string
       additionalProperties: false
 
-    PostBerichtenboxResponse:
+    PostMessageboxResponse:
       type: object
       required: [id, uri]
       properties:
@@ -1480,7 +1511,10 @@ components:
           type: string
           format: uuid
           nullable: true
-          description: UUID van de organisatie die het bericht verstuurt.
+          description: >
+            UUID van de organisatie die het bericht verstuurt. Ontbreekt in de
+            respons (in plaats van `null`) als er geen organisatie aan de dienst
+            gekoppeld is.
         uri:
           type: string
           format: uri
@@ -1526,7 +1560,7 @@ components:
           nullable: true
         type:
           type: string
-          enum: [sms, email, letter, berichtenbox]
+          enum: [sms, email, letter, messagebox]
         status:
           type: string
           enum:
@@ -1647,7 +1681,7 @@ components:
           type: string
         type:
           type: string
-          enum: [sms, email, letter]
+          enum: [sms, email, letter, messagebox]
         created_at:
           type: string
           format: date-time
