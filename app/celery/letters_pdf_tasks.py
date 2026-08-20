@@ -277,22 +277,21 @@ def _get_letters_and_sheets_volumes_and_send_to_dvla(print_run_deadline_local):
 def send_letters_volume_email_to_dvla(letters_volumes, date):
     personalisation = {
         "total_volume": 0,
-        "first_class_volume": 0,
-        "second_class_volume": 0,
-        "economy_mail_volume": 0,
-        "international_volume": 0,
+        "netherlands_volume": 0,
+        "europe_volume": 0,
+        "rest_of_world_volume": 0,
         "total_sheets": 0,
-        "first_class_sheets": 0,
-        "second_class_sheets": 0,
-        "economy_mail_sheets": 0,
-        "international_sheets": 0,
+        "netherlands_sheets": 0,
+        "europe_sheets": 0,
+        "rest_of_world_sheets": 0,
         "date": date.strftime("%d %B %Y"),
     }
     for item in letters_volumes:
         personalisation["total_volume"] += item.letters_count
         personalisation["total_sheets"] += item.sheets_count
-        personalisation[f"{item.postage}_class_volume"] = item.letters_count
-        personalisation[f"{item.postage}_class_sheets"] = item.sheets_count
+        postage_key = item.postage.replace("-", "_")
+        personalisation[f"{postage_key}_volume"] = item.letters_count
+        personalisation[f"{postage_key}_sheets"] = item.sheets_count
 
     template = dao_get_template_by_id(current_app.config["LETTERS_VOLUME_EMAIL_TEMPLATE_ID"])
     recipients = current_app.config["DVLA_EMAIL_ADDRESSES"]

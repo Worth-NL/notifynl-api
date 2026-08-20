@@ -1,3 +1,4 @@
+from collections import namedtuple
 from datetime import UTC, datetime
 from unittest.mock import ANY
 
@@ -20,7 +21,9 @@ from app.celery.letters_pdf_tasks import (
     process_virus_scan_success_letter_attachments,
     resanitise_pdf,
     sanitise_letter_parts,
+    send_letters_volume_email_to_dvla,
 )
+from app.celery.provider_tasks import deliver_email
 from app.config import QueueNames, TaskNames, TaskNamesNL
 from app.constants import (
     INTERNATIONAL_LETTERS,
@@ -37,11 +40,81 @@ from app.dao import notifications_dao
 from app.errors import VirusScanError
 from app.exceptions import NotificationTechnicalFailureException
 from app.letters.utils import ScanErrorType
+from app.models import Notification
+from tests.app.conftest import create_custom_template
 from tests.app.db import (
     create_letter_branding,
     create_service,
 )
 from tests.conftest import _with_message_group_id
+
+
+@pytest.fixture(scope="function")
+def letter_volumes_email_template_nl(notify_service):
+    email_template_content = "\n".join(
+        [
+            "((total_volume)) brieven (((total_sheets)) vellen) verzonden via NotifyNL komen aan in de "
+            "batch van vandaag. Dit omvat: ",
+            "",
+            "((netherlands_volume)) brieven binnen Nederland (((netherlands_sheets)) vellen).",
+            "((europe_volume)) brieven naar Europa (((europe_sheets)) vellen).",
+            "((rest_of_world_volume)) brieven naar de rest van de wereld (((rest_of_world_sheets)) vellen).",
+            "",
+            "Met vriendelijke groet",
+            "",
+            "Het NotifyNL team",
+            "https://admin.notifynl.nl",
+        ]
+    )
+
+    return create_custom_template(
+        service=notify_service,
+        user=notify_service.users[0],
+        template_config_name="LETTERS_VOLUME_EMAIL_TEMPLATE_ID",
+        content=email_template_content,
+        subject="NotifyNL brievenvolume voor ((date)): ((total_volume)) brieven, ((total_sheets)) vellen",
+        template_type="email",
+    )
+
+
+def test_send_letters_volume_email_to_dvla(notify_db_session, mock_celery_task, letter_volumes_email_template_nl):
+    MockVolume = namedtuple("LettersVolume", ["postage", "letters_count", "sheets_count"])
+    letters_volumes = [
+        MockVolume("netherlands", 5, 7),
+        MockVolume("europe", 4, 12),
+        MockVolume("rest-of-world", 2, 4),
+    ]
+    send_mock = mock_celery_task(deliver_email)
+
+    send_letters_volume_email_to_dvla(letters_volumes, datetime(2020, 2, 17).date())
+
+    emails_to_dvla = Notification.query.all()
+    assert len(emails_to_dvla) == 2
+    assert send_mock.call_count == 2
+    send_mock.assert_any_call(
+        [str(emails_to_dvla[0].id)],
+        queue=QueueNames.NOTIFY,
+        MessageGroupId=str(emails_to_dvla[0].service_id),
+    )
+    send_mock.assert_any_call(
+        [str(emails_to_dvla[1].id)],
+        queue=QueueNames.NOTIFY,
+        MessageGroupId=str(emails_to_dvla[1].service_id),
+    )
+    for email in emails_to_dvla:
+        assert str(email.template_id) == current_app.config["LETTERS_VOLUME_EMAIL_TEMPLATE_ID"]
+        assert email.to in current_app.config["DVLA_EMAIL_ADDRESSES"]
+        assert email.personalisation == {
+            "total_volume": 11,
+            "netherlands_volume": 5,
+            "europe_volume": 4,
+            "rest_of_world_volume": 2,
+            "total_sheets": 23,
+            "netherlands_sheets": 7,
+            "europe_sheets": 12,
+            "rest_of_world_sheets": 4,
+            "date": "17 February 2020",
+        }
 
 
 @mock_aws
