@@ -248,8 +248,8 @@ def test_validate_invitation_token_for_expired_token_returns_400(client):
     json_resp = json.loads(response.get_data(as_text=True))
     assert json_resp["result"] == "error"
     assert json_resp["message"] == {
-        "invitation": "Your invitation to GOV.UK Notify has expired. "
-        "Please ask the person that invited you to send you another one"
+        "invitation": "Je uitnodiging voor NotifyNL is verlopen. "
+        "Vraag degene die je heeft uitgenodigd om je een nieuwe uitnodiging te sturen."
     }
 
 
