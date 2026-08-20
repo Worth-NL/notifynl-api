@@ -789,6 +789,11 @@ class ConfigNL(Config):
     Overrides for NotifyNL usage
     """
 
+    # Falls back to API_HOST_NAME so an image with this fallback deployed
+    # ahead of a chart release that actually sets API_HOST_NAME_INTERNAL
+    # doesn't regress -- see notifynl-full's configmaps.yaml.
+    API_HOST_NAME_INTERNAL = os.getenv("API_HOST_NAME_INTERNAL", os.getenv("API_HOST_NAME"))
+
     TIMEZONE = os.getenv("TZ", "Europe/Amsterdam")
 
     NOTIFY_EMAIL_DOMAIN = os.environ.get("NOTIFY_EMAIL_DOMAIN", "notifynl.nl")
