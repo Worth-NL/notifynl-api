@@ -6,12 +6,14 @@ import boto3
 import pytest
 from celery.exceptions import MaxRetriesExceededError
 from flask import current_app
+from freezegun import freeze_time
 from moto import mock_aws
 from notifications_utils.testing.comparisons import AnyStringMatching
 
 from app import signing
 from app.celery.letters_pdf_tasks import (
     LETTER_ATTACHMENTS_VIRUS_SCAN_ERROR_RETRY_DELAY,
+    collate_letter_pdfs_to_be_sent,
     get_pdf_for_templated_letter,
     process_sanitised_letter,
     process_virus_scan_error_letter_attachments,
@@ -115,6 +117,17 @@ def test_send_letters_volume_email_to_dvla(notify_db_session, mock_celery_task, 
             "rest_of_world_sheets": 4,
             "date": "17 February 2020",
         }
+
+
+def test_collate_letter_pdfs_to_be_sent_does_not_send_volume_email_to_dvla(notify_api, notify_db_session, mocker):
+    mock_volume_email = mocker.patch("app.celery.letters_pdf_tasks.send_letters_volume_email_to_dvla")
+    mock_send_via_api = mocker.patch("app.celery.letters_pdf_tasks.send_dvla_letters_via_api")
+
+    with freeze_time("2021-06-01T17:00+00:00"):
+        collate_letter_pdfs_to_be_sent("2021-06-01T16:30:00")
+
+    assert not mock_volume_email.called
+    mock_send_via_api.assert_called_once_with(datetime(2021, 6, 1, 17, 30))
 
 
 @mock_aws

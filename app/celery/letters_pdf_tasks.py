@@ -242,7 +242,6 @@ def collate_letter_pdfs_to_be_sent(print_run_deadline_utc_str: str):
     that have not yet been sent.
     """
     print_run_deadline_local = convert_utc_to_bst(datetime.fromisoformat(print_run_deadline_utc_str))
-    _get_letters_and_sheets_volumes_and_send_to_dvla(print_run_deadline_local)
 
     send_dvla_letters_via_api(print_run_deadline_local)
 
@@ -269,6 +268,8 @@ def check_time_to_collate_letters():
     collate_letter_pdfs_to_be_sent.apply_async([print_run_deadline_utc.isoformat()], queue=QueueNames.PERIODIC)
 
 
+# Not called from collate_letter_pdfs_to_be_sent as of 2026-08-20 -- the DVLA volume-report
+# email was deliberately disabled. Kept for a possible future re-enable.
 def _get_letters_and_sheets_volumes_and_send_to_dvla(print_run_deadline_local):
     letters_volumes = dao_get_letters_and_sheets_volume_by_postage(print_run_deadline_local)
     send_letters_volume_email_to_dvla(letters_volumes, print_run_deadline_local.date())
