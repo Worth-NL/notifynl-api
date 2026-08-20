@@ -146,8 +146,8 @@ def service_can_send_to_recipient(send_to, key_type, service, allow_guest_list_r
             message = "Can’t send to this recipient using a team-only API key"
         else:
             message = (
-                "Can’t send to this recipient when service is in trial mode "
-                "– see https://www.notifications.service.gov.uk/trial-mode"
+                "Je kunt niet naar deze ontvanger versturen omdat je dienst in proefmodus staat "
+                f"– zie {current_app.config['ADMIN_BASE_URL']}/using-notify/trial-mode"
             )
         raise BadRequestError(message=message)
 

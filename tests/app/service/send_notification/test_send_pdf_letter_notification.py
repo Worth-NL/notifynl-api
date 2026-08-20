@@ -71,7 +71,7 @@ def test_send_pdf_letter_notification_raises_error_if_service_in_trial_mode(
 
     with pytest.raises(BadRequestError) as e:
         send_pdf_letter_notification(sample_service_full_permissions.id, post_data)
-    assert "trial mode" in e.value.message
+    assert "proefmodus" in e.value.message
 
 
 def test_send_pdf_letter_notification_raises_error_when_pdf_is_not_in_transient_letter_bucket(
