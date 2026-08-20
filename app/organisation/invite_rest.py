@@ -135,8 +135,8 @@ def validate_invitation_token(token):
         )
     except SignatureExpired as e:
         errors = {
-            "invitation": "Your invitation to NotifyNL has expired. "
-            "Please ask the person that invited you to send you another one"
+            "invitation": "Je uitnodiging voor NotifyNL is verlopen. "
+            "Vraag degene die je heeft uitgenodigd om je een nieuwe uitnodiging te sturen."
         }
         raise InvalidRequest(errors, status_code=400) from e
     except BadData as e:
