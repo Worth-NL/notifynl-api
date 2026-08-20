@@ -135,7 +135,7 @@ def validate_invitation_token(token):
         )
     except SignatureExpired as e:
         errors = {
-            "invitation": "Your invitation to GOV.UK Notify has expired. "
+            "invitation": "Your invitation to NotifyNL has expired. "
             "Please ask the person that invited you to send you another one"
         }
         raise InvalidRequest(errors, status_code=400) from e
