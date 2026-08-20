@@ -52,9 +52,7 @@ def invite_user_to_org(organisation_id):
         service=template.service,
         personalisation={
             "user_name": (
-                "The GOV.UK Notify team"
-                if invited_org_user.invited_by.platform_admin
-                else invited_org_user.invited_by.name
+                "Het NotifyNL team" if invited_org_user.invited_by.platform_admin else invited_org_user.invited_by.name
             ),
             "organisation_name": invited_org_user.organisation.name,
             "url": invited_org_user_url(

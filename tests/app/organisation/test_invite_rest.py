@@ -11,9 +11,7 @@ from tests import create_admin_authorization_header
 from tests.app.db import create_invited_org_user
 
 
-@pytest.mark.parametrize(
-    "platform_admin, expected_invited_by", ((True, "The GOV.UK Notify team"), (False, "Test User"))
-)
+@pytest.mark.parametrize("platform_admin, expected_invited_by", ((True, "Het NotifyNL team"), (False, "Test User")))
 @pytest.mark.parametrize(
     "extra_args, expected_start_of_invite_url",
     [
