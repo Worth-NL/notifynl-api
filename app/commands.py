@@ -30,7 +30,7 @@ from app.celery.letters_pdf_tasks import (
 )
 from app.celery.tasks import get_id_task_args_kwargs_for_job_row, process_job_row
 from app.config import QueueNames
-from app.constants import KEY_TYPE_TEST, NETHERLANDS, NOTIFICATION_CREATED, SMS_TYPE
+from app.constants import DEFAULT_POSTAGE, KEY_TYPE_TEST, NETHERLANDS, NOTIFICATION_CREATED, POSTAGE_TYPES, SMS_TYPE
 from app.dao.annual_billing_dao import (
     dao_create_or_update_annual_billing_for_year,
     set_default_free_allowance_for_service,
@@ -1163,6 +1163,44 @@ def create_email_template(service_id, user_id, name):
 
     dao_create_template(template)
     print(f"Created email template with ID: {template.id}")
+    return template.id
+
+
+@notify_command(name="create-letter-template")
+@click.option("-s", "--service-id", required=True, help="Service ID to create template in")
+@click.option("-u", "--user-id", required=True, help="User ID who creates the template")
+@click.option("-n", "--name", default="Test Letter Template", help="Name of the letter template")
+@click.option(
+    "-p",
+    "--postage",
+    default=DEFAULT_POSTAGE,
+    type=click.Choice(POSTAGE_TYPES),
+    help="Postage class for the letter template",
+)
+def create_letter_template(service_id, user_id, name, postage):
+    """Create a basic letter template in the specified service and print its ID"""
+    service = dao_fetch_service_by_id(service_id)
+    if not service:
+        print(f"Service with ID {service_id} not found")
+        return
+
+    user = User.query.get(user_id)
+    if not user:
+        print(f"User with ID {user_id} not found")
+        return
+
+    template = Template(
+        name=name,
+        service_id=service_id,
+        template_type="letter",
+        subject="Test letter subject",
+        content="This is a test letter message",
+        postage=postage,
+        created_by_id=user_id,
+    )
+
+    dao_create_template(template)
+    print(f"Created letter template with ID: {template.id}")
     return template.id
 
 

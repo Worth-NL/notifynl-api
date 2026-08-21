@@ -1,3 +1,9 @@
+from ebms_adapter_client.berichtenbox import (
+    MAX_BERICHTTEKST_LENGTH,
+    MAX_OMSCHRIJVING_LENGTH,
+    MAX_ONDERWERP_LENGTH,
+)
+
 from app.constants import (
     NOTIFICATION_STATUS_LETTER_ACCEPTED,
     NOTIFICATION_STATUS_LETTER_RECEIVED,
@@ -247,6 +253,15 @@ post_letter_request = {
         "reference": {"type": "string", "maxLength": 1_000},
         "template_id": uuid,
         "personalisation": personalisation,
+        # [NOTIFYNL] up to 2 ad-hoc PDFs (base64), merged into the generated letter after
+        # the template's fixed letter_attachment (if any) - see app.v2.notifications
+        # .post_notifications.process_letter_notification
+        "attachments": {
+            "type": "array",
+            "items": {"type": "string"},
+            "minItems": 1,
+            "maxItems": 2,
+        },
     },
     "required": ["template_id", "personalisation"],
     "additionalProperties": False,
@@ -260,10 +275,28 @@ post_precompiled_letter_request = {
     "properties": {
         "reference": {"type": "string"},
         "content": {"type": "string"},
+        # [NOTIFYNL] `contents` accepts up to 3 precompiled PDFs (base64), merged in submission
+        # order into a single letter - see app.v2.notifications.post_notifications
+        # .process_multi_part_precompiled_letter_notifications
+        "contents": {
+            "type": "array",
+            "items": {"type": "string"},
+            "minItems": 1,
+            "maxItems": 3,
+        },
         "postage": {"type": "string", "format": "postage"},
     },
-    "required": ["reference", "content"],
+    "required": ["reference"],
     "additionalProperties": False,
+    "allOf": [
+        {
+            "oneOf": [
+                {"required": ["content"]},
+                {"required": ["contents"]},
+            ],
+            "validationMessage": "You must provide exactly one of `content` or `contents`.",
+        }
+    ],
 }
 
 letter_content = {
@@ -294,21 +327,38 @@ post_letter_response = {
 
 post_messagebox_request = {
     "$schema": "http://json-schema.org/draft-07/schema#",
-    "description": "POST berichtenbox notification schema",
+    "description": "POST messagebox notification schema",
     "type": "object",
-    "title": "POST v2/notifications/berichtenbox",
+    "title": "POST v2/notifications/messagebox",
     "properties": {
+        "recipient": {"type": "string", "pattern": "^[0-9]{9}$"},
+        "subject": {"type": "string", "default": "Berichtenboxbericht", "maxLength": MAX_ONDERWERP_LENGTH},
+        "message": {"type": "string", "maxLength": MAX_BERICHTTEKST_LENGTH},
+        "attachments": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "file": {"type": "string"},
+                    "filename": {"type": "string", "maxLength": MAX_OMSCHRIJVING_LENGTH},
+                },
+                "required": ["file", "filename"],
+                "additionalProperties": False,
+            },
+            "maxItems": 2,
+        },
+        "message_type": {"type": "string"},
         "reference": {"type": "string", "maxLength": 1_000},
     },
-    "required": [],
+    "required": ["recipient", "message"],
     "additionalProperties": False,
 }
 
 post_messagebox_response = {
     "$schema": "http://json-schema.org/draft-07/schema#",
-    "description": "POST berichtenbox notification response schema",
+    "description": "POST messagebox notification response schema",
     "type": "object",
-    "title": "response v2/notifications/berichtenbox",
+    "title": "response v2/notifications/messagebox",
     "properties": {
         "id": uuid,
         "organisation_id": {"oneOf": [uuid, {"type": "null"}]},

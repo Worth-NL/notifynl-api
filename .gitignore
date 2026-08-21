@@ -896,7 +896,7 @@ target/
 environment.sh
 .envrc
 
-celerybeat-schedule
+celerybeat-schedule*
 
 # CloudFoundry
 .cf

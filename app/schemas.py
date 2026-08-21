@@ -22,6 +22,7 @@ from notifications_utils.recipient_validation.notifynl.phone_number import (
 
 import app.constants
 from app import db, ma, models
+from app.clients.messagebox.ebms_adapter import get_messagebox_failure_reason
 from app.dao.permissions_dao import permission_dao
 from app.dao.template_email_files_dao import dao_get_template_email_files_by_template_id
 from app.models import ServicePermission
@@ -328,6 +329,11 @@ class ServiceSchema(BaseSchema, UUIDsAsStringsMixin):
             "_email_sender_local_part",
         )
 
+    @validates("letter_address_placement")
+    def validate_letter_address_placement(self, value, data_key):
+        if value is not None and value not in {"50mm", "60mm"}:
+            raise ValidationError("letter_address_placement must be '50mm' or '60mm'")
+
     @validates("permissions")
     def validate_permissions(self, value, data_key):
         permissions = [v.permission for v in value]
@@ -338,6 +344,11 @@ class ServiceSchema(BaseSchema, UUIDsAsStringsMixin):
         if len(set(permissions)) != len(permissions):
             duplicates = list({x for x in permissions if permissions.count(x) > 1})
             raise ValidationError(f"Duplicate Service Permission: {duplicates}")
+
+    @validates("oin")
+    def validate_oin(self, value, data_key):
+        if value and not (len(value) == 20 and value.isdigit()):
+            raise ValidationError("OIN must be exactly 20 digits")
 
     @pre_load()
     def format_for_data_model(self, in_data, **kwargs):
@@ -636,6 +647,30 @@ class NotificationWithTemplateSchema(BaseSchema):
         else:
             in_data.key_name = None
         return in_data
+
+    @post_dump
+    def mask_messagebox_recipient(self, data, **kwargs):
+        # `to` holds the BSN for messagebox notifications -- never surface it
+        # (encrypted or not) to API consumers/the admin UI; the notification id
+        # is a safe, sufficient identifier for display/lookup purposes instead.
+        if data.get("notification_type") == app.constants.MESSAGEBOX_TYPE:
+            data["to"] = data["id"]
+        return data
+
+    @post_dump
+    def add_messagebox_failure_reason(self, data, **kwargs):
+        # Decodes Logius's raw VerwerkingsCode (detailed_status_code) into a
+        # human-readable reason for messagebox notifications, so consumers
+        # (the admin UI) don't need their own copy of the reason-code
+        # mapping. Always present as a key (None when not applicable) so
+        # notifynl-admin's JSONModel -- which only exposes annotated fields
+        # present in the underlying dict -- can rely on it unconditionally.
+        data["messagebox_failure_reason"] = (
+            get_messagebox_failure_reason(data.get("detailed_status_code"))
+            if data.get("notification_type") == app.constants.MESSAGEBOX_TYPE
+            else None
+        )
+        return data
 
 
 class InvitedUserSchema(BaseSchema):

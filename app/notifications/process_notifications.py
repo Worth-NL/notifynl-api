@@ -143,6 +143,7 @@ def persist_notification(
     document_download_count=None,
     updated_at=None,
     _autocommit=True,
+    sent_by=None,
 ):
     notification_created_at = created_at or datetime.utcnow()
     if not notification_id:
@@ -170,6 +171,7 @@ def persist_notification(
         billable_units=billable_units,
         document_download_count=document_download_count,
         updated_at=updated_at,
+        sent_by=sent_by,
     )
     if notification_type == SMS_TYPE:
         notification.to = strip_and_remove_obscure_whitespace(notification.to)

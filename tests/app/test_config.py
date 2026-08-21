@@ -2,13 +2,13 @@ from celery.schedules import crontab
 from sqlalchemy import text
 
 from app import db
-from app.config import Config, QueueNames
+from app.config import Config, ConfigNL, DevNL, QueueNames, QueueNamesNL
 
 
 def test_queue_names_all_queues_correct():
     # Need to ensure that all_queues() only returns queue names used in API
-    queues = QueueNames.all_queues()
-    assert len(queues) == 20
+    queues = QueueNamesNL.all_queues()
+    assert len(queues) == 21
     assert {
         QueueNames.PERIODIC,
         QueueNames.DATABASE,
@@ -30,6 +30,7 @@ def test_queue_names_all_queues_correct():
         QueueNames.LETTER_CALLBACKS,
         QueueNames.REPORT_REQUESTS_NOTIFICATIONS,
         QueueNames.MESSAGEBOX_CALLBACKS,
+        QueueNamesNL.MESSAGEBOX,
     } == set(queues)
 
 
@@ -73,6 +74,16 @@ def test_no_celery_beat_tasks_scheduled_over_midnight_between_timezones(notify_a
         "Anything that runs between 11pm and midnight UTC will run on the same day when Europe/London is GMT, "
         "and the next day when Europe/London is BST. This could cause processing errors."
     )
+
+
+def test_devnl_celery_imports_matches_confignl():
+    # DevNL used to hardcode its own "imports" list, which drifted out of sync
+    # with ConfigNL.CELERY_IMPORTS and silently dropped messagebox_scheduled_tasks --
+    # meaning the messagebox status-poll and stuck-pending Celery tasks were
+    # never registered on a local worker. Asserting equality (not just a
+    # subset) keeps the two from diverging again.
+    assert DevNL.CELERY["imports"] == ConfigNL.CELERY_IMPORTS
+    assert "app.celery.messagebox_scheduled_tasks" in DevNL.CELERY["imports"]
 
 
 def test_sqlalchemy_config(notify_api, notify_db_session):

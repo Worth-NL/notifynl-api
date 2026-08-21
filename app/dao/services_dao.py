@@ -5,7 +5,7 @@ from sqlalchemy import Float, cast
 from sqlalchemy.orm import Session, joinedload, scoped_session
 from sqlalchemy.sql.expression import and_, asc, case, func
 
-from app import db
+from app import db, redis_store
 from app.constants import (
     CROWN_ORGANISATION_TYPES,
     EMAIL_TYPE,
@@ -254,6 +254,10 @@ def dao_archive_service(service_id):
         if not api_key.expiry_date:
             api_key.expiry_date = datetime.utcnow()
 
+    # Bust SerialisedService's cache (app/serialised_models.py) so delivery/admin don't keep
+    # reading a stale dict missing whatever fields were added after it was last cached.
+    redis_store.delete(f"service-{service_id}")
+
 
 def dao_fetch_service_by_id_and_user(service_id, user_id):
     return (
@@ -320,6 +324,10 @@ def dao_create_service(  # noqa: C901
 @version_class(Service)
 def dao_update_service(service):
     db.session.add(service)
+
+    # Bust SerialisedService's cache (app/serialised_models.py) so delivery/admin don't keep
+    # reading a stale dict missing whatever fields were added after it was last cached.
+    redis_store.delete(f"service-{service.id}")
 
 
 def dao_add_user_to_service(service, user, permissions=None, folder_permissions=None):

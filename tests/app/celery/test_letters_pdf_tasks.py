@@ -130,6 +130,7 @@ def test_get_pdf_for_templated_letter_with_letter_attachment(mocker, sample_lett
 
     mock_celery = mocker.patch("app.celery.letters_pdf_tasks.notify_celery.send_task")
     mocker.patch("app.celery.letters_pdf_tasks.generate_letter_pdf_filename", return_value="LETTER.PDF")
+    mocker.patch("app.celery.letters_pdf_tasks.get_letter_attachment_keys", return_value=[])
     with _with_message_group_id(get_pdf_for_templated_letter, str(sample_letter_notification.service_id)):
         get_pdf_for_templated_letter(sample_letter_notification.id)
 
@@ -146,6 +147,7 @@ def test_get_pdf_for_templated_letter_non_existent_notification(notify_db_sessio
 def test_get_pdf_for_templated_letter_retries_upon_error(mocker, sample_letter_notification, caplog):
     mock_celery = mocker.patch("app.celery.letters_pdf_tasks.notify_celery.send_task", side_effect=Exception())
     mocker.patch("app.celery.letters_pdf_tasks.generate_letter_pdf_filename", return_value="LETTER.PDF")
+    mocker.patch("app.celery.letters_pdf_tasks.get_letter_attachment_keys", return_value=[])
     mock_retry = mocker.patch("app.celery.letters_pdf_tasks.get_pdf_for_templated_letter.retry")
 
     with _with_message_group_id(get_pdf_for_templated_letter, str(sample_letter_notification.service_id)):
@@ -163,6 +165,7 @@ def test_get_pdf_for_templated_letter_retries_upon_error(mocker, sample_letter_n
 def test_get_pdf_for_templated_letter_sets_technical_failure_max_retries(mocker, sample_letter_notification):
     mock_celery = mocker.patch("app.celery.letters_pdf_tasks.notify_celery.send_task", side_effect=Exception())
     mocker.patch("app.celery.letters_pdf_tasks.generate_letter_pdf_filename", return_value="LETTER.PDF")
+    mocker.patch("app.celery.letters_pdf_tasks.get_letter_attachment_keys", return_value=[])
     mock_retry = mocker.patch(
         "app.celery.letters_pdf_tasks.get_pdf_for_templated_letter.retry", side_effect=MaxRetriesExceededError
     )

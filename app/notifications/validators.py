@@ -1,5 +1,8 @@
+import base64
+import binascii
 from math import ceil
 
+from ebms_adapter_client.berichtenbox import MAX_PERSONALISED_ATTACHMENT_BYTES
 from flask import current_app
 from gds_metrics.metrics import Histogram
 from notifications_utils import SMS_CHAR_COUNT_LIMIT
@@ -143,8 +146,8 @@ def service_can_send_to_recipient(send_to, key_type, service, allow_guest_list_r
             message = "Can’t send to this recipient using a team-only API key"
         else:
             message = (
-                "Can’t send to this recipient when service is in trial mode "
-                "– see https://www.notifications.service.gov.uk/trial-mode"
+                "Je kunt niet naar deze ontvanger versturen omdat je dienst in proefmodus staat "
+                f"– zie {current_app.config['ADMIN_BASE_URL']}/using-notify/trial-mode"
             )
         raise BadRequestError(message=message)
 
@@ -161,6 +164,47 @@ def check_if_service_can_send_files_by_email(service_contact_link, service_id):
         raise BadRequestError(
             message=f"Send files by email has not been set up - add contact details for your service at "
             f"{current_app.config['ADMIN_BASE_URL']}/services/{service_id}/service-settings/send-files-by-email"
+        )
+
+
+def check_service_has_oin(service):
+    if not service.oin:
+        raise BadRequestError(
+            message=f"Service is not configured for messagebox delivery - add an OIN for your service at "
+            f"{current_app.config['ADMIN_BASE_URL']}/services/{service.id}/messagebox-settings"
+        )
+
+
+MAX_LETTER_ATTACHMENT_BYTES = 2 * 1024 * 1024
+
+
+def check_letter_attachments_within_size_limit(attachments):
+    # Per-attachment (not combined) cap, measured before base64 encoding - a cheap
+    # pre-flight guard ahead of the real hard cap, LETTER_MAX_PAGE_COUNT, which can
+    # only be checked post-merge once the page count is known.
+    for attachment in attachments:
+        try:
+            decoded_bytes = len(base64.b64decode(attachment, validate=True))
+        except binascii.Error as e:
+            raise BadRequestError(message="Cannot decode letter attachment (invalid base64 encoding)") from e
+
+        if decoded_bytes > MAX_LETTER_ATTACHMENT_BYTES:
+            raise BadRequestError(
+                message=f"Each letter attachment must be at most {MAX_LETTER_ATTACHMENT_BYTES} bytes "
+                f"before base64 encoding, got {decoded_bytes}"
+            )
+
+
+def check_messagebox_attachments_within_size_limit(attachments):
+    # Logius caps combined personalised-attachment size at 500 kB, measured
+    # before base64 encoding -- checked here (ahead of upload/send) so an
+    # oversized request is rejected synchronously instead of failing
+    # unrecoverably once ebms-core processes it asynchronously.
+    total_bytes = sum(len(base64.b64decode(attachment["file"])) for attachment in attachments)
+    if total_bytes > MAX_PERSONALISED_ATTACHMENT_BYTES:
+        raise BadRequestError(
+            message=f"Combined attachment size must be at most {MAX_PERSONALISED_ATTACHMENT_BYTES} bytes "
+            f"before base64 encoding, got {total_bytes}"
         )
 
 

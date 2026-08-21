@@ -35,6 +35,7 @@ from app.dao.service_user_dao import (
 )
 from app.dao.services_dao import (
     dao_add_user_to_service,
+    dao_archive_service,
     dao_create_service,
     dao_fetch_active_users_for_service,
     dao_fetch_all_services,
@@ -652,6 +653,38 @@ def test_update_service_creates_a_history_record_with_current_data(notify_db_ses
 
     assert Service.get_history_model().query.filter_by(name="service_name").one().version == 1
     assert Service.get_history_model().query.filter_by(name="updated_service_name").one().version == 2
+
+
+def test_dao_update_service_busts_the_serialised_service_redis_cache(notify_db_session, mocker):
+    # Regression test: SerialisedService.get_dict() (app/serialised_models.py) caches a service's
+    # schema-dumped dict in Redis for 28 days with no invalidation on update - so a service fetched
+    # via SerialisedService.from_id() (used directly by the delivery pipeline,
+    # app/delivery/send_to_providers.py) before a new Service field shipped would keep returning
+    # the old, shorter dict and hard-crash with a KeyError on that field for weeks.
+    mock_redis_delete = mocker.patch("app.dao.services_dao.redis_store.delete")
+
+    user = create_user()
+    service = Service(name="service_name", restricted=False, created_by=user)
+    dao_create_service(service, user)
+    mock_redis_delete.reset_mock()
+
+    service.name = "updated_service_name"
+    dao_update_service(service)
+
+    mock_redis_delete.assert_called_once_with(f"service-{service.id}")
+
+
+def test_dao_archive_service_busts_the_serialised_service_redis_cache(notify_db_session, mocker):
+    mock_redis_delete = mocker.patch("app.dao.services_dao.redis_store.delete")
+
+    user = create_user()
+    service = Service(name="service_name", restricted=False, created_by=user)
+    dao_create_service(service, user)
+    mock_redis_delete.reset_mock()
+
+    dao_archive_service(service.id)
+
+    mock_redis_delete.assert_called_once_with(f"service-{service.id}")
 
 
 def test_update_service_permission_creates_a_history_record_with_current_data(notify_db_session):

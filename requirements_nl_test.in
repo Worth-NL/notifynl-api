@@ -14,7 +14,13 @@ types-requests
 
 # NL supports for github actions
 pytest-cov
+# pytest-env>=1.2 also registers --envfile, colliding with pytest-dotenv's own option of the
+# same name -- constrained here (not in the upstream-synced requirements_for_test_common.in)
+# since the conflict is specific to this NL-only combination.
+pytest-env<1.2
 pytest-dotenv
 pytest-md
 pytest-emoji
 python-dotenv
+
+faker

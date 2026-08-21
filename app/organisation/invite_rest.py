@@ -52,9 +52,7 @@ def invite_user_to_org(organisation_id):
         service=template.service,
         personalisation={
             "user_name": (
-                "The GOV.UK Notify team"
-                if invited_org_user.invited_by.platform_admin
-                else invited_org_user.invited_by.name
+                "Het NotifyNL team" if invited_org_user.invited_by.platform_admin else invited_org_user.invited_by.name
             ),
             "organisation_name": invited_org_user.organisation.name,
             "url": invited_org_user_url(
@@ -137,8 +135,8 @@ def validate_invitation_token(token):
         )
     except SignatureExpired as e:
         errors = {
-            "invitation": "Your invitation to GOV.UK Notify has expired. "
-            "Please ask the person that invited you to send you another one"
+            "invitation": "Je uitnodiging voor NotifyNL is verlopen. "
+            "Vraag degene die je heeft uitgenodigd om je een nieuwe uitnodiging te sturen."
         }
         raise InvalidRequest(errors, status_code=400) from e
     except BadData as e:

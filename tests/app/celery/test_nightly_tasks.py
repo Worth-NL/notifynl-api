@@ -33,6 +33,7 @@ from app.celery.nightly_tasks import (
     delete_email_notifications_older_than_retention,
     delete_inbound_sms,
     delete_letter_notifications_older_than_retention,
+    delete_messagebox_notifications_older_than_retention,
     delete_notifications_for_service_and_type,
     delete_sms_notifications_older_than_retention,
     delete_test_notifications_for_service_and_type,
@@ -302,6 +303,12 @@ def test_delete_letter_notifications_older_than_retention_calls_child_task(notif
     mocked = mocker.patch("app.celery.nightly_tasks._delete_notifications_older_than_retention_by_type")
     delete_letter_notifications_older_than_retention()
     mocked.assert_called_once_with("letter")
+
+
+def test_delete_messagebox_notifications_older_than_retention_calls_child_task(notify_api, mocker):
+    mocked = mocker.patch("app.celery.nightly_tasks._delete_notifications_older_than_retention_by_type")
+    delete_messagebox_notifications_older_than_retention()
+    mocked.assert_called_once_with("messagebox")
 
 
 def test_should_not_update_status_of_letter_notifications(client, sample_letter_template):

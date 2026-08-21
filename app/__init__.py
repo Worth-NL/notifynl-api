@@ -23,6 +23,7 @@ from gds_metrics import GDSMetrics
 from gds_metrics.metrics import Gauge, Histogram
 from notifications_utils import request_helper
 from notifications_utils.celery import NotifyCelery
+from notifications_utils.clients.encryption.encryption_client import Encryption
 from notifications_utils.clients.redis.redis_client import RedisClient
 from notifications_utils.clients.signing.signing_client import Signing
 from notifications_utils.clients.statsd.statsd_client import StatsdClient
@@ -40,6 +41,7 @@ from app.clients.document_download import DocumentDownloadClient
 from app.clients.email.aws_ses import AwsSesClient
 from app.clients.email.aws_ses_stub import AwsSesStubClient
 from app.clients.letter.dvla import DVLAClient
+from app.clients.messagebox.ebms_adapter import EbmsAdapterClient
 from app.clients.sms.firetext import FiretextClient
 from app.clients.sms.mmg import MMGClient
 from app.clients.sms.spryng import SpryngClient
@@ -55,6 +57,7 @@ migrate = Migrate()
 ma = Marshmallow()
 notify_celery = NotifyCelery()
 signing = Signing()
+encryption = Encryption()
 statsd_client = StatsdClient()
 redis_store = RedisClient()
 metrics = GDSMetrics()
@@ -121,6 +124,15 @@ get_aws_ses_stub_client: LazyLocalGetter[AwsSesStubClient] = LazyLocalGetter(
 )
 memo_resetters.append(lambda: get_aws_ses_stub_client.clear())
 aws_ses_stub_client = LocalProxy(get_aws_ses_stub_client)
+
+_ebms_adapter_client_context_var: ContextVar[EbmsAdapterClient] = ContextVar("ebms_adapter_client")
+get_ebms_adapter_client: LazyLocalGetter[EbmsAdapterClient] = LazyLocalGetter(
+    _ebms_adapter_client_context_var,
+    lambda: EbmsAdapterClient(current_app, statsd_client=statsd_client),
+    expected_type=EbmsAdapterClient,
+)
+memo_resetters.append(lambda: get_ebms_adapter_client.clear())
+ebms_adapter_client = LocalProxy(get_ebms_adapter_client)
 
 _notification_provider_clients_context_var: ContextVar[NotificationProviderClients] = ContextVar(
     "notification_provider_clients"
@@ -193,6 +205,7 @@ def create_app(application):
 
     notify_celery.init_app(application)
     signing.init_app(application)
+    encryption.init_app(application)
     redis_store.init_app(application)
 
     register_blueprint(application)

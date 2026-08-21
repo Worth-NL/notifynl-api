@@ -80,7 +80,6 @@
             "type": "shell",
             "command": "set -a && source .env && .venv/bin/python -m flask db upgrade",
             "problemMatcher": "$python",
-            "dependsOn": ["Install API Python requirements"],
             "presentation": {
                 "showReuseMessage": false,
                 "close": true
@@ -98,32 +97,41 @@
             }
         },
         {
-            "label": "Deactivate Spryng provider",
+            "label": "API pre-launch",
             "type": "shell",
-            "command": "set -a && source .env && psql \"$SQLALCHEMY_DATABASE_URI\" -c \"UPDATE provider_details SET active = FALSE WHERE identifier = 'spryng'; UPDATE provider_details_history SET active = FALSE WHERE identifier = 'spryng';\"",
+            "command": "echo \"API pre-launch\"",
+            "dependsOn": [
+                "Install API local notifynl-utils",
+                "Run NOTIFYNL migrations"
+            ],
+            "dependsOrder": "sequence",
             "problemMatcher": [],
-            "dependsOn": ["Run NOTIFYNL migrations"],
             "presentation": {
                 "showReuseMessage": false,
                 "close": true
             }
         },
         {
-            "label": "API pre-launch",
+            "label": "API pre-launch (non-local)",
             "type": "shell",
             "command": "echo \"API pre-launch\"",
-            "dependsOn": ["Install API local notifynl-utils"],
+            "dependsOn": [
+                "Install API Python requirements",
+                "Run NOTIFYNL migrations"
+            ],
+            "dependsOrder": "sequence",
             "problemMatcher": [],
             "presentation": {
                 "showReuseMessage": false,
                 "close": true
             }
         },
+        // Flask commands
         {
             "label": "API functional test fixtures",
             "type": "shell",
             "command": ".venv/bin/python -m flask command functional-test-fixtures",
-            "problemMatcher": [],
+            "problemMatcher": "$python",
             "presentation": {
                 "showReuseMessage": false,
                 "close": true
@@ -133,7 +141,7 @@
             "label": "Create Platform Admin User",
             "type": "shell",
             "command": ".venv/bin/python -m flask command create-platform-admin -e \"${input:adminEmail}\" -m \"${input:adminPhone}\" -p \"${input:adminPassword}\"",
-            "problemMatcher": [],
+            "problemMatcher": "$python",
             "presentation": {
                 "showReuseMessage": false
             },
@@ -147,7 +155,7 @@
             "label": "Create Test Service",
             "type": "shell",
             "command": ".venv/bin/python -m flask command create-test-service -u \"${input:userId}\" -n \"${input:serviceName}\"",
-            "problemMatcher": [],
+            "problemMatcher": "$python",
             "presentation": {
                 "showReuseMessage": false
             },
@@ -161,7 +169,7 @@
             "label": "Create API key",
             "type": "shell",
             "command": ".venv/bin/python -m flask command create-api-key -u \"${input:userId}\" -n \"${input:apiKeyName}\" -s \"${input:serviceId}\" -t \"${input:apiKeyType}\"",
-            "problemMatcher": [],
+            "problemMatcher": "$python",
             "presentation": {
                 "showReuseMessage": false
             },
@@ -186,10 +194,10 @@
             }
         },
         {
-            "label": "Create SMS Template",
+            "label": "Create SMS template",
             "type": "shell",
             "command": ".venv/bin/python -m flask command create-sms-template -s \"${input:serviceId}\" -u \"${input:userId}\" -n \"${input:smsTemplateName}\"",
-            "problemMatcher": [],
+            "problemMatcher": "$python",
             "presentation": {
                 "showReuseMessage": false
             },
@@ -200,10 +208,10 @@
             }
         },
         {
-            "label": "Create Email Template",
+            "label": "Create email template",
             "type": "shell",
             "command": ".venv/bin/python -m flask command create-email-template -s \"${input:serviceId}\" -u \"${input:userId}\" -n \"${input:emailTemplateName}\"",
-            "problemMatcher": [],
+            "problemMatcher": "$python",
             "presentation": {
                 "showReuseMessage": false
             },
@@ -211,6 +219,59 @@
                 "env": {
                     "FLASK_APP": "application.py"
                 }
+            }
+        },
+        {
+            "label": "Create letter template",
+            "type": "shell",
+            "command": ".venv/bin/python -m flask command create-letter-template -s \"${input:serviceId}\" -u \"${input:userId}\" -n \"${input:letterTemplateName}\" -p \"${input:letterPostage}\"",
+            "problemMatcher": "$python",
+            "presentation": {
+                "showReuseMessage": false
+            },
+            "options": {
+                "env": {
+                    "FLASK_APP": "application.py"
+                }
+            }
+        },
+        {
+            "label": "Create NL migration (autogenerate)",
+            "type": "shell",
+            "command": "set -a && source .env && .venv/bin/python -m flask db migrate -d migrations_nl --rev-id ${input:nlMigrationRevisionId} -m \"${input:nlMigrationDescription}\"",
+            "problemMatcher": "$python",
+            "presentation": {
+                "showReuseMessage": false
+            }
+        },
+        {
+            "label": "Create NL migration (blank revision)",
+            "type": "shell",
+            "command": "set -a && source .env && .venv/bin/python -m flask db revision -d migrations_nl --rev-id ${input:nlMigrationRevisionId} -m \"${input:nlMigrationDescription}\"",
+            "problemMatcher": "$python",
+            "presentation": {
+                "showReuseMessage": false
+            }
+        },
+        {
+            "label": "Compile NL requirements",
+            "type": "shell",
+            "command": "uv pip compile requirements_nl.in -o requirements_nl.txt",
+            "problemMatcher": [],
+            "presentation": {
+                "showReuseMessage": false,
+                "close": true
+            }
+        },
+        {
+            "label": "Compile NL test requirements",
+            "type": "shell",
+            "command": "uv pip compile requirements_nl_test.in -o requirements_nl_test.txt",
+            "problemMatcher": [],
+            "dependsOn": ["Compile NL requirements"],
+            "presentation": {
+                "showReuseMessage": false,
+                "close": true
             }
         }
     ],
@@ -271,6 +332,33 @@
             "type": "promptString",
             "description": "Enter email template name:",
             "default": "Test Email Template"
+        },
+        {
+            "id": "letterTemplateName",
+            "type": "promptString",
+            "description": "Enter letter template name:",
+            "default": "Test Letter Template"
+        },
+        {
+            "id": "letterPostage",
+            "type": "pickString",
+            "description": "Select letter postage class:",
+            "options": ["netherlands", "europe", "rest-of-world"],
+            "default": "netherlands"
+        },
+        {
+            "id": "nlMigrationDescription",
+            "type": "promptString",
+            "description": "Enter NL migration description:"
+        },
+        {
+            "id": "nlMigrationRevisionId",
+            "type": "command",
+            "command": "shellCommand.execute",
+            "args": {
+                "command": "max=0; for f in migrations_nl/versions/[0-9][0-9][0-9][0-9]_*.py; do [ -e \"$f\" ] || continue; n=$(basename \"$f\"); n=${n%%_*}; [ \"$n\" -gt \"$max\" ] && max=$n; done; printf '%04d' $((10#$max + 1))",
+                "cwd": "${workspaceFolder}"
+            }
         }
     ]
 }

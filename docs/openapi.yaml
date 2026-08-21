@@ -10,9 +10,6 @@ info:
     Je kunt deze API direct integreren als je geen gebruik kunt maken van de beschikbare
     client libraries, of wanneer je besluit dat je niet alles via het OMC kunt doen.
 
-    > **Let op:** Niet alle functionaliteit die hieronder wordt beschreven (zoals het
-    > versturen van brieven) wordt in Nederland al ondersteund.
-
     Ontwikkelaars kunnen ook gebruik maken van ons
     [OpenAPI-bestand](./openapi.yaml) in combinatie met tools zoals
     [Swagger](https://swagger.io/) en [Redoc](https://github.com/Redocly/redoc).
@@ -785,8 +782,9 @@ paths:
       tags: [Berichten versturen]
       summary: Brief versturen
       description: >
-        **Let op:** Het versturen van brieven wordt in Nederland nog niet ondersteund.
-        Dit endpoint is beschikbaar voor toekomstig gebruik.
+        Verstuurt een briefnotificatie, hetzij vanuit een template
+        (`PostLetterRequest`), hetzij als vooraf samengestelde PDF
+        (`PostPrecompiledLetterRequest`).
       operationId: postLetter
       requestBody:
         required: true
@@ -812,28 +810,31 @@ paths:
         "500":
           $ref: '#/components/responses/ServerError'
 
-  /v2/notifications/berichtenbox:
+  /v2/notifications/messagebox:
     post:
       tags: [Berichten versturen]
       summary: Berichtenbox-bericht versturen
       description: |
         Verstuurt een bericht naar de berichtenbox van de burger via MijnOverheid.
 
-        Het bericht wordt opgebouwd aan de hand van het berichtenbox-template dat is
-        geconfigureerd voor jouw dienst. Er is geen `template_id` of `personalisation`
-        nodig in het verzoek — die zijn vastgelegd in de dienstconfiguratie.
+        In tegenstelling tot sms, e-mail en brief is dit endpoint **niet**
+        template-gebaseerd: je geeft de ontvanger en de berichtinhoud rechtstreeks
+        mee in het verzoek. Er is geen `template_id` of `personalisation` nodig.
 
         **Beperkingen:**
         - Niet beschikbaar met een team-API-sleutel.
         - Niet beschikbaar wanneer de dienst in proefmodus staat (tenzij testsleutel).
-      operationId: postBerichtenbox
+      operationId: postMessagebox
       requestBody:
-        required: false
+        required: true
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/PostBerichtenboxRequest'
+              $ref: '#/components/schemas/PostMessageboxRequest'
             example:
+              recipient: "123456782"
+              message: "Uw aanvraag is ontvangen en wordt verwerkt."
+              subject: "Update over uw aanvraag"
               reference: "zaaknummer-2024-00123"
       responses:
         "201":
@@ -841,7 +842,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/PostBerichtenboxResponse'
+                $ref: '#/components/schemas/PostMessageboxResponse'
               example:
                 id: "740e5834-3a29-46b4-9a6f-16142fde533a"
                 organisation_id: "c9f0b6d1-4f3e-4b2a-9d1e-123456789abc"
@@ -937,7 +938,7 @@ paths:
           description: Filter op type bericht.
           schema:
             type: string
-            enum: [email, sms, letter]
+            enum: [email, sms, letter, messagebox]
         - name: status
           in: query
           description: >
@@ -978,7 +979,7 @@ paths:
           description: Inclusief notificaties verstuurd als onderdeel van een batch-upload.
           schema:
             type: string
-            enum: ["true"]
+            enum: ["true", "True"]
       responses:
         "200":
           description: Lijst van notificaties
@@ -1056,7 +1057,7 @@ paths:
           description: Filter op type template.
           schema:
             type: string
-            enum: [email, sms, letter]
+            enum: [email, sms, letter, messagebox]
       responses:
         "200":
           description: Lijst van templates
@@ -1108,7 +1109,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/TemplateResponse'
+                $ref: '#/components/schemas/TemplatePreviewResponse'
         "400":
           $ref: '#/components/responses/BadRequest'
         "403":
@@ -1147,7 +1148,19 @@ paths:
                   reference: "zaaknummer-2024-00123"
       responses:
         "201":
-          description: Verificatieverzoek aangemaakt
+          description: Nieuw verificatieverzoek aangemaakt
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+        "200":
+          description: >
+            Bestaand verificatieverzoek voor dezelfde referentie/ontvanger bijgewerkt
+            (nieuwe code gegenereerd en verstuurd).
           content:
             application/json:
               schema:
@@ -1157,11 +1170,27 @@ paths:
                     type: boolean
                     example: true
         "400":
-          description: Ontbrekende of conflicterende invoer
+          description: >
+            Ontbrekende of conflicterende invoer — bijvoorbeeld zowel `email` als
+            `phoneNumber` (of geen van beide), een ontbrekende `apiKey`, of een
+            ontbrekend `templateId`.
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ErrorResponse'
+                $ref: '#/components/schemas/VerificationErrorResponse'
+              examples:
+                conflictingInput:
+                  summary: Zowel/geen van email en phoneNumber opgegeven
+                  value:
+                    error: "Provide either email or phoneNumber, not both or neither."
+                missingApiKey:
+                  summary: Geen API-sleutel beschikbaar
+                  value:
+                    error: "API Key is required"
+                missingTemplateId:
+                  summary: Geen passend templateId beschikbaar
+                  value:
+                    error: "Appropriate templateId is missing in the request or environment variables."
         "500":
           $ref: '#/components/responses/ServerError'
 
@@ -1178,6 +1207,9 @@ paths:
         1. `reference` — eigen referentie-ID
         2. `email` — e-mailadres als fallback
         3. `phoneNumber` — telefoonnummer als fallback
+
+        Bij een geslaagde verificatie wordt het verificatieverzoek verwijderd — dezelfde
+        code/referentie kan dus niet nogmaals worden geverifieerd.
       servers:
         - url: https://verify.notifynl.nl/api
       requestBody:
@@ -1208,18 +1240,38 @@ paths:
                 verified: true
                 verifiedOn: "2026-01-05T14:32:41+01:00"
         "400":
-          description: Ongeldige code of invoer
+          description: >
+            Ongeldige code, of ontbrekende invoer. Let op: dit zijn twee verschillende
+            responsvormen — een ongeldige/verlopen code retourneert
+            `{verified, reason}`, ontbrekende invoer (`code`, of geen van
+            `reference`/`email`/`phoneNumber`) retourneert `{error}`.
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  verified:
-                    type: boolean
-                    example: false
-                  reason:
-                    type: string
-                    example: "Code is onjuist of verlopen"
+                oneOf:
+                  - type: object
+                    properties:
+                      verified:
+                        type: boolean
+                        example: false
+                      reason:
+                        type: string
+                        example: "Invalid code"
+                  - $ref: '#/components/schemas/VerificationErrorResponse'
+              examples:
+                invalidCode:
+                  summary: Code onjuist of verlopen
+                  value:
+                    verified: false
+                    reason: "Invalid code"
+                missingCode:
+                  summary: Geen code opgegeven
+                  value:
+                    error: "Code is required"
+                missingIdentifier:
+                  summary: Geen reference/email/phoneNumber opgegeven
+                  value:
+                    error: "Either reference, email, or phoneNumber must be provided"
         "404":
           description: Verificatieverzoek niet gevonden
           content:
@@ -1355,6 +1407,10 @@ components:
               format: email
             subject:
               type: string
+            one_click_unsubscribe_url:
+              type: string
+              format: uri
+              nullable: true
         uri:
           type: string
           format: uri
@@ -1367,7 +1423,7 @@ components:
     PostLetterRequest:
       type: object
       required: [template_id, personalisation]
-      description: Brief via template (toekomstig — nog niet beschikbaar in Nederland).
+      description: Brief via template.
       properties:
         template_id:
           type: string
@@ -1395,17 +1451,39 @@ components:
         reference:
           type: string
           maxLength: 1000
+        attachments:
+          type: array
+          minItems: 1
+          maxItems: 2
+          items:
+            type: string
+          description: >
+            Maximaal 2 aanvullende, base64-gecodeerde PDF-bestanden. Deze worden na
+            de eventuele vaste bijlage van het template toegevoegd aan de gegenereerde
+            brief.
 
     PostPrecompiledLetterRequest:
       type: object
-      required: [reference, content]
-      description: Vooraf samengestelde brief als PDF (toekomstig — nog niet beschikbaar in Nederland).
+      required: [reference]
+      description: >
+        Vooraf samengestelde brief als PDF. Geef precies één van `content` of
+        `contents` op.
       properties:
         reference:
           type: string
         content:
           type: string
           description: Base64-gecodeerd PDF-bestand.
+        contents:
+          type: array
+          minItems: 1
+          maxItems: 3
+          items:
+            type: string
+          description: >
+            Maximaal 3 base64-gecodeerde PDF-bestanden, die in de opgegeven volgorde
+            worden samengevoegd tot één brief. Alternatief voor `content` — geef niet
+            beide op.
         postage:
           type: string
           enum: [first, second, economy]
@@ -1435,20 +1513,48 @@ components:
         template:
           $ref: '#/components/schemas/TemplateRef'
 
-    PostBerichtenboxRequest:
+    PostMessageboxRequest:
       type: object
-      description: |
-        Verzoek om een berichtenbox-bericht te versturen. Alle velden zijn optioneel —
-        de berichtinhoud wordt bepaald door het berichtenbox-template van je dienst.
+      required: [recipient, message]
+      description: Verzoek om een berichtenbox-bericht te versturen.
       properties:
+        recipient:
+          type: string
+          pattern: "^[0-9]{9}$"
+          description: BSN van de ontvanger (9 cijfers).
+          example: "123456782"
+        message:
+          type: string
+          description: Inhoud van het bericht.
+        subject:
+          type: string
+          default: "Berichtenboxbericht"
+          description: Onderwerp van het bericht.
+        message_type:
+          type: string
+          description: Overschrijft het standaard berichttype (BerichtType) voor dit bericht.
         reference:
           type: string
           maxLength: 1000
           description: Eigen referentie; mag geen persoonsgegevens bevatten.
           example: "zaaknummer-2024-00123"
+        attachments:
+          type: array
+          maxItems: 2
+          description: Maximaal 2 bijlagen bij het bericht.
+          items:
+            type: object
+            required: [file, filename]
+            additionalProperties: false
+            properties:
+              file:
+                type: string
+                description: Base64-gecodeerde bestandsinhoud.
+              filename:
+                type: string
       additionalProperties: false
 
-    PostBerichtenboxResponse:
+    PostMessageboxResponse:
       type: object
       required: [id, uri]
       properties:
@@ -1460,7 +1566,10 @@ components:
           type: string
           format: uuid
           nullable: true
-          description: UUID van de organisatie die het bericht verstuurt.
+          description: >
+            UUID van de organisatie die het bericht verstuurt. Ontbreekt in de
+            respons (in plaats van `null`) als er geen organisatie aan de dienst
+            gekoppeld is.
         uri:
           type: string
           format: uri
@@ -1506,7 +1615,7 @@ components:
           nullable: true
         type:
           type: string
-          enum: [sms, email, letter, berichtenbox]
+          enum: [sms, email, letter, messagebox]
         status:
           type: string
           enum:
@@ -1557,7 +1666,12 @@ components:
           type: string
           format: date-time
           nullable: true
-        one_click_unsubscribe:
+        estimated_delivery:
+          type: string
+          format: date-time
+          nullable: true
+          description: Geschatte bezorgdatum (alleen bij brieven).
+        one_click_unsubscribe_url:
           type: string
           format: uri
           nullable: true
@@ -1627,7 +1741,7 @@ components:
           type: string
         type:
           type: string
-          enum: [sms, email, letter]
+          enum: [sms, email, letter, messagebox]
         created_at:
           type: string
           format: date-time
@@ -1646,10 +1760,6 @@ components:
           type: string
           nullable: true
           description: Onderwerpregel (alleen bij e-mail).
-        html:
-          type: string
-          nullable: true
-          description: Gerenderde HTML-inhoud (alleen bij template preview).
         postage:
           type: string
           nullable: true
@@ -1662,6 +1772,38 @@ components:
           type: object
           additionalProperties:
             type: object
+
+    TemplatePreviewResponse:
+      type: object
+      required: [id, type, version, body]
+      additionalProperties: false
+      description: >
+        Respons van POST /v2/template/{template_id}/preview — een smallere set
+        velden dan TemplateResponse; bevat geen `name`, `created_at`,
+        `updated_at`, `created_by`, `letter_contact_block` of `personalisation`.
+      properties:
+        id:
+          type: string
+          format: uuid
+        type:
+          type: string
+          enum: [sms, email, letter, messagebox]
+        version:
+          type: integer
+        body:
+          type: string
+        subject:
+          type: string
+          nullable: true
+          description: Onderwerpregel (alleen bij e-mail).
+        postage:
+          type: string
+          nullable: true
+          description: Verzendklasse (alleen bij brief-templates).
+        html:
+          type: string
+          nullable: true
+          description: Gerenderde HTML-inhoud.
 
     CreateVerificationRequest:
       type: object
@@ -1748,6 +1890,15 @@ components:
                 type: string
               message:
                 type: string
+
+    VerificationErrorResponse:
+      type: object
+      description: >
+        Foutrespons van de verificatie-endpoints (verify.notifynl.nl) — deze
+        gebruiken een ander, plat formaat dan de rest van de API.
+      properties:
+        error:
+          type: string
 
   responses:
     BadRequest:

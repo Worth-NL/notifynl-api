@@ -280,10 +280,12 @@ def test_get_service_by_id(admin_request, sample_service):
         "has_active_go_live_request",
         "id",
         "international_sms_message_limit",
+        "letter_address_placement",
         "letter_branding",
         "letter_message_limit",
         "name",
         "notes",
+        "oin",
         "organisation",
         "organisation_type",
         "permissions",
@@ -657,6 +659,42 @@ def test_update_service(client, notify_db_session, sample_service, has_active_go
     assert result["data"]["email_branding"] == str(brand.id)
     assert result["data"]["organisation_type"] == "school_or_college"
     assert result["data"]["has_active_go_live_request"] == has_active_go_live_request
+
+
+def test_update_service_oin(client, sample_service):
+    data = {
+        "name": sample_service.name,
+        "created_by": str(sample_service.created_by.id),
+        "oin": "01234567890123456789",
+    }
+
+    auth_header = create_admin_authorization_header()
+
+    resp = client.post(
+        f"/service/{sample_service.id}",
+        data=json.dumps(data),
+        headers=[("Content-Type", "application/json"), auth_header],
+    )
+    result = resp.json
+    assert resp.status_code == 200
+    assert result["data"]["oin"] == "01234567890123456789"
+
+
+def test_update_service_oin_rejects_invalid_value(client, sample_service):
+    data = {
+        "name": sample_service.name,
+        "created_by": str(sample_service.created_by.id),
+        "oin": "not-twenty-digits",
+    }
+
+    auth_header = create_admin_authorization_header()
+
+    resp = client.post(
+        f"/service/{sample_service.id}",
+        data=json.dumps(data),
+        headers=[("Content-Type", "application/json"), auth_header],
+    )
+    assert resp.status_code == 400
 
 
 def test_cant_update_service_org_type_to_random_value(client, sample_service):

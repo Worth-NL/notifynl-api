@@ -66,9 +66,10 @@ class QueueNames:
         ]
 
     @staticmethod
-    def predefined_queues(prefix, aws_region, aws_account_id):
+    def predefined_queues(prefix, aws_region, aws_account_id, endpoint_url=None):
+        base = endpoint_url or f"https://sqs.{aws_region}.amazonaws.com"
         return {
-            f"{prefix}{queue}": {"url": f"https://sqs.{aws_region}.amazonaws.com/{aws_account_id}/{prefix}{queue}"}
+            f"{prefix}{queue}": {"url": f"{base}/{aws_account_id}/{prefix}{queue}"}
             for queue in list(set(QueueNames.all_queues() + QueueNames.external_queues()))
         }
 
@@ -108,10 +109,17 @@ class Config:
         INTERNATIONAL_SMS_TYPE: 100,
     }
 
-    # encyption secret/salt
+    # signing secret/salt (itsdangerous) -- this is NOT encryption, it only
+    # provides tamper-evidence: anything signed via notifications_utils'
+    # Signing client is still recoverable by anyone via base64 decoding alone.
     SECRET_KEY = os.getenv("SECRET_KEY")
     TOKEN_SECRET_KEY = os.getenv("TOKEN_SECRET_KEY")
     DANGEROUS_SALT = os.getenv("DANGEROUS_SALT")
+
+    # Fernet encryption key for fields that need genuine confidentiality
+    # (currently: the messagebox BSN). Deliberately a separate secret from
+    # SECRET_KEY/DANGEROUS_SALT above -- must be a Fernet.generate_key() value.
+    ENCRYPTION_SECRET_KEY = os.getenv("BSN_ENCRYPTION_KEY")
 
     # DB conection string
     SQLALCHEMY_DATABASE_URI = os.getenv("SQLALCHEMY_DATABASE_URI")
@@ -617,6 +625,7 @@ class Development(Config):
     SECRET_KEY = "dev-notify-secret-key"
     TOKEN_SECRET_KEY = "5YNWU0e_pN5ZyaSZvBd5uZb_sZlrVDFeOjiea6dq4zQ="
     DANGEROUS_SALT = "dev-notify-salt"
+    ENCRYPTION_SECRET_KEY = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
 
     MMG_INBOUND_SMS_AUTH = ["testkey"]
     MMG_INBOUND_SMS_USERNAME = ["username"]
@@ -731,10 +740,61 @@ class Sandbox(CloudFoundryConfig):
 NL_PREFIX = "notifynl"
 
 
+class QueueNamesNL(QueueNames):
+    MESSAGEBOX = "messagebox-tasks"
+
+    @staticmethod
+    def all_queues():
+        return QueueNames.all_queues() + [QueueNamesNL.MESSAGEBOX]
+
+    @staticmethod
+    def predefined_queues(prefix, aws_region, aws_account_id, endpoint_url=None):
+        base = endpoint_url or f"https://sqs.{aws_region}.amazonaws.com"
+        return {
+            f"{prefix}{queue}": {"url": f"{base}/{aws_account_id}/{prefix}{queue}"}
+            for queue in list(set(QueueNamesNL.all_queues() + QueueNamesNL.external_queues()))
+        }
+
+
+class TaskNamesNL(TaskNames):
+    MESSAGEBOX_DELIVER = "messagebox.deliver"
+    MESSAGEBOX_PROCESS_CALLBACKS = "messagebox.process-callbacks"
+    MESSAGEBOX_SCAN_ATTACHMENTS = "messagebox.virus-scan"
+    MESSAGEBOX_VIRUS_SCAN_SUCCESS = "messagebox.virus-scan-success"
+    MESSAGEBOX_VIRUS_SCAN_ERROR = "messagebox.virus-scan-error"
+    MESSAGEBOX_VIRUS_SCAN_FAILED = "messagebox.virus-scan-failed"
+    MESSAGEBOX_PROCESS_UNPROCESSED = "messagebox.process-unprocessed"
+    MESSAGEBOX_CHECK_STILL_PENDING = "messagebox.check-still-pending"
+    # Precompiled letters submitted as multiple PDFs, merged into one letter before delivery -
+    # own dedicated task flow, parallel to (and independent of) the single-PDF SCAN_FILE/
+    # SANITISE_LETTER/PROCESS_VIRUS_SCAN_* flow above.
+    SCAN_LETTER_PARTS = "scan-letter-parts"
+    SANITISE_LETTER_PARTS = "sanitise-letter-parts"
+    SANITISE_AND_MERGE_LETTER_PARTS = "sanitise-and-merge-letter-parts"
+    PROCESS_VIRUS_SCAN_FAILED_LETTER_PARTS = "process-virus-scan-failed-letter-parts"
+    PROCESS_VIRUS_SCAN_ERROR_LETTER_PARTS = "process-virus-scan-error-letter-parts"
+    # Ad-hoc PDF attachments submitted alongside a templated-letter send (distinct from the
+    # template's own fixed letter_attachment, and from the SCAN_LETTER_PARTS flow above,
+    # which is precompiled-letter-specific) - names must match notifications-antivirus's
+    # TaskNames entries of the same name exactly, since celery routes on these literal
+    # strings across services.
+    SCAN_LETTER_ATTACHMENTS = "scan-letter-attachments"
+    PROCESS_VIRUS_SCAN_SUCCESS_LETTER_ATTACHMENTS = "process-virus-scan-success-letter-attachments"
+    PROCESS_VIRUS_SCAN_FAILED_LETTER_ATTACHMENTS = "process-virus-scan-failed-letter-attachments"
+    PROCESS_VIRUS_SCAN_ERROR_LETTER_ATTACHMENTS = "process-virus-scan-error-letter-attachments"
+
+
 class ConfigNL(Config):
     """
     Overrides for NotifyNL usage
     """
+
+    # Falls back to API_HOST_NAME so an image with this fallback deployed
+    # ahead of a chart release that actually sets API_HOST_NAME_INTERNAL
+    # doesn't regress -- see notifynl-full's configmaps.yaml.
+    API_HOST_NAME_INTERNAL = os.getenv("API_HOST_NAME_INTERNAL", os.getenv("API_HOST_NAME"))
+
+    TIMEZONE = os.getenv("TZ", "Europe/Amsterdam")
 
     NOTIFY_EMAIL_DOMAIN = os.environ.get("NOTIFY_EMAIL_DOMAIN", "notifynl.nl")
     FROM_NUMBER = os.environ.get("FROM_NUMBER", "NOTIFYNLD")
@@ -762,10 +822,34 @@ class ConfigNL(Config):
     BEAT_SCHEDULE["check-time-to-collate-letters"] = {
         "task": "check-time-to-collate-letters",
         "schedule": crontab(minute=LETTER_COLLATION_FREQUENCY),  # every 5 minutes, adjust as needed
-        "options": {"queue": QueueNames.PERIODIC},
+        "options": {"queue": QueueNamesNL.PERIODIC},
     }
 
-    CELERY = {**Config.CELERY, "broker_transport_options": BROKER_TRANSPORT_OPTIONS, "beat_schedule": BEAT_SCHEDULE}
+    # The ebms-adapter has no true push callback -- delivery status is retrieved by polling the ebms-adapter for
+    # unprocessed messages. 5 minutes matches the existing tend-providers-back-to-middle cadence and balances adapter
+    # load against citizen-facing delivery-status latency.
+    MESSAGEBOX_POLL_FREQUENCY = os.getenv("MESSAGEBOX_POLL_FREQUENCY", "*/5")
+
+    BEAT_SCHEDULE["messagebox-process-unprocessed"] = {
+        "task": TaskNamesNL.MESSAGEBOX_PROCESS_UNPROCESSED,
+        "schedule": crontab(minute=MESSAGEBOX_POLL_FREQUENCY),
+        "options": {"queue": QueueNamesNL.PERIODIC},
+    }
+
+    BEAT_SCHEDULE["messagebox-check-still-pending"] = {
+        "task": TaskNamesNL.MESSAGEBOX_CHECK_STILL_PENDING,
+        "schedule": crontab(minute=0),  # hourly
+        "options": {"queue": QueueNamesNL.PERIODIC},
+    }
+
+    CELERY_IMPORTS = Config.CELERY["imports"] + ["app.celery.messagebox_tasks", "app.celery.messagebox_scheduled_tasks"]
+
+    CELERY = {
+        **Config.CELERY,
+        "broker_transport_options": BROKER_TRANSPORT_OPTIONS,
+        "beat_schedule": BEAT_SCHEDULE,
+        "imports": CELERY_IMPORTS,
+    }
 
     # Client-side SSL setup
     # NOTE: For mTLS setup, trusted certificates should be added to the system certificates.
@@ -799,6 +883,35 @@ class ConfigNL(Config):
 
     ASSET_PATH = "https://static.notifynl.nl/"
 
+    # NotifyNL-specific buckets
+    # *Names overriden in environment-specific configs, but default to empty string to avoid accidents*
+    S3_BUCKET_MESSAGEBOX_SCAN = ""
+    S3_BUCKET_MESSAGEBOX_ATTACHMENTS = ""
+    S3_BUCKET_MESSAGEBOX_INVALID = ""
+
+    # EbMS adapter
+    EBMS_ADAPTER_URL = os.getenv("EBMS_ADAPTER_URL", "http://localhost:8080")
+    # MijnOverheid Berichtenbox 2.0 GLOBE-R-BV contract constants.
+    # NotifyNL connects to Logius as an intermediary (one CPA, sending on
+    # behalf of many client organisations -- see Logius's "Technische
+    # Aansluithandleiding MijnOverheid Berichtenbox", section 1.2). The ebMS
+    # envelope's fromPartyId/toPartyId are therefore the two fixed parties
+    # named in that CPA (Worth Ventures and Logius), the same for every
+    # message -- NOT derived from the notification's recipient or service.
+    # The per-client-organisation OIN (e.g. Gemeente Den Haag) is carried in
+    # the message body's BerichtLeverancierID instead (see service.oin usage
+    # in app/clients/messagebox/ebms_adapter.py).
+    EBMS_BERICHTENBOX_CPA_ID = os.getenv("EBMS_BERICHTENBOX_CPA_ID")
+    EBMS_BERICHTENBOX_ACTION = os.getenv("EBMS_BERICHTENBOX_ACTION", "GLOBE-R-BV-Request")
+    EBMS_BERICHTENBOX_FROM_PARTY_ID = os.getenv("EBMS_BERICHTENBOX_FROM_PARTY_ID")
+    EBMS_BERICHTENBOX_TO_PARTY_ID = os.getenv("EBMS_BERICHTENBOX_TO_PARTY_ID")
+    # Literal BerichtType name -- must match a message type pre-configured and
+    # activated for this OIN in Logius's Berichtenbox Leveranciersportaal (a
+    # separate admin portal from the CPA/ebMS transport setup); it is not
+    # free text, and the generic ebms_adapter_client default ("bericht") is
+    # not itself a registered type in any known environment.
+    EBMS_BERICHTENBOX_MESSAGE_TYPE = os.getenv("EBMS_BERICHTENBOX_MESSAGE_TYPE", "bericht")
+
 
 class DevNL(ConfigNL):
     DEBUG = True
@@ -815,7 +928,20 @@ class DevNL(ConfigNL):
         "broker_transport_options": {
             **ConfigNL.CELERY["broker_transport_options"],
             "is_secure": False,
+            # ministack's default test account ID (000000000000), not
+            # Config.AWS_ACCOUNT_ID's real-AWS-shaped default -- confirmed
+            # against a live ministack container.
+            "predefined_queues": QueueNamesNL.predefined_queues(
+                Config.NOTIFICATION_QUEUE_PREFIX,
+                Config.AWS_REGION,
+                "000000000000",
+                endpoint_url="http://ministack:4566",
+            ),
         },
+        # overrides ConfigNL.CELERY's inherited (upstream-only) task_queues, which is built
+        # from base QueueNames.all_queues() and would otherwise never declare the NL-only
+        # messagebox queue for local celery workers to consume from.
+        "task_queues": [Queue(queue, Exchange("default"), routing_key=queue) for queue in QueueNamesNL.all_queues()],
     }
 
     SERVER_NAME = os.getenv("SERVER_NAME")
@@ -834,6 +960,9 @@ class DevNL(ConfigNL):
     S3_BUCKET_LETTER_SANITISE = f"{NL_PREFIX}-{NOTIFY_ENVIRONMENT}-letters-sanitise"
     S3_BUCKET_REPORT_REQUESTS_DOWNLOAD = f"{NL_PREFIX}-{NOTIFY_ENVIRONMENT}-report-requests-download"
     S3_BUCKET_TEMPLATE_EMAIL_FILES = f"{NL_PREFIX}-{NOTIFY_ENVIRONMENT}-template-email-files"
+    S3_BUCKET_MESSAGEBOX_SCAN = f"{NL_PREFIX}-{NOTIFY_ENVIRONMENT}-messagebox-scan"
+    S3_BUCKET_MESSAGEBOX_ATTACHMENTS = f"{NL_PREFIX}-{NOTIFY_ENVIRONMENT}-messagebox-attachments"
+    S3_BUCKET_MESSAGEBOX_INVALID = f"{NL_PREFIX}-{NOTIFY_ENVIRONMENT}-messagebox-invalid"
 
     INTERNAL_CLIENT_API_KEYS = {
         Config.ADMIN_CLIENT_ID: ["dev-notify-secret-key"],
@@ -842,6 +971,7 @@ class DevNL(ConfigNL):
 
     SECRET_KEY = "dev-notify-secret-key"
     DANGEROUS_SALT = "dev-notify-salt"
+    ENCRYPTION_SECRET_KEY = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
 
     MMG_INBOUND_SMS_AUTH = ["testkey"]
     MMG_INBOUND_SMS_USERNAME = ["username"]
@@ -879,8 +1009,11 @@ class TestNL(ConfigNL):
     S3_BUCKET_LETTER_SANITISE = f"{NL_PREFIX}-{NOTIFY_ENVIRONMENT}-letters-sanitise"
     S3_BUCKET_REPORT_REQUESTS_DOWNLOAD = f"{NL_PREFIX}-{NOTIFY_ENVIRONMENT}-report-requests-download"
     S3_BUCKET_TEMPLATE_EMAIL_FILES = f"{NL_PREFIX}-{NOTIFY_ENVIRONMENT}-template-email-files"
-
+    S3_BUCKET_MESSAGEBOX_SCAN = f"{NL_PREFIX}-{NOTIFY_ENVIRONMENT}-messagebox-scan"
+    S3_BUCKET_MESSAGEBOX_ATTACHMENTS = f"{NL_PREFIX}-{NOTIFY_ENVIRONMENT}-messagebox-attachments"
+    S3_BUCKET_MESSAGEBOX_INVALID = f"{NL_PREFIX}-{NOTIFY_ENVIRONMENT}-messagebox-invalid"
     ASSET_PATH = "https://static.test.notifynl.nl/"
+    API_RATE_LIMIT_ENABLED = True
 
 
 class AccNL(ConfigNL):
@@ -898,8 +1031,12 @@ class AccNL(ConfigNL):
     S3_BUCKET_LETTER_SANITISE = f"{NL_PREFIX}-{NOTIFY_ENVIRONMENT}-letters-sanitise"
     S3_BUCKET_REPORT_REQUESTS_DOWNLOAD = f"{NL_PREFIX}-{NOTIFY_ENVIRONMENT}-report-requests-download"
     S3_BUCKET_TEMPLATE_EMAIL_FILES = f"{NL_PREFIX}-{NOTIFY_ENVIRONMENT}-template-email-files"
+    S3_BUCKET_MESSAGEBOX_SCAN = f"{NL_PREFIX}-{NOTIFY_ENVIRONMENT}-messagebox-scan"
+    S3_BUCKET_MESSAGEBOX_ATTACHMENTS = f"{NL_PREFIX}-{NOTIFY_ENVIRONMENT}-messagebox-attachments"
+    S3_BUCKET_MESSAGEBOX_INVALID = f"{NL_PREFIX}-{NOTIFY_ENVIRONMENT}-messagebox-invalid"
 
     REGISTER_FUNCTIONAL_TESTING_BLUEPRINT = False
+    API_RATE_LIMIT_ENABLED = True
 
 
 class ProdNL(ConfigNL):
@@ -919,8 +1056,12 @@ class ProdNL(ConfigNL):
     S3_BUCKET_LETTER_SANITISE = f"{NL_PREFIX}-{NOTIFY_ENVIRONMENT}-letters-sanitise"
     S3_BUCKET_REPORT_REQUESTS_DOWNLOAD = f"{NL_PREFIX}-{NOTIFY_ENVIRONMENT}-report-requests-download"
     S3_BUCKET_TEMPLATE_EMAIL_FILES = f"{NL_PREFIX}-{NOTIFY_ENVIRONMENT}-template-email-files"
+    S3_BUCKET_MESSAGEBOX_SCAN = f"{NL_PREFIX}-{NOTIFY_ENVIRONMENT}-messagebox-scan"
+    S3_BUCKET_MESSAGEBOX_ATTACHMENTS = f"{NL_PREFIX}-{NOTIFY_ENVIRONMENT}-messagebox-attachments"
+    S3_BUCKET_MESSAGEBOX_INVALID = f"{NL_PREFIX}-{NOTIFY_ENVIRONMENT}-messagebox-invalid"
 
     REGISTER_FUNCTIONAL_TESTING_BLUEPRINT = False
+    API_RATE_LIMIT_ENABLED = True
 
 
 configs = {"development": DevNL, "test": Test, "testnl": TestNL, "acceptance": AccNL, "production": ProdNL}

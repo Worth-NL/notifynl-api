@@ -31,6 +31,7 @@ def test_check_if_letters_still_pending_virus_check_raises_zendesk_if_files_cant
     sample_letter_template, mocker
 ):
     mock_file_exists = mocker.patch("app.aws.s3.file_exists", return_value=False)
+    mocker.patch("app.celery.scheduled_tasks.get_letter_attachment_keys", return_value=[])
     mock_create_ticket = mocker.spy(NotifySupportTicket, "__init__")
     mock_celery = mocker.patch("app.celery.scheduled_tasks.notify_celery.send_task")
     mock_send_ticket_to_zendesk = mocker.patch(

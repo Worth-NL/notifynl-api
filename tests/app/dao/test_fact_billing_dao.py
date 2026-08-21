@@ -285,6 +285,32 @@ def test_fetch_billing_data_for_day_is_grouped_by_template_and_notification_type
     ),
     ids=("default", "bulk"),
 )
+def test_fetch_billing_data_for_day_includes_messagebox(notify_db_session, session, expected_bind_key):
+    service = create_service()
+    template = create_template(service=service, template_type="messagebox")
+    create_notification(template=template, status="delivered")
+    create_notification(template=template, status="sending")
+    create_notification(template=template, status="pending-virus-check")  # not yet sent, excluded
+
+    today = convert_utc_to_bst(datetime.utcnow())
+    with QueryRecorder() as query_recorder:
+        results = fetch_billing_data_for_day(today.date(), session=session)
+
+    assert {query_info.bind_key for query_info in query_recorder.queries} == {expected_bind_key}
+    assert len(results) == 1
+    assert results[0].notification_type == "messagebox"
+    assert results[0].notifications_sent == 2
+    assert results[0].billable_units == 0
+
+
+@pytest.mark.parametrize(
+    "session,expected_bind_key",
+    (
+        (db.session, None),
+        (db.session_bulk, "bulk"),
+    ),
+    ids=("default", "bulk"),
+)
 def test_fetch_billing_data_for_day_is_grouped_by_service(notify_db_session, session, expected_bind_key):
     service_1 = create_service()
     service_2 = create_service(service_name="Service 2")
@@ -863,6 +889,33 @@ def test_fetch_usage_for_service_annual(
     assert results[2].cost == Decimal("0.486")
     assert results[2].free_allowance_used == 1
     assert results[2].charged_units == 3
+
+
+@pytest.mark.parametrize(
+    "session,expected_bind_key",
+    (
+        (db.session, None),
+        (db.session_bulk, "bulk"),
+    ),
+    ids=("default", "bulk"),
+)
+def test_fetch_usage_for_service_annual_includes_messagebox(
+    sample_service, notify_db_session, session, expected_bind_key
+):
+    messagebox_template = create_template(service=sample_service, template_type="messagebox")
+    create_ft_billing(bst_date=date(2016, 4, 1), template=messagebox_template, rate=0, billable_unit=0)
+    create_ft_billing(bst_date=date(2016, 4, 2), template=messagebox_template, rate=0, billable_unit=0)
+    service_id = sample_service.id
+
+    with QueryRecorder() as query_recorder:
+        results = fetch_usage_for_service_annual(service_id=service_id, year=2016, session=session)
+
+    assert {query_info.bind_key for query_info in query_recorder.queries} == {expected_bind_key}
+    assert len(results) == 1
+    assert results[0].notification_type == "messagebox"
+    assert results[0].notifications_sent == 2
+    assert results[0].cost == Decimal("0")
+    assert results[0].free_allowance_used == 0
 
 
 @pytest.mark.parametrize(

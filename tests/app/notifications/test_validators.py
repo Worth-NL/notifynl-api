@@ -355,22 +355,19 @@ def test_service_can_send_to_recipient_fails_when_ignoring_guest_list(
 
 
 @pytest.mark.parametrize("recipient", ["07513332413", "some_other_email@test.com"])
-@pytest.mark.parametrize(
-    "key_type, error_message",
-    [
-        ("team", "Can’t send to this recipient using a team-only API key"),
-        (
-            "normal",
-            "Can’t send to this recipient when service is in trial mode – see https://www.notifications.service.gov.uk/trial-mode",
-        ),
-    ],
-)
+@pytest.mark.parametrize("key_type", ["team", "normal"])
 def test_service_can_send_to_recipient_fails_when_recipient_is_not_on_team(
     recipient,
     key_type,
-    error_message,
     notify_db_session,
 ):
+    if key_type == "team":
+        error_message = "Can’t send to this recipient using a team-only API key"
+    else:
+        error_message = (
+            "Je kunt niet naar deze ontvanger versturen omdat je dienst in proefmodus staat "
+            f"– zie {current_app.config['ADMIN_BASE_URL']}/using-notify/trial-mode"
+        )
     trial_mode_service = create_service(service_name="trial mode", restricted=True)
     with pytest.raises(BadRequestError) as exec_info:
         service_can_send_to_recipient(recipient, key_type, trial_mode_service)

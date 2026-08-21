@@ -285,7 +285,7 @@ def test_send_one_off_notification_raises_if_cant_send_to_recipient(
     with pytest.raises(BadRequestError) as e:
         send_one_off_notification(service.id, post_data)
 
-    assert "service is in trial mode" in e.value.message
+    assert "je dienst in proefmodus staat" in e.value.message
 
 
 def test_send_one_off_notification_raises_if_over_limit(notify_db_session, mocker):

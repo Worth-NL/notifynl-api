@@ -217,4 +217,4 @@ def update_letter_to_sending(notification):
 def _get_callback_url(notification_id: UUID) -> str:
     signed_notification_id = signing.encode(str(notification_id))
 
-    return f"{current_app.config['API_HOST_NAME']}/notifications/letter/status?token={signed_notification_id}"
+    return f"{current_app.config['API_HOST_NAME_INTERNAL']}/notifications/letter/status?token={signed_notification_id}"

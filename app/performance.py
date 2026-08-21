@@ -1,6 +1,7 @@
 import os
 from functools import partial
 
+from sentry_sdk.integrations.boto3 import Boto3Integration
 from sentry_sdk.integrations.celery import CeleryIntegration
 
 
@@ -41,12 +42,15 @@ def init_performance_monitoring():
             environment=environment,
             sample_rate=error_sample_rate,
             send_default_pii=send_pii,
-            request_bodies=send_request_bodies,
+            max_request_body_size=send_request_bodies,
             traces_sampler=traces_sampler,
+            enable_logs=True,
             # We explicitly enable the celery integration here so that we can toggle `monitor_beat_tasks` on (default
             # is off). This doesn't stop a number of other integrations being automatically enabled, eg Flask, Redis,
-            # SQLAlchemy.
-            integrations=[CeleryIntegration(monitor_beat_tasks=True)],
+            # SQLAlchemy. Boto3Integration is explicit too: it spans every S3/SQS call (including kombu's own SQS
+            # broker polling, not just deliberate app-level S3 writes) -- noisy, but the alternative is no visibility
+            # at all into whether a given notification's S3 writes/queue dispatches actually happened.
+            integrations=[CeleryIntegration(monitor_beat_tasks=True), Boto3Integration()],
             release=release,
         )
 

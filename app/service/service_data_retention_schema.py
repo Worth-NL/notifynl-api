@@ -5,7 +5,7 @@ add_service_data_retention_request = {
     "type": "object",
     "properties": {
         "days_of_retention": {"type": "integer"},
-        "notification_type": {"enum": ["sms", "letter", "email"]},
+        "notification_type": {"enum": ["sms", "letter", "email", "messagebox"]},
     },
     "required": ["days_of_retention", "notification_type"],
 }

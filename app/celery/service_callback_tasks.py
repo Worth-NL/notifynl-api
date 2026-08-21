@@ -11,6 +11,7 @@ from werkzeug.local import LocalProxy
 
 from app import memo_resetters, notify_celery, signing
 from app.config import QueueNames
+from app.constants import MESSAGEBOX_TYPE
 from app.dao.inbound_sms_dao import dao_get_inbound_sms_by_id
 from app.dao.returned_letters_dao import fetch_returned_letter_callback_data_dao
 from app.dao.service_callback_api_dao import get_service_callback_api_by_callback_type
@@ -203,7 +204,11 @@ def create_delivery_status_callback_data(notification, service_callback_api):
     data = {
         "notification_id": str(notification.id),
         "notification_client_reference": notification.client_reference,
-        "notification_to": notification.to,
+        # Messagebox's `to` is the BSN -- never send it to a service's callback
+        # URL, encrypted or not: it's meaningless ciphertext to the receiving
+        # service, and decrypting it just to re-send over HTTP would reintroduce
+        # exposure this change is meant to close.
+        "notification_to": None if notification.notification_type == MESSAGEBOX_TYPE else notification.to,
         "notification_status": notification.status,
         "notification_created_at": notification.created_at.strftime(DATETIME_FORMAT),
         "notification_updated_at": (

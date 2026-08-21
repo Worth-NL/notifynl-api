@@ -41,6 +41,7 @@ from app.constants import (
     INVITE_PENDING,
     INVITED_USER_STATUS_TYPES,
     LETTER_TYPE,
+    MESSAGEBOX_TYPE,
     MOBILE_TYPE,
     NOTIFICATION_CREATED,
     NOTIFICATION_DELIVERED,
@@ -594,6 +595,10 @@ class Service(db.Model, Versioned):
     contact_link = db.Column(db.String(255), nullable=True, unique=False)
 
     letter_message_limit = db.Column(db.BigInteger, index=False, unique=False, nullable=False, default=999_999_999)
+    # Address-box vertical offset for letter PDFs: "50mm" (standard) or "60mm" (Pingen, the
+    # default delivery provider whenever a service's organisation has no custom Printstraat
+    # integration configured). See notifications_utils BaseLetterTemplate._extras.
+    letter_address_placement = db.Column(db.String(5), index=False, unique=False, nullable=True, default="60mm")
     sms_message_limit = db.Column(db.BigInteger, index=False, unique=False, nullable=False, default=999_999_999)
     international_sms_message_limit = db.Column(
         db.BigInteger, index=False, unique=False, nullable=False, default=250_000
@@ -632,6 +637,8 @@ class Service(db.Model, Versioned):
         uselist=False,
         backref=db.backref("services", lazy="dynamic"),
     )
+
+    oin = db.Column(db.String(20), nullable=True)
 
     @hybrid_property  # a hybrid_property enables us to still use it in queries
     def name(self):
@@ -1533,7 +1540,10 @@ class Notification(db.Model):
     __tablename__ = "notifications"
 
     id = db.Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    to = db.Column(db.String, nullable=False)
+    # Nullable so a messagebox notification's BSN can be wiped once it reaches
+    # a permanent end state (see app/dao/notifications_dao.py::_update_notification_status)
+    # -- always populated for every other notification type.
+    to = db.Column(db.String, nullable=True)
     normalised_to = db.Column(db.String, nullable=True)
     job_id = db.Column(UUID(as_uuid=True), db.ForeignKey("jobs.id"), index=True, unique=False)
     job = db.relationship("Job", backref=db.backref("notifications", lazy="dynamic"))
@@ -1578,6 +1588,14 @@ class Notification(db.Model):
     postage = db.Column(db.String, nullable=True)
 
     unsubscribe_link = db.Column(db.String, nullable=True)
+
+    # NL: the provider's raw detailed status/reason code -- e.g. a Firetext SMS
+    # failure code, or a messagebox VerwerkingsCode (Verwerkt/BerichtBestaatAl/...).
+    detailed_status_code = db.Column(db.String, nullable=True)
+    # NL, messagebox-only: the Stadium value from a BerichtVerwerkResponse --
+    # which processing phase a failure was detected in. No other channel has
+    # an equivalent concept.
+    messagebox_stadium = db.Column(db.String, nullable=True)
 
     __table_args__ = (
         db.ForeignKeyConstraint(
@@ -1685,12 +1703,18 @@ class Notification(db.Model):
 
     @property
     def content(self):
+        # messagebox notifications are never personalised/templated - the template just holds
+        # a fixed placeholder body, since Notify has no access to the actual berichtenbox content
+        if self.template.template_type == MESSAGEBOX_TYPE:
+            return self.template.content
         return self.template._as_utils_template_with_personalisation(
             self.personalisation
         ).content_with_placeholders_filled_in
 
     @property
     def subject(self):
+        if self.template.template_type == MESSAGEBOX_TYPE:
+            return self.template.subject
         template_object = self.template._as_utils_template_with_personalisation(self.personalisation)
         return getattr(template_object, "subject", None)
 
@@ -1724,6 +1748,16 @@ class Notification(db.Model):
                 "created": "Accepted",
                 "delivered": "Received",
                 "returned-letter": "Returned",
+            },
+            "messagebox": {
+                "failed": "Failed",
+                "technical-failure": "Technical failure",
+                "permanent-failure": "Permanent failure",
+                "delivered": "Delivered",
+                "sending": "Sending",
+                "created": "Sending",
+                "pending-virus-check": "Pending virus check",
+                "virus-scan-failed": "Virus scan failed",
             },
         }[self.template.template_type].get(self.status, self.status)
 
@@ -1762,7 +1796,7 @@ class Notification(db.Model):
         return SerializedNotificationForCSV(
             id=self.id,
             row_number="" if self.job_row_number is None else self.job_row_number + 1,
-            recipient=self.to,
+            recipient=str(self.id) if self.notification_type == MESSAGEBOX_TYPE else self.to,
             client_reference=self.client_reference or "",
             template_name=self.template.name,
             template_type=self.template.template_type,
@@ -1999,6 +2033,9 @@ class NotificationHistory(db.Model):
     postage = db.Column(db.String, nullable=True)
 
     document_download_count = db.Column(db.Integer, nullable=True)
+
+    detailed_status_code = db.Column(db.String, nullable=True)
+    messagebox_stadium = db.Column(db.String, nullable=True)
 
     __table_args__ = (
         db.ForeignKeyConstraint(

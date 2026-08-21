@@ -12,6 +12,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from app import signing
 from app.celery.service_callback_tasks import (
     _send_data_to_service_callback_api,
+    create_delivery_status_callback_data,
     create_returned_letter_callback_data,
     send_complaint_to_service,
     send_delivery_status_to_service,
@@ -20,9 +21,11 @@ from app.celery.service_callback_tasks import (
 )
 from app.constants import (
     KEY_TYPE_NORMAL,
+    MESSAGEBOX_TYPE,
     NOTIFICATION_RETURNED_LETTER,
     ServiceCallbackTypes,
 )
+from app.dao.templates_messagebox_dao import get_messagebox_template
 from app.utils import DATETIME_FORMAT
 from tests.app.db import (
     create_api_key,
@@ -164,6 +167,33 @@ def test_send_delivery_status_to_service_sends_callback_to_service(notify_db_ses
         expected_data["id"],
         {"notification_id": expected_data["id"]},
     )
+
+
+def test_create_delivery_status_callback_data_omits_recipient_for_messagebox(notify_db_session, notify_user):
+    service = create_service(service_permissions=[MESSAGEBOX_TYPE], restricted=True)
+    template = get_messagebox_template(service.id)
+    callback_api = create_service_callback_api(
+        service=service,
+        url="https://some.service.gov.uk/",
+        bearer_token="something_unique",
+        callback_type="delivery_status",
+    )
+    notification = create_notification(template=template, status="delivered")
+
+    encoded = create_delivery_status_callback_data(notification, callback_api)
+    data = signing.decode(encoded)
+
+    assert data["notification_to"] is None
+
+
+def test_create_delivery_status_callback_data_keeps_recipient_for_non_messagebox(notify_db_session):
+    callback_api, template = _set_up_test_data("email", "delivery_status")
+    notification = create_notification(template=template, status="delivered")
+
+    encoded = create_delivery_status_callback_data(notification, callback_api)
+    data = signing.decode(encoded)
+
+    assert data["notification_to"] == notification.to
 
 
 def test_send_complaint_to_service_sends_callback_to_service(notify_db_session, mocker):

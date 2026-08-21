@@ -86,20 +86,19 @@ def run_migrations_online():
 
     connection = engine.connect()
     try:
-        # Check for current Alembic head
-        expected_head_file = os.path.join(os.path.dirname(__file__), '..', 'migrations', '.current-alembic-head')
+        # Required because we need the base migrations to have run for the NL migrations to work.
+        # Only enforced when EXPECTED_ALPHAGOV_REVISION is set (the chart sets it for the
+        # forward/upgrade path; it's deliberately omitted for downgrades, where correctness
+        # instead comes from running the NL step before the alphagov step).
+        expected_head = os.environ.get("EXPECTED_ALPHAGOV_REVISION")
+        if expected_head:
+            current_head = connection.execute(text("SELECT version_num FROM alembic_version")).scalar()
 
-        with open(expected_head_file) as f:
-            expected_head = f.read().strip()
+            if current_head != expected_head:
+                print(f'Current Alembic head [{current_head}] does not match expected head [{expected_head}]')
+                sys.exit(1)
 
-        current_head = connection.execute(text("SELECT version_num FROM alembic_version")).scalar()
-
-        # Required because we need the base migrations to have run for the NL migrations to work
-        if current_head != expected_head:
-            print(f'Current Alembic head [{current_head}] does not match expected head [{expected_head}]')
-            sys.exit(1)
-
-        print(f'Current UK Alembic head: [{current_head}]' )
+            print(f'Current UK Alembic head: [{current_head}]')
 
         context.configure(
             connection=connection,
@@ -142,6 +141,7 @@ def run_migrations_online():
     except Exception as e:
         print("NL migrations failed because: ", e)
         connection.rollback()
+        raise
     finally:
         connection.close()
 
