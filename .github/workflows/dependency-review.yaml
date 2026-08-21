@@ -14,3 +14,55 @@ jobs:
        uses: actions/dependency-review-action@2031cfc080254a8a887f58cffee85186f0e49e48
        with:
          fail-on-severity: high
+
+  pip-audit-nl:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+     - name: 'Checkout Repository'
+       uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+     - name: Set up Python
+       uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+       with:
+         python-version: '3.x'
+     - name: Install pip-audit
+       run: pip install pip-audit
+     - name: Audit NL requirements
+       run: |
+         set +e
+         # Git-pinned deps (e.g. the notifications-utils NL fork) have no PyPI/OSV
+         # entry to check and can't coexist with the file's hash-pinned lines in
+         # pip's resolver, so they're excluded before pip-audit ever sees the file.
+         grep -v '@ git+' requirements_nl.txt > /tmp/requirements_nl_filtered.txt
+         grep -v '@ git+' requirements_nl_test.txt > /tmp/requirements_nl_test_filtered.txt
+         # --disable-pip: both filtered files are fully hash-pinned, so pip-audit can read
+         # name/version/hash directly instead of shelling out to `pip install --dry-run`.
+         # That dry-run install otherwise tries to resolve transitive deps of the packages
+         # we DO keep (e.g. celery pulling in kombu>=5.6.0) from PyPI to satisfy them, which
+         # has no hash and crashes pip's hash-checking mode — --disable-pip skips resolution
+         # entirely and audits exactly what's pinned in the file.
+         pip-audit -r /tmp/requirements_nl_filtered.txt -r /tmp/requirements_nl_test_filtered.txt \
+           --disable-pip --format=markdown --output=/tmp/pip-audit-raw.md
+         exit_code=$?
+         {
+           echo "_Advisory only — this check never blocks merging. pip-audit has no severity data (see"
+           echo "[pypa/pip-audit#654](https://github.com/pypa/pip-audit/issues/654)), so findings aren't"
+           echo "filtered by severity here; high/critical enforcement across all requirements files still"
+           echo "comes from the dependency-review job above. Git-pinned dependencies (e.g. the"
+           echo "notifications-utils NL fork) aren't on PyPI/OSV and can't be checked — excluded from this scan._"
+           echo
+           if [ -s /tmp/pip-audit-raw.md ]; then
+             cat /tmp/pip-audit-raw.md
+           elif [ "$exit_code" -eq 0 ]; then
+             echo "No known vulnerabilities found."
+           else
+             echo "pip-audit failed to run (exit $exit_code) — check the workflow logs."
+           fi
+         } > pip-audit-report.md
+     - name: Comment on PR
+       uses: marocchino/sticky-pull-request-comment@773744901bac0e8cbb5a0dc842800d45e9b2b405
+       with:
+         header: pip-audit (NL requirements)
+         path: pip-audit-report.md
