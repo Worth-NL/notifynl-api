@@ -370,6 +370,7 @@ def sanitise_letter(self, filename):
                 "notification_id": str(notification.id),
                 "filename": filename,
                 "allow_international_letters": notification.service.has_permission(INTERNATIONAL_LETTERS),
+                "letter_address_placement": notification.service.letter_address_placement,
             },
             queue=QueueNames.SANITISE_LETTERS,
             MessageGroupId=self.message_group_id,
@@ -420,6 +421,7 @@ def sanitise_letter_parts(self, filenames):
                 "notification_id": str(notification.id),
                 "filenames": filenames,
                 "allow_international_letters": notification.service.has_permission(INTERNATIONAL_LETTERS),
+                "letter_address_placement": notification.service.letter_address_placement,
             },
             queue=QueueNames.SANITISE_LETTERS,
         )
@@ -731,6 +733,7 @@ def resanitise_pdf(self, notification_id):
             "notification_id": str(notification.id),
             "file_location": f"{folder_name}{filename}",
             "allow_international_letters": notification.service.has_permission(INTERNATIONAL_LETTERS),
+            "letter_address_placement": notification.service.letter_address_placement,
         },
         queue=QueueNames.SANITISE_LETTERS,
         MessageGroupId=self.message_group_id if self.message_group_id is not None else str(notification.service_id),

@@ -495,6 +495,7 @@ def test_sanitise_letter_calls_template_preview_sanitise_task(
             "notification_id": str(sample_letter_notification.id),
             "filename": filename,
             "allow_international_letters": expected_international_letters_allowed,
+            "letter_address_placement": sample_letter_notification.service.letter_address_placement,
         },
         queue=QueueNames.SANITISE_LETTERS,
         MessageGroupId=str(sample_letter_notification.service_id),
