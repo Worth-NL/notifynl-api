@@ -311,6 +311,37 @@ def test_check_if_messagebox_still_pending_alerts_zendesk_for_stuck_sending(mock
     mock_zendesk.assert_called_once()
 
 
+def test_check_if_messagebox_still_pending_does_not_re_alert_stuck_sending_within_cooldown(
+    mocker, messagebox_notification
+):
+    # Without this cooldown, a notification stuck for days would generate a brand-new
+    # Zendesk ticket every single hourly run -- see messagebox-stuck-sending-zendesk-ticket-flood.
+    messagebox_notification.created_at = datetime.utcnow() - timedelta(hours=48)
+    messagebox_scheduled_tasks.current_app.config["SEND_ZENDESK_ALERTS_ENABLED"] = True
+    mocker.patch("app.celery.messagebox_scheduled_tasks.redis_store.get", return_value="1")
+    mock_zendesk = mocker.patch("app.celery.messagebox_scheduled_tasks.zendesk_client.send_ticket_to_zendesk")
+
+    check_if_messagebox_still_pending(max_hours_ago_to_check_sending=24)
+
+    mock_zendesk.assert_not_called()
+
+
+def test_check_if_messagebox_still_pending_marks_stuck_sending_notification_alerted(mocker, messagebox_notification):
+    messagebox_notification.created_at = datetime.utcnow() - timedelta(hours=48)
+    messagebox_scheduled_tasks.current_app.config["SEND_ZENDESK_ALERTS_ENABLED"] = True
+    mocker.patch("app.celery.messagebox_scheduled_tasks.redis_store.get", return_value=None)
+    mock_redis_set = mocker.patch("app.celery.messagebox_scheduled_tasks.redis_store.set")
+    mocker.patch("app.celery.messagebox_scheduled_tasks.zendesk_client.send_ticket_to_zendesk")
+
+    check_if_messagebox_still_pending(max_hours_ago_to_check_sending=24)
+
+    mock_redis_set.assert_called_once_with(
+        f"{messagebox_scheduled_tasks.MESSAGEBOX_STUCK_SENDING_ALERT_REDIS_PREFIX}:{messagebox_notification.id}",
+        "1",
+        ex=messagebox_scheduled_tasks.MESSAGEBOX_STUCK_ALERT_COOLDOWN_SECONDS,
+    )
+
+
 def test_check_if_messagebox_still_pending_ignores_recently_sending(mocker, messagebox_notification):
     # messagebox_notification fixture defaults to NOTIFICATION_SENDING.
     messagebox_notification.created_at = datetime.utcnow()
@@ -335,6 +366,21 @@ def test_check_if_messagebox_still_pending_alerts_zendesk_for_stuck_virus_check(
     check_if_messagebox_still_pending(max_minutes_ago_to_check=60)
 
     mock_zendesk.assert_called_once()
+
+
+def test_check_if_messagebox_still_pending_does_not_re_alert_virus_check_within_cooldown(
+    mocker, messagebox_notification
+):
+    messagebox_notification.status = NOTIFICATION_PENDING_VIRUS_CHECK
+    messagebox_notification.created_at = datetime.utcnow() - timedelta(minutes=120)
+    messagebox_notification.updated_at = messagebox_notification.created_at
+    messagebox_scheduled_tasks.current_app.config["SEND_ZENDESK_ALERTS_ENABLED"] = True
+    mocker.patch("app.celery.messagebox_scheduled_tasks.redis_store.get", return_value="1")
+    mock_zendesk = mocker.patch("app.celery.messagebox_scheduled_tasks.zendesk_client.send_ticket_to_zendesk")
+
+    check_if_messagebox_still_pending(max_minutes_ago_to_check=60)
+
+    mock_zendesk.assert_not_called()
 
 
 def test_check_if_messagebox_still_pending_ignores_recent_notifications(mocker, messagebox_notification):

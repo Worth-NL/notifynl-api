@@ -7,7 +7,7 @@ from ebms_adapter_client.client import EbmsAdapterClient as EbmsCoreClient
 from flask import current_app
 from notifications_utils.clients.zendesk.zendesk_client import NotifySupportTicket, NotifyTicketType
 
-from app import notify_celery, statsd_client, zendesk_client
+from app import notify_celery, redis_store, statsd_client, zendesk_client
 from app.celery.process_messagebox_client_response_tasks import process_messagebox_client_response
 from app.config import QueueNamesNL, TaskNamesNL
 from app.constants import NOTIFICATION_CREATED, NOTIFICATION_PENDING_VIRUS_CHECK
@@ -26,6 +26,31 @@ MESSAGEBOX_STATUS_FAILED = "20"
 # Logius always echoes back verbatim regardless of BerichtID) is the fallback correlation
 # key in that case.
 MESSAGEBOX_NIL_BERICHT_ID = "00000000-0000-0000-0000-000000000000"
+
+# check_if_messagebox_still_pending runs hourly and, on its own, has no memory of an
+# earlier alert -- a notification that's stuck (pending-virus-check or stuck-sending)
+# stays stuck across every run until a human resolves it, so without this cooldown it
+# would create a brand-new Zendesk ticket every single hour, indefinitely, for the same
+# notification. This caps re-alerts on any one notification to once per cooldown window
+# instead, while still alerting immediately the first time a notification is seen stuck.
+MESSAGEBOX_STUCK_ALERT_COOLDOWN_SECONDS = 60 * 60 * 24  # 24h
+MESSAGEBOX_STUCK_PENDING_VIRUS_CHECK_ALERT_REDIS_PREFIX = "messagebox-alerted:pending-virus-check"
+MESSAGEBOX_STUCK_SENDING_ALERT_REDIS_PREFIX = "messagebox-alerted:stuck-sending"
+
+
+def _notification_ids_due_for_alert(notification_ids: list[str], redis_key_prefix: str) -> list[str]:
+    """Filters to notification ids that haven't been alerted on (via this prefix)
+    within the cooldown window -- either never alerted, or the cooldown has expired."""
+    return [
+        notification_id
+        for notification_id in notification_ids
+        if redis_store.get(f"{redis_key_prefix}:{notification_id}") is None
+    ]
+
+
+def _mark_notifications_alerted(notification_ids: list[str], redis_key_prefix: str) -> None:
+    for notification_id in notification_ids:
+        redis_store.set(f"{redis_key_prefix}:{notification_id}", "1", ex=MESSAGEBOX_STUCK_ALERT_COOLDOWN_SECONDS)
 
 
 @notify_celery.task(name=TaskNamesNL.MESSAGEBOX_PROCESS_UNPROCESSED, early_log_level=logging.DEBUG)
@@ -134,9 +159,17 @@ def check_if_messagebox_still_pending(max_minutes_ago_to_check: int = 60, max_ho
     already accepted the message and we're only waiting on its async result,
     which has no fixed SLA -- blindly resending would duplicate the outbound
     call and race the real result (ebms-core rejects the duplicate as
-    BerichtBestaatAl), so a stuck one always needs human investigation into
-    whether messagebox_process_unprocessed_messages has stopped draining the
-    unprocessed envelope queue."""
+    BerichtBestaatAl), so a stuck one always needs human investigation. A
+    stopped-draining poller is only one possible cause, not the default
+    assumption -- see docs/notification-flows/messagebox.md's troubleshooting
+    section for how to tell that apart from ebms-core/Logius never having
+    produced a result at all.
+
+    Both alert branches re-alert on any one notification at most once per
+    MESSAGEBOX_STUCK_ALERT_COOLDOWN_SECONDS (tracked in redis, keyed by
+    notification id) rather than every run -- otherwise a notification that
+    stays stuck for days would generate a brand-new Zendesk ticket every
+    single hour, forever."""
     cutoff_time = datetime.utcnow() - timedelta(minutes=max_minutes_ago_to_check)
     notifications = dao_messagebox_notifications_still_pending(cutoff_time)
 
@@ -158,14 +191,26 @@ def check_if_messagebox_still_pending(max_minutes_ago_to_check: int = 60, max_ho
 
     if stuck_pending_virus_check:
         notification_ids = sorted(str(notification.id) for notification in stuck_pending_virus_check)
-
-        msg = (
-            f"{len(stuck_pending_virus_check)} messagebox notifications have been pending-virus-check for over "
-            f"{max_minutes_ago_to_check} minutes. This needs manual investigation.\n\n"
-            f"Notifications: {notification_ids}"
+        due_notification_ids = _notification_ids_due_for_alert(
+            notification_ids, MESSAGEBOX_STUCK_PENDING_VIRUS_CHECK_ALERT_REDIS_PREFIX
         )
 
-        if current_app.should_send_zendesk_alerts:
+        current_app.logger.error(
+            "Messagebox notifications still pending virus check",
+            extra={
+                "number_of_notifications": len(stuck_pending_virus_check),
+                "notification_ids": notification_ids,
+                "new_or_due_for_re_alert": due_notification_ids,
+            },
+        )
+
+        if due_notification_ids and current_app.should_send_zendesk_alerts:
+            msg = (
+                f"{len(due_notification_ids)} messagebox notifications have been pending-virus-check for over "
+                f"{max_minutes_ago_to_check} minutes. This needs manual investigation. Re-alerted at most once "
+                f"per {MESSAGEBOX_STUCK_ALERT_COOLDOWN_SECONDS // 3600}h per notification while still stuck.\n\n"
+                f"Notifications: {due_notification_ids}"
+            )
             environment = current_app.config["NOTIFY_ENVIRONMENT"]
             ticket = NotifySupportTicket(
                 subject=f"[{environment}] Messagebox notifications still pending virus check",
@@ -175,26 +220,36 @@ def check_if_messagebox_still_pending(max_minutes_ago_to_check: int = 60, max_ho
                 notify_task_type="notify_task_messagebox_pending_scan",
             )
             zendesk_client.send_ticket_to_zendesk(ticket)
-            current_app.logger.error(
-                "Messagebox notifications still pending virus check",
-                extra={"number_of_notifications": len(stuck_pending_virus_check), "notification_ids": notification_ids},
-            )
+            _mark_notifications_alerted(due_notification_ids, MESSAGEBOX_STUCK_PENDING_VIRUS_CHECK_ALERT_REDIS_PREFIX)
 
     sending_cutoff_time = datetime.utcnow() - timedelta(hours=max_hours_ago_to_check_sending)
     stuck_sending = dao_messagebox_notifications_stuck_sending(sending_cutoff_time)
 
     if stuck_sending:
         notification_ids = sorted(str(notification.id) for notification in stuck_sending)
-
-        msg = (
-            f"{len(stuck_sending)} messagebox notifications have been sending for over "
-            f"{max_hours_ago_to_check_sending} hours with no result from ebms-core. This likely means "
-            "messagebox_process_unprocessed_messages has stopped draining the unprocessed envelope queue -- "
-            "needs manual investigation. Do not resend.\n\n"
-            f"Notifications: {notification_ids}"
+        due_notification_ids = _notification_ids_due_for_alert(
+            notification_ids, MESSAGEBOX_STUCK_SENDING_ALERT_REDIS_PREFIX
         )
 
-        if current_app.should_send_zendesk_alerts:
+        current_app.logger.error(
+            "Messagebox notifications stuck sending",
+            extra={
+                "number_of_notifications": len(stuck_sending),
+                "notification_ids": notification_ids,
+                "new_or_due_for_re_alert": due_notification_ids,
+            },
+        )
+
+        if due_notification_ids and current_app.should_send_zendesk_alerts:
+            msg = (
+                f"{len(due_notification_ids)} messagebox notifications have been sending for over "
+                f"{max_hours_ago_to_check_sending} hours with no result from ebms-core. Do not resend. "
+                f"Re-alerted at most once per {MESSAGEBOX_STUCK_ALERT_COOLDOWN_SECONDS // 3600}h per "
+                "notification while still stuck. See the messagebox flow doc's troubleshooting section "
+                "(docs/notification-flows/messagebox.md) for how to tell an external Logius-side gap apart "
+                "from a local poller/processing issue before escalating.\n\n"
+                f"Notifications: {due_notification_ids}"
+            )
             environment = current_app.config["NOTIFY_ENVIRONMENT"]
             ticket = NotifySupportTicket(
                 subject=f"[{environment}] Messagebox notifications stuck sending",
@@ -204,7 +259,4 @@ def check_if_messagebox_still_pending(max_minutes_ago_to_check: int = 60, max_ho
                 notify_task_type="notify_task_messagebox_stuck_sending",
             )
             zendesk_client.send_ticket_to_zendesk(ticket)
-            current_app.logger.error(
-                "Messagebox notifications stuck sending",
-                extra={"number_of_notifications": len(stuck_sending), "notification_ids": notification_ids},
-            )
+            _mark_notifications_alerted(due_notification_ids, MESSAGEBOX_STUCK_SENDING_ALERT_REDIS_PREFIX)
