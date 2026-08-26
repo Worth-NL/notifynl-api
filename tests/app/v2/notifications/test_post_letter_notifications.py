@@ -520,24 +520,58 @@ def test_post_letter_notification_returns_403_if_not_allowed_to_send_notificatio
     assert error_json["errors"] == [{"error": "BadRequestError", "message": expected_message}]
 
 
-def test_post_letter_notification_doesnt_accept_team_key(api_client_request, sample_letter_template, mocker):
-    mocker.patch("app.celery.letters_pdf_tasks.get_pdf_for_templated_letter.apply_async")
+def test_post_letter_notification_with_team_key_simulates_like_test_key(
+    notify_api, api_client_request, notify_db_session, mock_celery_task
+):
+    # [NOTIFYNL] Unlike upstream (which rejects team keys for letters with a 403), a team
+    # key simulates a letter exactly like a test key here - letters have no equivalent of
+    # the team-member recipient restriction that makes team keys meaningful for email/SMS,
+    # so there's nothing left for a team key to do differently from a test key on this
+    # channel. This lets Den Haag use a single team key to send real, team-restricted
+    # email/SMS while also getting simulated letters against the same test environment.
+    # International address with a country name on the last line, rather than a UK-style
+    # postcode - avoids the pre-existing "[NOTIFYNL] PostalAddress issue" that skips most
+    # UK-postcode-shaped letter tests in this file (e.g.
+    # test_post_letter_notification_with_test_key_creates_pdf_and_sets_status_to_delivered
+    # above), same pattern as test_post_letter_notification_stores_country.
+    service = create_service(service_permissions=[LETTER_TYPE, INTERNATIONAL_LETTERS])
+    template = create_template(service, template_type="letter")
     data = {
-        "template_id": str(sample_letter_template.id),
-        "personalisation": {"address_line_1": "Foo", "address_line_2": "Bar", "postcode": "Baz"},
+        "template_id": str(template.id),
+        "personalisation": {
+            "address_line_1": "Kaiser Wilhelm II",
+            "address_line_2": "Kronprinzenpalais",
+            "address_line_5": "   deutschland   ",
+        },
+        "reference": "foo",
     }
 
-    error_json = api_client_request.post(
-        sample_letter_template.service_id,
-        "v2_notifications.post_notification",
-        notification_type="letter",
-        _data=data,
-        _api_key_type=KEY_TYPE_TEAM,
-        _expected_status=403,
-    )
+    fake_create_letter_task = mock_celery_task(get_pdf_for_templated_letter)
+    fake_create_dvla_response_task = mock_celery_task(create_fake_letter_callback)
 
-    assert error_json["status_code"] == 403
-    assert error_json["errors"] == [{"error": "BadRequestError", "message": "Cannot send letters with a team api key"}]
+    with set_config_values(notify_api, {"TEST_LETTERS_FAKE_DELIVERY": False}):
+        api_client_request.post(
+            service.id,
+            "v2_notifications.post_notification",
+            notification_type="letter",
+            _data=data,
+            _api_key_type=KEY_TYPE_TEAM,
+        )
+
+    notification = Notification.query.one()
+
+    fake_create_letter_task.assert_called_once_with(
+        [str(notification.id)],
+        queue="research-mode-tasks",
+        MessageGroupId=str(service.id),
+    )
+    assert not fake_create_dvla_response_task.called
+    assert notification.status == NOTIFICATION_DELIVERED
+    assert notification.updated_at is not None
+    # persisted as key_type=test, not the raw "team" value - see create_letter_notification,
+    # which is what makes letters_pdf_tasks.py's existing key_type==test checks (test S3
+    # bucket, skip real billing) apply correctly to a team-key letter too.
+    assert notification.key_type == KEY_TYPE_TEST
 
 
 def test_post_letter_notification_doesnt_send_in_trial(api_client_request, sample_trial_letter_template, mocker):

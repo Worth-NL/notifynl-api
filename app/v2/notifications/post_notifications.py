@@ -27,8 +27,7 @@ from app.config import QueueNames, TaskNames, TaskNamesNL
 from app.constants import (
     DEFAULT_DOCUMENT_DOWNLOAD_RETENTION_PERIOD,
     EMAIL_TYPE,
-    KEY_TYPE_TEAM,
-    KEY_TYPE_TEST,
+    KEY_TYPE_NORMAL,
     LETTER_TYPE,
     NOTIFICATION_CREATED,
     NOTIFICATION_DELIVERED,
@@ -410,10 +409,12 @@ def _dispatch_templated_letter_pdf(notification, *, test_key, attachments, queue
 def process_letter_notification(
     *, letter_data, api_key, service, template, template_with_content, reply_to_text, precompiled=False
 ):
-    if api_key.key_type == KEY_TYPE_TEAM:
-        raise BadRequestError(message="Cannot send letters with a team api key", status_code=403)
-
-    if service.restricted and api_key.key_type != KEY_TYPE_TEST:
+    # [NOTIFYNL] Team keys have no concept of a "team member" letter recipient (a postal
+    # address isn't tied to a user), so team keys simulate letters exactly like test keys
+    # instead of being rejected - this lets a single team key be used to both send real
+    # (team-restricted) email/SMS and simulated letters. See create_letter_notification,
+    # which is what actually persists this as key_type=test on the Notification row.
+    if service.restricted and api_key.key_type == KEY_TYPE_NORMAL:
         raise BadRequestError(message="Cannot send letters when service is in trial mode", status_code=403)
 
     if precompiled:
@@ -433,7 +434,7 @@ def process_letter_notification(
 
     postage = validate_address(service, letter_data["personalisation"])
 
-    test_key = api_key.key_type == KEY_TYPE_TEST
+    test_key = api_key.key_type != KEY_TYPE_NORMAL
 
     # [NOTIFYNL] ad-hoc PDF(s) submitted alongside a templated-letter send, merged into the
     # generated letter after the template's fixed letter_attachment (if any) - see
