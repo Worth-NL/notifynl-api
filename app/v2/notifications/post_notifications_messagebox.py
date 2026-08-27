@@ -18,6 +18,7 @@ from app.constants import (
 from app.dao import notifications_dao
 from app.dao.templates_messagebox_dao import get_messagebox_template
 from app.messagebox.utils import upload_messagebox_attachments
+from app.notifications.notifications_ses_callback import check_and_queue_callback_task
 from app.notifications.process_notifications import (
     persist_notification,
 )
@@ -119,7 +120,12 @@ def process_messagebox_notification(*, messagebox_data, api_key, service):
     if template.service.organisation_id:
         resp["organisation_id"] = template.service.organisation_id
 
-    if current_app.config["ANTIVIRUS_ENABLED"]:
+    if test_key:
+        # Test-key sends are created already-delivered (see `status` above) and must
+        # never reach the real antivirus-scan/deliver pipeline below - only the callback
+        # is fired here.
+        check_and_queue_callback_task(notification)
+    elif current_app.config["ANTIVIRUS_ENABLED"]:
         current_app.logger.info("Calling task scan-file for %s", notification.id)
         notify_celery.send_task(
             name=TaskNamesNL.MESSAGEBOX_SCAN_ATTACHMENTS,

@@ -363,7 +363,8 @@ def test_post_messagebox_notification_with_test_key_wipes_recipient_immediately(
     sample_template_with_placeholders.service.oin = str(fake.random_number(digits=20, fix_len=True))
     current_app.config["S3_BUCKET_MESSAGEBOX_SCAN"] = "notifynl-test-messagebox-scan"
     mocker.patch("app.messagebox.utils.s3upload")
-    mocker.patch("app.v2.notifications.post_notifications_messagebox.notify_celery.send_task")
+    mock_send_task = mocker.patch("app.v2.notifications.post_notifications_messagebox.notify_celery.send_task")
+    mock_callback = mocker.patch("app.v2.notifications.post_notifications_messagebox.check_and_queue_callback_task")
     data = _valid_messagebox_data()
 
     resp_json = api_client_request.post(
@@ -378,6 +379,12 @@ def test_post_messagebox_notification_with_test_key_wipes_recipient_immediately(
     assert notification.status == "delivered"
     assert notification.to is None
     assert notification.normalised_to is None
+
+    # Test-key sends must get their service callback fired directly, and must never be
+    # dispatched into the real antivirus-scan/deliver pipeline (that would re-deliver a
+    # message that's already marked as delivered).
+    mock_callback.assert_called_once_with(notification)
+    assert not mock_send_task.called
 
 
 def test_post_messagebox_notification_antivirus_disabled_dispatches_deliver(

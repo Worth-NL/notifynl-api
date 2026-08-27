@@ -70,6 +70,20 @@ def test_messagebox_virus_scan_success_moves_files_and_dispatches_deliver(mocker
     )
 
 
+def test_messagebox_virus_scan_success_skips_delivery_when_not_pending(mocker, messagebox_notification):
+    # A test-key send is persisted already-delivered and must never be force-delivered by a
+    # stale/duplicate scan-success trigger (mirrors messagebox_virus_scan_error's own guard).
+    notifications_dao.update_notification_status_by_id(messagebox_notification.id, NOTIFICATION_CREATED)
+    mock_move = mocker.patch("app.celery.messagebox_tasks.s3_move_folder_between_buckets")
+    mock_send_task = mocker.patch("app.celery.messagebox_tasks.notify_celery.send_task")
+
+    messagebox_virus_scan_success(messagebox_notification.id)
+
+    assert not mock_move.called
+    assert not mock_send_task.called
+    assert messagebox_notification.status == NOTIFICATION_CREATED
+
+
 @mock_aws
 def test_messagebox_virus_scan_failed_sets_permanent_failure(mocker, messagebox_notification):
     # A confirmed virus match is final -- unlike a scan error, it must never be retried.

@@ -104,6 +104,20 @@ def messagebox_virus_scan_success(self, notification_id: str):
     current_app.logger.info("[%s] [%s]", self.name, notification_id, extra={"notification_id": notification_id})
     notification: Notification = notifications_dao.get_notification_by_id(notification_id, _raise=True)
 
+    if notification.status != NOTIFICATION_PENDING_VIRUS_CHECK:
+        # Mirrors messagebox_virus_scan_error's guard above - a stale/duplicate trigger
+        # for a notification that already moved past pending-virus-check (e.g. a
+        # test-key send, which is persisted already-delivered) must be a safe no-op,
+        # not a re-delivery.
+        current_app.logger.info(
+            "[%s] [%s] notification already in status %s, not delivering",
+            self.name,
+            notification_id,
+            notification.status,
+            extra={"notification_id": notification_id},
+        )
+        return
+
     s3_move_folder_between_buckets(
         source_bucket=current_app.config["S3_BUCKET_MESSAGEBOX_SCAN"],
         dest_bucket=current_app.config["S3_BUCKET_MESSAGEBOX_ATTACHMENTS"],
