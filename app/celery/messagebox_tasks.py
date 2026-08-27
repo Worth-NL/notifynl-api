@@ -18,6 +18,7 @@ from app.dao import notifications_dao
 from app.errors import VirusScanError
 from app.exceptions import NotificationTechnicalFailureException
 from app.models import Notification
+from app.notifications.notifications_ses_callback import check_and_queue_callback_task
 
 
 @notify_celery.task(name=TaskNamesNL.MESSAGEBOX_VIRUS_SCAN_FAILED, bind=True)
@@ -33,7 +34,14 @@ def messagebox_virus_scan_failed(self, notification_id: str):
         dest_folder_name=f"FAILURE/{notification.id}",
     )
 
-    notifications_dao.update_notification_status_by_id(notification.id, NOTIFICATION_VIRUS_SCAN_FAILED)
+    updated_notification = notifications_dao.update_notification_status_by_id(
+        notification.id, NOTIFICATION_VIRUS_SCAN_FAILED, detailed_status_code="virus-detected"
+    )
+    # [NOTIFYNL] update_notification_status_by_id returns None if the notification is no
+    # longer in an eligible pre-callback status (e.g. this task is invoked a second time
+    # for the same notification) - guard against passing None into check_and_queue_callback_task.
+    if updated_notification:
+        check_and_queue_callback_task(updated_notification)
 
     raise VirusScanError(f"notification id {notification.id} Virus scan failed")
 
@@ -95,6 +103,20 @@ def messagebox_virus_scan_success(self, notification_id: str):
     sentry_sdk.set_tag("notification_id", notification_id)
     current_app.logger.info("[%s] [%s]", self.name, notification_id, extra={"notification_id": notification_id})
     notification: Notification = notifications_dao.get_notification_by_id(notification_id, _raise=True)
+
+    if notification.status != NOTIFICATION_PENDING_VIRUS_CHECK:
+        # Mirrors messagebox_virus_scan_error's guard above - a stale/duplicate trigger
+        # for a notification that already moved past pending-virus-check (e.g. a
+        # test-key send, which is persisted already-delivered) must be a safe no-op,
+        # not a re-delivery.
+        current_app.logger.info(
+            "[%s] [%s] notification already in status %s, not delivering",
+            self.name,
+            notification_id,
+            notification.status,
+            extra={"notification_id": notification_id},
+        )
+        return
 
     s3_move_folder_between_buckets(
         source_bucket=current_app.config["S3_BUCKET_MESSAGEBOX_SCAN"],

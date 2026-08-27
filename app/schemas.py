@@ -25,6 +25,7 @@ from app import db, ma, models
 from app.clients.messagebox.ebms_adapter import get_messagebox_failure_reason
 from app.dao.permissions_dao import permission_dao
 from app.dao.template_email_files_dao import dao_get_template_email_files_by_template_id
+from app.letters.utils import get_letter_failure_reason
 from app.models import ServicePermission
 from app.utils import DATETIME_FORMAT, DATETIME_FORMAT_NO_TIMEZONE, parse_and_format_phone_number
 
@@ -668,6 +669,22 @@ class NotificationWithTemplateSchema(BaseSchema):
         data["messagebox_failure_reason"] = (
             get_messagebox_failure_reason(data.get("detailed_status_code"))
             if data.get("notification_type") == app.constants.MESSAGEBOX_TYPE
+            else None
+        )
+        return data
+
+    @post_dump
+    def add_letter_failure_reason(self, data, **kwargs):
+        # Decodes a letter's raw detailed_status_code (set when validation-failed or
+        # virus-scan-failed) into a human-readable reason, mirroring
+        # add_messagebox_failure_reason above. Always present as a key (None when not
+        # applicable) for the same reason: notifynl-admin's JSONModel only exposes
+        # annotated fields present in the underlying dict.
+        data["letter_failure_reason"] = (
+            get_letter_failure_reason(data.get("detailed_status_code"))
+            if data.get("notification_type") == app.constants.LETTER_TYPE
+            and data.get("status")
+            in (app.constants.NOTIFICATION_VALIDATION_FAILED, app.constants.NOTIFICATION_VIRUS_SCAN_FAILED)
             else None
         )
         return data

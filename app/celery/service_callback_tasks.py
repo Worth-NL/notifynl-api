@@ -65,6 +65,11 @@ def send_delivery_status_to_service(self, notification_id, encoded_status_update
         "reference": status_update["notification_client_reference"],
         "to": status_update["notification_to"],
         "status": status_update["notification_status"],
+        # [NOTIFYNL] the reason a validation-failed/virus-scan-failed notification failed
+        # (e.g. "letter-too-long", "virus-detected") - always present, None when not
+        # applicable. .get() rather than a plain lookup so callback data signed before
+        # this field existed still decodes.
+        "detailed_status_code": status_update.get("notification_detailed_status_code"),
         "created_at": status_update["notification_created_at"],
         "completed_at": status_update["notification_updated_at"],
         "sent_at": status_update["notification_sent_at"],
@@ -210,6 +215,7 @@ def create_delivery_status_callback_data(notification, service_callback_api):
         # exposure this change is meant to close.
         "notification_to": None if notification.notification_type == MESSAGEBOX_TYPE else notification.to,
         "notification_status": notification.status,
+        "notification_detailed_status_code": notification.detailed_status_code,
         "notification_created_at": notification.created_at.strftime(DATETIME_FORMAT),
         "notification_updated_at": (
             notification.updated_at.strftime(DATETIME_FORMAT) if notification.updated_at else None

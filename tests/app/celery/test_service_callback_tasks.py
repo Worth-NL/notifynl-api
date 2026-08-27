@@ -151,6 +151,7 @@ def test_send_delivery_status_to_service_sends_callback_to_service(notify_db_ses
         "reference": notification.client_reference,
         "to": notification.to,
         "status": notification.status,
+        "detailed_status_code": None,
         "created_at": datestr.strftime(DATETIME_FORMAT),
         "completed_at": datestr.strftime(DATETIME_FORMAT),
         "sent_at": datestr.strftime(DATETIME_FORMAT),
@@ -194,6 +195,47 @@ def test_create_delivery_status_callback_data_keeps_recipient_for_non_messagebox
     data = signing.decode(encoded)
 
     assert data["notification_to"] == notification.to
+
+
+def test_create_delivery_status_callback_data_includes_detailed_status_code(notify_db_session):
+    callback_api, template = _set_up_test_data("letter", "delivery_status")
+    notification = create_notification(template=template, status="validation-failed")
+    notification.detailed_status_code = "letter-too-long"
+
+    encoded = create_delivery_status_callback_data(notification, callback_api)
+    data = signing.decode(encoded)
+
+    assert data["notification_detailed_status_code"] == "letter-too-long"
+
+
+def test_send_delivery_status_to_service_includes_detailed_status_code(notify_db_session, mocker):
+    callback_api, template = _set_up_test_data("letter", "delivery_status")
+    notification = create_notification(template=template, status="validation-failed")
+    notification.detailed_status_code = "letter-too-long"
+    encoded_status_update = signing.encode(
+        {
+            "notification_id": str(notification.id),
+            "notification_client_reference": notification.client_reference,
+            "notification_to": notification.to,
+            "notification_status": notification.status,
+            "notification_detailed_status_code": notification.detailed_status_code,
+            "notification_created_at": notification.created_at.strftime(DATETIME_FORMAT),
+            "notification_updated_at": (
+                notification.updated_at.strftime(DATETIME_FORMAT) if notification.updated_at else None
+            ),
+            "notification_sent_at": notification.sent_at.strftime(DATETIME_FORMAT) if notification.sent_at else None,
+            "notification_type": notification.notification_type,
+            "service_callback_api_url": callback_api.url,
+            "service_callback_api_bearer_token": callback_api.bearer_token,
+            "template_id": str(notification.template_id),
+            "template_version": notification.template_version,
+        }
+    )
+    send_callback_mock = mocker.patch("app.celery.service_callback_tasks._send_data_to_service_callback_api")
+
+    send_delivery_status_to_service(notification.id, encoded_status_update=encoded_status_update)
+
+    assert send_callback_mock.call_args[0][1]["detailed_status_code"] == "letter-too-long"
 
 
 def test_send_complaint_to_service_sends_callback_to_service(notify_db_session, mocker):
