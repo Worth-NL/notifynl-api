@@ -527,6 +527,12 @@ def process_sanitised_letter(self, sanitise_data):
             recipient_address=letter_details["address"],
         )
 
+        if is_test_key:
+            # [NOTIFYNL] update_letter_pdf_status is a bulk UPDATE (synchronize_session=False) -
+            # it doesn't refresh `notification`, so re-fetch before building the callback payload
+            # or it would report the pre-update status. Mirrors the failure branches below.
+            check_and_queue_callback_task(get_notification_by_id(notification.id, _raise=True))
+
         # The original filename could be wrong because we didn't know the postage.
         # Now we know if the letter is international, we can check what the filename should be.
         upload_file_name = generate_letter_pdf_filename(

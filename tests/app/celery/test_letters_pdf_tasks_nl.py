@@ -185,7 +185,9 @@ def test_process_sanitised_letter_with_valid_letter(
     expected_status,
     postage,
     destination_filename,
+    mocker,
 ):
+    mock_callback = mocker.patch("app.celery.letters_pdf_tasks.check_and_queue_callback_task")
     # We save the letter as if it's 2nd class initially, and the task changes the filename to have the correct postage
     filename = "NOTIFY.FOO.D.2.C.20180701120000.PDF"
 
@@ -231,6 +233,12 @@ def test_process_sanitised_letter_with_valid_letter(
     assert sample_letter_notification.billable_units == 1
     assert sample_letter_notification.to == "A. User\nThe house on the corner"
     assert sample_letter_notification.normalised_to == "a.userthehouseonthecorner"
+
+    if key_type == KEY_TYPE_TEST:
+        updated_notification = Notification.query.get(sample_letter_notification.id)
+        mock_callback.assert_called_once_with(updated_notification)
+    else:
+        assert not mock_callback.called
 
     assert not list(scan_bucket.objects.all())
     assert not list(template_preview_bucket.objects.all())
