@@ -18,6 +18,7 @@ from app.dao import notifications_dao
 from app.errors import VirusScanError
 from app.exceptions import NotificationTechnicalFailureException
 from app.models import Notification
+from app.notifications.notifications_ses_callback import check_and_queue_callback_task
 
 
 @notify_celery.task(name=TaskNamesNL.MESSAGEBOX_VIRUS_SCAN_FAILED, bind=True)
@@ -33,7 +34,10 @@ def messagebox_virus_scan_failed(self, notification_id: str):
         dest_folder_name=f"FAILURE/{notification.id}",
     )
 
-    notifications_dao.update_notification_status_by_id(notification.id, NOTIFICATION_VIRUS_SCAN_FAILED)
+    updated_notification = notifications_dao.update_notification_status_by_id(
+        notification.id, NOTIFICATION_VIRUS_SCAN_FAILED, detailed_status_code="virus-detected"
+    )
+    check_and_queue_callback_task(updated_notification)
 
     raise VirusScanError(f"notification id {notification.id} Virus scan failed")
 

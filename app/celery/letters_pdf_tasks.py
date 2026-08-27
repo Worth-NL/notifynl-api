@@ -50,7 +50,13 @@ from app.letters.utils import (
     move_scan_to_invalid_pdf_bucket,
 )
 from app.models import Service
+from app.notifications.notifications_ses_callback import check_and_queue_callback_task
 from app.utils import batched
+
+# [NOTIFYNL] Fixed detailed_status_code used for every virus-scan-failed callback/reason
+# below -- no per-scan detail (e.g. signature name) is available at any of these call
+# sites, only a filename, so a single fixed code is all there is to report.
+VIRUS_DETECTED_STATUS_CODE = "virus-detected"
 
 
 @notify_celery.task(bind=True, name="get-pdf-for-templated-letter", max_retries=15, default_retry_delay=300)
@@ -149,6 +155,7 @@ def update_billable_units_for_letter(self, notification_id, page_count):
 def update_validation_failed_for_templated_letter(self, notification_id, page_count):
     notification = get_notification_by_id(notification_id, _raise=True)
     notification.status = NOTIFICATION_VALIDATION_FAILED
+    notification.detailed_status_code = "letter-too-long"
     dao_update_notification(notification)
     extra = {"page_count": page_count, "notification_id": notification_id}
     current_app.logger.info(
@@ -156,6 +163,7 @@ def update_validation_failed_for_templated_letter(self, notification_id, page_co
         extra,
         extra=extra,
     )
+    check_and_queue_callback_task(notification)
 
 
 # [NOTIFYNL] Three-way virus-scan callback split for ad-hoc letter attachments, mirroring
@@ -198,7 +206,10 @@ def process_virus_scan_failed_letter_attachments(self, notification_id: str):
         dest_folder_name=f"FAILURE/{notification.id}",
     )
 
-    update_notification_status_by_id(notification.id, NOTIFICATION_VIRUS_SCAN_FAILED)
+    updated_notification = update_notification_status_by_id(
+        notification.id, NOTIFICATION_VIRUS_SCAN_FAILED, detailed_status_code=VIRUS_DETECTED_STATUS_CODE
+    )
+    check_and_queue_callback_task(updated_notification)
 
     raise VirusScanError(f"notification id {notification.id} Virus scan failed")
 
@@ -569,8 +580,15 @@ def _move_invalid_letter_and_update_status(
         scan_pdf_object.delete()
 
         update_letter_pdf_status(
-            reference=notification.reference, status=NOTIFICATION_VALIDATION_FAILED, billable_units=0
+            reference=notification.reference,
+            status=NOTIFICATION_VALIDATION_FAILED,
+            billable_units=0,
+            detailed_status_code=message,
         )
+        # [NOTIFYNL] update_letter_pdf_status is a bulk UPDATE (synchronize_session=False) -
+        # it doesn't refresh `notification`, so re-fetch before building the callback payload
+        # or it would report the pre-update status.
+        check_and_queue_callback_task(get_notification_by_id(notification.id, _raise=True))
     except BotoClientError as e:
         current_app.logger.exception(
             "Error when moving letter with id %s to invalid PDF bucket",
@@ -586,12 +604,16 @@ def process_virus_scan_failed(filename):
     move_failed_pdf(filename, ScanErrorType.FAILURE)
     reference = get_reference_from_filename(filename)
     notification = dao_get_notification_by_reference(reference)
-    updated_count = update_letter_pdf_status(reference, NOTIFICATION_VIRUS_SCAN_FAILED, billable_units=0)
+    updated_count = update_letter_pdf_status(
+        reference, NOTIFICATION_VIRUS_SCAN_FAILED, billable_units=0, detailed_status_code=VIRUS_DETECTED_STATUS_CODE
+    )
 
     if updated_count != 1:
         raise Exception(
             f"There should only be one letter notification for each reference. Found {updated_count} notifications"
         )
+
+    check_and_queue_callback_task(get_notification_by_id(notification.id, _raise=True))
 
     error = VirusScanError(f"notification id {notification.id} Virus scan failed: {filename}")
     raise error
@@ -625,12 +647,16 @@ def process_virus_scan_failed_letter_parts(filenames):
         move_failed_pdf(filename, ScanErrorType.FAILURE)
     reference = get_reference_from_filename(filenames[0])
     notification = dao_get_notification_by_reference(reference)
-    updated_count = update_letter_pdf_status(reference, NOTIFICATION_VIRUS_SCAN_FAILED, billable_units=0)
+    updated_count = update_letter_pdf_status(
+        reference, NOTIFICATION_VIRUS_SCAN_FAILED, billable_units=0, detailed_status_code=VIRUS_DETECTED_STATUS_CODE
+    )
 
     if updated_count != 1:
         raise Exception(
             f"There should only be one letter notification for each reference. Found {updated_count} notifications"
         )
+
+    check_and_queue_callback_task(get_notification_by_id(notification.id, _raise=True))
 
     error = VirusScanError(f"notification id {notification.id} Virus scan failed: {filenames}")
     raise error
@@ -654,7 +680,7 @@ def process_virus_scan_error_letter_parts(filenames):
     raise VirusScanError(f"notification id {notification.id} Virus scan error: {filenames}")
 
 
-def update_letter_pdf_status(reference, status, billable_units, recipient_address=None):
+def update_letter_pdf_status(reference, status, billable_units, recipient_address=None, detailed_status_code=None):
     postage = None
     if recipient_address:
         # fix allow_international_letters
@@ -668,6 +694,10 @@ def update_letter_pdf_status(reference, status, billable_units, recipient_addres
     if recipient_address:
         update_dict["to"] = recipient_address
         update_dict["normalised_to"] = "".join(recipient_address.split()).lower()
+    # [NOTIFYNL] carries the reason a precompiled letter failed validation/virus-scan so it
+    # can be surfaced back to the service - see check_and_queue_callback_task call sites below.
+    if detailed_status_code is not None:
+        update_dict["detailed_status_code"] = detailed_status_code
     return dao_update_notifications_by_reference(references=[reference], update_dict=update_dict)[0]
 
 

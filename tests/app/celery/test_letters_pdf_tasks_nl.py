@@ -421,8 +421,9 @@ def test_process_virus_scan_success_letter_attachments_skips_when_not_pending(mo
 
 @mock_aws
 def test_process_virus_scan_failed_letter_attachments_moves_folder_and_sets_permanent_failure(
-    sample_letter_notification,
+    sample_letter_notification, mocker
 ):
+    mock_callback = mocker.patch("app.celery.letters_pdf_tasks.check_and_queue_callback_task")
     scan_bucket = current_app.config["S3_BUCKET_LETTERS_SCAN"]
     invalid_bucket = current_app.config["S3_BUCKET_INVALID_PDF"]
     sample_letter_notification.status = NOTIFICATION_PENDING_VIRUS_CHECK
@@ -436,6 +437,8 @@ def test_process_virus_scan_failed_letter_attachments_moves_folder_and_sets_perm
         process_virus_scan_failed_letter_attachments(sample_letter_notification.id)
 
     assert sample_letter_notification.status == NOTIFICATION_VIRUS_SCAN_FAILED
+    assert sample_letter_notification.detailed_status_code == "virus-detected"
+    mock_callback.assert_called_once_with(sample_letter_notification)
 
 
 def test_process_virus_scan_error_letter_attachments_reschedules_scan(mocker, sample_letter_notification):
@@ -558,6 +561,7 @@ def test_sanitise_letter_parts_puts_letter_into_technical_failure_if_max_retries
 
 
 def test_process_virus_scan_failed_letter_parts_moves_all_parts(sample_letter_notification, mocker):
+    mock_callback = mocker.patch("app.celery.letters_pdf_tasks.check_and_queue_callback_task")
     reference = sample_letter_notification.reference
     filenames = [f"NOTIFY.{reference}", f"NOTIFY.{reference}.PART2"]
     sample_letter_notification.status = NOTIFICATION_PENDING_VIRUS_CHECK
@@ -572,6 +576,8 @@ def test_process_virus_scan_failed_letter_parts_moves_all_parts(sample_letter_no
         mocker.call(filenames[1], ScanErrorType.FAILURE),
     ]
     assert sample_letter_notification.status == NOTIFICATION_VIRUS_SCAN_FAILED
+    assert sample_letter_notification.detailed_status_code == "virus-detected"
+    mock_callback.assert_called_once_with(sample_letter_notification)
 
 
 def test_process_virus_scan_error_letter_parts_moves_all_parts(sample_letter_notification, mocker):

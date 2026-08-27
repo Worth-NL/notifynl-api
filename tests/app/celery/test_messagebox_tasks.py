@@ -73,6 +73,7 @@ def test_messagebox_virus_scan_success_moves_files_and_dispatches_deliver(mocker
 @mock_aws
 def test_messagebox_virus_scan_failed_sets_permanent_failure(mocker, messagebox_notification):
     # A confirmed virus match is final -- unlike a scan error, it must never be retried.
+    mock_callback = mocker.patch("app.celery.messagebox_tasks.check_and_queue_callback_task")
     scan_bucket = "notifynl-test-messagebox-scan"
     invalid_bucket = "notifynl-test-messagebox-invalid"
     messagebox_tasks.current_app.config["S3_BUCKET_MESSAGEBOX_SCAN"] = scan_bucket
@@ -87,6 +88,8 @@ def test_messagebox_virus_scan_failed_sets_permanent_failure(mocker, messagebox_
         messagebox_virus_scan_failed(messagebox_notification.id)
 
     assert messagebox_notification.status == NOTIFICATION_VIRUS_SCAN_FAILED
+    assert messagebox_notification.detailed_status_code == "virus-detected"
+    mock_callback.assert_called_once_with(messagebox_notification)
 
 
 def test_messagebox_virus_scan_error_reschedules_scan(mocker, messagebox_notification):

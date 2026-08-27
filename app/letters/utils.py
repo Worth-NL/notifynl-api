@@ -27,6 +27,42 @@ class ScanErrorType(Enum):
     FAILURE = 2
 
 
+# [NOTIFYNL] Human-readable text for every detailed_status_code a letter's validation-failed
+# or virus-scan-failed status can carry - the slugs raised by notifynl-template-preview's
+# sanitise_file_contents (app/precompiled.py, ValidationFailed call sites) plus the
+# PrecompiledPostalAddress.error_code values it can also raise, and the fixed
+# "virus-detected" code used for an actual virus match. Mirrors
+# app.clients.messagebox.ebms_adapter.get_messagebox_failure_reason's shape for the
+# messagebox channel.
+LETTER_FAILURE_REASONS = {
+    "letter-too-long": "The letter has too many pages.",
+    "letter-not-a4-portrait-oriented": "The letter is not A4 portrait.",
+    "content-outside-printable-area": "Content is outside the printable area.",
+    "notify-tag-found-in-content": "A NOTIFY tag was found in the letter content.",
+    "unable-to-read-the-file": "The file could not be read as a valid PDF.",
+    "address-placement-mismatch": "The address block is not where it was expected to be.",
+    "address-is-empty": "The address block is empty.",
+    "not-enough-address-lines": "The address does not have enough lines.",
+    "too-many-address-lines": "The address has too many lines.",
+    "invalid-address-line-1-or-2": "The first or second address line is invalid.",
+    "has-country-for-bfpo-address": "A country was given for a BFPO address.",
+    "not-a-real-uk-postcode-or-country": "The last address line is not a real postcode or country.",
+    "cant-send-international-letters": "The service is not permitted to send international letters.",
+    "not-a-real-uk-postcode": "The last address line is not a real postcode.",
+    "invalid-char-in-address": "The address contains an invalid character.",
+    "no-fixed-abode-address": "The address indicates no fixed abode.",
+    "virus-detected": "A virus was detected in the uploaded file.",
+}
+
+
+def get_letter_failure_reason(detailed_status_code):
+    """Decodes a letter's detailed_status_code into human-readable reason text.
+    Returns None for an unrecognised or absent code."""
+    if not detailed_status_code:
+        return None
+    return LETTER_FAILURE_REASONS.get(detailed_status_code, detailed_status_code)
+
+
 LETTERS_PDF_FILE_LOCATION_STRUCTURE = "{folder}NOTIFY.{reference}.{duplex}.{letter_class}.{colour}.{date}.pdf"
 
 PRECOMPILED_BUCKET_PREFIX = "{folder}NOTIFY.{reference}"

@@ -143,6 +143,53 @@ def test_notification_with_template_schema_messagebox_failure_reason_none_for_no
     assert data["messagebox_failure_reason"] is None
 
 
+def test_notification_with_template_schema_adds_letter_failure_reason_for_validation_failed(
+    sample_letter_notification,
+):
+    from app.schemas import notification_with_template_schema
+
+    sample_letter_notification.status = "validation-failed"
+    sample_letter_notification.detailed_status_code = "letter-too-long"
+
+    data = notification_with_template_schema.dump(sample_letter_notification)
+
+    assert data["letter_failure_reason"] == "The letter has too many pages."
+
+
+def test_notification_with_template_schema_adds_letter_failure_reason_for_virus_scan_failed(
+    sample_letter_notification,
+):
+    from app.schemas import notification_with_template_schema
+
+    sample_letter_notification.status = "virus-scan-failed"
+    sample_letter_notification.detailed_status_code = "virus-detected"
+
+    data = notification_with_template_schema.dump(sample_letter_notification)
+
+    assert data["letter_failure_reason"] == "A virus was detected in the uploaded file."
+
+
+def test_notification_with_template_schema_letter_failure_reason_none_for_other_status(
+    sample_letter_notification,
+):
+    from app.schemas import notification_with_template_schema
+
+    sample_letter_notification.status = "delivered"
+    sample_letter_notification.detailed_status_code = "letter-too-long"
+
+    data = notification_with_template_schema.dump(sample_letter_notification)
+
+    assert data["letter_failure_reason"] is None
+
+
+def test_notification_with_template_schema_letter_failure_reason_none_for_non_letter(sample_notification):
+    from app.schemas import notification_with_template_schema
+
+    data = notification_with_template_schema.dump(sample_notification)
+
+    assert data["letter_failure_reason"] is None
+
+
 @pytest.mark.parametrize(
     "user_attribute, user_value",
     [("name", "New User"), ("email_address", "newuser@mail.com"), ("mobile_number", "+4407700900460")],

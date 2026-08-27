@@ -214,8 +214,9 @@ def test_update_billable_units_for_letter_doesnt_update_if_sent_with_test_key(sa
 
 @pytest.mark.parametrize("key_type", ["test", "normal", "team"])
 def test_update_validation_failed_for_templated_letter_with_too_many_pages(
-    sample_letter_notification, key_type, caplog
+    sample_letter_notification, key_type, caplog, mocker
 ):
+    mock_callback = mocker.patch("app.celery.letters_pdf_tasks.check_and_queue_callback_task")
     sample_letter_notification.billable_units = 0
     sample_letter_notification.key_type = key_type
 
@@ -224,10 +225,12 @@ def test_update_validation_failed_for_templated_letter_with_too_many_pages(
 
     assert sample_letter_notification.billable_units == 0
     assert sample_letter_notification.status == NOTIFICATION_VALIDATION_FAILED
+    assert sample_letter_notification.detailed_status_code == "letter-too-long"
     assert (
         f"Validation failed: letter is too long 11 for letter with id: {sample_letter_notification.id}"
         in caplog.messages
     )
+    mock_callback.assert_called_once_with(sample_letter_notification)
 
 
 class TestCheckTimeToCollateLetters:
@@ -708,7 +711,8 @@ def test_process_sanitised_letter_sets_postage_international(
 
 @mock_aws
 @pytest.mark.parametrize("key_type", [KEY_TYPE_NORMAL, KEY_TYPE_TEST])
-def test_process_sanitised_letter_with_invalid_letter(sample_letter_notification, key_type):
+def test_process_sanitised_letter_with_invalid_letter(sample_letter_notification, key_type, mocker):
+    mock_callback = mocker.patch("app.celery.letters_pdf_tasks.check_and_queue_callback_task")
     filename = f"NOTIFY.{sample_letter_notification.reference}"
 
     scan_bucket_name = current_app.config["S3_BUCKET_LETTERS_SCAN"]
@@ -756,6 +760,10 @@ def test_process_sanitised_letter_with_invalid_letter(sample_letter_notification
 
     file_contents = conn.Object(invalid_letter_bucket_name, filename).get()["Body"].read().decode("utf-8")
     assert file_contents == "original_pdf_content"
+
+    updated_notification = Notification.query.get(sample_letter_notification.id)
+    assert updated_notification.detailed_status_code == "content-outside-printable-area"
+    mock_callback.assert_called_once_with(updated_notification)
 
 
 def test_process_sanitised_letter_when_letter_status_is_not_pending_virus_scan(
@@ -858,6 +866,7 @@ def test_process_sanitised_letter_puts_letter_into_technical_failure_if_max_retr
 
 
 def test_process_letter_task_check_virus_scan_failed(sample_letter_notification, mocker):
+    mock_callback = mocker.patch("app.celery.letters_pdf_tasks.check_and_queue_callback_task")
     filename = f"NOTIFY.{sample_letter_notification.reference}"
     sample_letter_notification.status = NOTIFICATION_PENDING_VIRUS_CHECK
     mock_move_failed_pdf = mocker.patch("app.celery.letters_pdf_tasks.move_failed_pdf")
@@ -868,6 +877,8 @@ def test_process_letter_task_check_virus_scan_failed(sample_letter_notification,
     assert "Virus scan failed:" in str(e.value)
     mock_move_failed_pdf.assert_called_once_with(filename, ScanErrorType.FAILURE)
     assert sample_letter_notification.status == NOTIFICATION_VIRUS_SCAN_FAILED
+    assert sample_letter_notification.detailed_status_code == "virus-detected"
+    mock_callback.assert_called_once_with(sample_letter_notification)
 
 
 def test_process_letter_task_check_virus_scan_error(sample_letter_notification, mocker):
