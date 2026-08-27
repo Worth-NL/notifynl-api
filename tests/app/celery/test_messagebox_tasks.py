@@ -92,6 +92,33 @@ def test_messagebox_virus_scan_failed_sets_permanent_failure(mocker, messagebox_
     mock_callback.assert_called_once_with(messagebox_notification)
 
 
+@mock_aws
+def test_messagebox_virus_scan_failed_is_safe_to_call_twice(mocker, messagebox_notification):
+    # A duplicate/replayed task invocation must not crash or fire a second callback once the
+    # notification is already virus-scan-failed - s3_move_folder_between_buckets is a silent
+    # no-op on an already-empty folder, so update_notification_status_by_id's own
+    # duplicate-update guard (returning None) is the only thing standing between this and a
+    # real double-fire (or, without the None-guard, an AttributeError).
+    mock_callback = mocker.patch("app.celery.messagebox_tasks.check_and_queue_callback_task")
+    scan_bucket = "notifynl-test-messagebox-scan"
+    invalid_bucket = "notifynl-test-messagebox-invalid"
+    messagebox_tasks.current_app.config["S3_BUCKET_MESSAGEBOX_SCAN"] = scan_bucket
+    messagebox_tasks.current_app.config["S3_BUCKET_MESSAGEBOX_INVALID"] = invalid_bucket
+
+    s3 = boto3.client("s3", region_name="eu-west-1")
+    s3.create_bucket(Bucket=scan_bucket, CreateBucketConfiguration={"LocationConstraint": "eu-west-1"})
+    s3.create_bucket(Bucket=invalid_bucket, CreateBucketConfiguration={"LocationConstraint": "eu-west-1"})
+    s3.put_object(Bucket=scan_bucket, Key=f"{messagebox_notification.id}/file.pdf", Body=b"content")
+
+    with pytest.raises(VirusScanError):
+        messagebox_virus_scan_failed(messagebox_notification.id)
+
+    with pytest.raises(VirusScanError):
+        messagebox_virus_scan_failed(messagebox_notification.id)
+
+    mock_callback.assert_called_once_with(messagebox_notification)
+
+
 def test_messagebox_virus_scan_error_reschedules_scan(mocker, messagebox_notification):
     # A scan error is a transient infra issue (e.g. clamd unreachable), not a virus verdict --
     # it must be retried later, not treated as a permanent failure.

@@ -37,7 +37,11 @@ def messagebox_virus_scan_failed(self, notification_id: str):
     updated_notification = notifications_dao.update_notification_status_by_id(
         notification.id, NOTIFICATION_VIRUS_SCAN_FAILED, detailed_status_code="virus-detected"
     )
-    check_and_queue_callback_task(updated_notification)
+    # [NOTIFYNL] update_notification_status_by_id returns None if the notification is no
+    # longer in an eligible pre-callback status (e.g. this task is invoked a second time
+    # for the same notification) - guard against passing None into check_and_queue_callback_task.
+    if updated_notification:
+        check_and_queue_callback_task(updated_notification)
 
     raise VirusScanError(f"notification id {notification.id} Virus scan failed")
 

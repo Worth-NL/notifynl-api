@@ -441,6 +441,32 @@ def test_process_virus_scan_failed_letter_attachments_moves_folder_and_sets_perm
     mock_callback.assert_called_once_with(sample_letter_notification)
 
 
+@mock_aws
+def test_process_virus_scan_failed_letter_attachments_is_safe_to_call_twice(sample_letter_notification, mocker):
+    # A duplicate/replayed task invocation (e.g. the antivirus service retrying its own
+    # dispatch) must not crash or fire a second callback once the notification is already
+    # virus-scan-failed - the S3 folder move is a silent no-op on an already-empty folder,
+    # so update_notification_status_by_id's own duplicate-update guard (returning None) is
+    # the only thing standing between this and a real double-fire.
+    mock_callback = mocker.patch("app.celery.letters_pdf_tasks.check_and_queue_callback_task")
+    scan_bucket = current_app.config["S3_BUCKET_LETTERS_SCAN"]
+    invalid_bucket = current_app.config["S3_BUCKET_INVALID_PDF"]
+    sample_letter_notification.status = NOTIFICATION_PENDING_VIRUS_CHECK
+
+    s3 = boto3.client("s3", region_name="eu-west-1")
+    s3.create_bucket(Bucket=scan_bucket, CreateBucketConfiguration={"LocationConstraint": "eu-west-1"})
+    s3.create_bucket(Bucket=invalid_bucket, CreateBucketConfiguration={"LocationConstraint": "eu-west-1"})
+    s3.put_object(Bucket=scan_bucket, Key=f"{sample_letter_notification.id}/attachment-1.pdf", Body=b"content")
+
+    with pytest.raises(VirusScanError):
+        process_virus_scan_failed_letter_attachments(sample_letter_notification.id)
+
+    with pytest.raises(VirusScanError):
+        process_virus_scan_failed_letter_attachments(sample_letter_notification.id)
+
+    mock_callback.assert_called_once_with(sample_letter_notification)
+
+
 def test_process_virus_scan_error_letter_attachments_reschedules_scan(mocker, sample_letter_notification):
     sample_letter_notification.status = NOTIFICATION_PENDING_VIRUS_CHECK
     mock_send_task = mocker.patch("app.celery.letters_pdf_tasks.notify_celery.send_task")
