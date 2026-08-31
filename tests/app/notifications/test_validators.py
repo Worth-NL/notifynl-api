@@ -945,3 +945,19 @@ def test_validate_address_international_bfpo_error(notify_db_session):
         validate_address(service, data)
 
     assert e.value.message == "The last line of a BFPO address must not be a country."
+
+
+def test_validate_address_rejects_return_address_line(notify_db_session):
+    service = create_service(service_permissions=[LETTER_TYPE])
+    data = {
+        "address_line_1": "Retouradres: Postbus 70013, 3000 KR ROTTERDAM",
+        "address_line_2": "Persoonlijk",
+        "address_line_3": "Coolsingel 40",
+        "address_line_4": "3011 AD",
+        "address_line_5": "Rotterdam",
+    }
+
+    with pytest.raises(ValidationError) as e:
+        validate_address(service, data)
+
+    assert e.value.message == "Address must not contain a 'Retouradres' return-address line"

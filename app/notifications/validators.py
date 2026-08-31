@@ -390,6 +390,13 @@ def _validate_dutch_postal_address(address):
         raise ValidationError(message="cant detect a dutch city, city name must be in the same line as postcode")
 
 
+def _validate_address_no_return_address_line(address):
+    """Reject a 'Retouradres' return-address line if present - that belongs on the letter
+    template, not in the recipient's own address personalisation."""
+    if address.has_non_recipient_address_line:
+        raise ValidationError(message="Address must not contain a 'Retouradres' return-address line")
+
+
 def validate_address(service, letter_data):
     address = PostalAddress.from_personalisation(
         letter_data,
@@ -400,6 +407,7 @@ def validate_address(service, letter_data):
     _validate_address_content(address)
     _validate_address_last_line(address)
     _validate_address_characters(address)
+    _validate_address_no_return_address_line(address)
 
     if not address.international:
         _validate_dutch_postal_address(address)
