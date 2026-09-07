@@ -17,8 +17,8 @@ from click_datetime import Datetime as click_dt
 from dateutil import rrule
 from flask import current_app, json
 from notifications_utils.recipients import RecipientCSV
-from notifications_utils.statsd_decorators import statsd
 from notifications_utils.template import SMSMessageTemplate
+from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm.exc import NoResultFound
 
@@ -30,11 +30,12 @@ from app.celery.letters_pdf_tasks import (
 )
 from app.celery.tasks import get_id_task_args_kwargs_for_job_row, process_job_row
 from app.config import QueueNames
-from app.constants import KEY_TYPE_TEST, NOTIFICATION_CREATED, SMS_TYPE
+from app.constants import DEFAULT_POSTAGE, KEY_TYPE_TEST, NETHERLANDS, NOTIFICATION_CREATED, POSTAGE_TYPES, SMS_TYPE
 from app.dao.annual_billing_dao import (
     dao_create_or_update_annual_billing_for_year,
     set_default_free_allowance_for_service,
 )
+from app.dao.api_key_dao import save_model_api_key
 from app.dao.fact_billing_dao import (
     delete_billing_data_for_day,
     fetch_billing_data_for_day,
@@ -63,6 +64,7 @@ from app.dao.users_dao import (
 )
 from app.functional_tests_fixtures import apply_fixtures
 from app.models import (
+    ApiKey,
     Domain,
     EmailBranding,
     LetterBranding,
@@ -191,13 +193,13 @@ def backfill_notification_statuses():
     LIMIT = 250000
     subq = f"SELECT id FROM notification_history WHERE notification_status is NULL LIMIT {LIMIT}"
     update = f"UPDATE notification_history SET notification_status = status WHERE id in ({subq})"
-    result = db.session.execute(subq).fetchall()
+    result = db.session.execute(text(subq)).fetchall()
 
     while len(result) > 0:
-        db.session.execute(update)
+        db.session.execute(text(update))
         print(f"commit {LIMIT} updates at {datetime.utcnow()}")
         db.session.commit()
-        result = db.session.execute(subq).fetchall()
+        result = db.session.execute(text(subq)).fetchall()
 
 
 @notify_command()
@@ -208,23 +210,23 @@ def update_notification_international_flag():
     # 250,000 rows takes 30 seconds to update.
     subq = "select id from notifications where international is null limit 250000"
     update = f"update notifications set international = False where id in ({subq})"
-    result = db.session.execute(subq).fetchall()
+    result = db.session.execute(text(subq)).fetchall()
 
     while len(result) > 0:
-        db.session.execute(update)
+        db.session.execute(text(update))
         print(f"commit 250000 updates at {datetime.utcnow()}")
         db.session.commit()
-        result = db.session.execute(subq).fetchall()
+        result = db.session.execute(text(subq)).fetchall()
 
     # Now update notification_history
     subq_history = "select id from notification_history where international is null limit 250000"
     update_history = f"update notification_history set international = False where id in ({subq_history})"
-    result_history = db.session.execute(subq_history).fetchall()
+    result_history = db.session.execute(text(subq_history)).fetchall()
     while len(result_history) > 0:
-        db.session.execute(update_history)
+        db.session.execute(text(update_history))
         print(f"commit 250000 updates at {datetime.utcnow()}")
         db.session.commit()
-        result_history = db.session.execute(subq_history).fetchall()
+        result_history = db.session.execute(text(subq_history)).fetchall()
 
 
 @notify_command()
@@ -241,23 +243,23 @@ def fix_notification_statuses_not_in_sync():
 
     subq = f"SELECT id FROM notifications WHERE cast (status as text) != notification_status LIMIT {MAX}"
     update = f"UPDATE notifications SET notification_status = status WHERE id in ({subq})"
-    result = db.session.execute(subq).fetchall()
+    result = db.session.execute(text(subq)).fetchall()
 
     while len(result) > 0:
-        db.session.execute(update)
+        db.session.execute(text(update))
         print(f"Committed {len(result)} updates at {datetime.utcnow()}")
         db.session.commit()
-        result = db.session.execute(subq).fetchall()
+        result = db.session.execute(text(subq)).fetchall()
 
     subq_hist = f"SELECT id FROM notification_history WHERE cast (status as text) != notification_status LIMIT {MAX}"
     update = f"UPDATE notification_history SET notification_status = status WHERE id in ({subq_hist})"
-    result = db.session.execute(subq_hist).fetchall()
+    result = db.session.execute(text(subq_hist)).fetchall()
 
     while len(result) > 0:
-        db.session.execute(update)
+        db.session.execute(text(update))
         print(f"Committed {len(result)} updates at {datetime.utcnow()}")
         db.session.commit()
-        result = db.session.execute(subq_hist).fetchall()
+        result = db.session.execute(text(subq_hist)).fetchall()
 
 
 @notify_command(name="insert-inbound-numbers")
@@ -277,7 +279,7 @@ def insert_inbound_numbers_from_file(file_name):
             line = line.strip()
             if line:
                 print(line)
-                db.session.execute(sql.format(uuid.uuid4(), line))
+                db.session.execute(text(sql.format(uuid.uuid4(), line)))
                 db.session.commit()
 
 
@@ -323,11 +325,22 @@ def rebuild_ft_billing_for_day(service_id, day: date):
 
     def rebuild_ft_data(process_day: date, service_ids=None):
         deleted_rows = delete_billing_data_for_day(process_day=day, service_ids=service_ids)
-        current_app.logger.info("deleted %s existing billing rows for %s", deleted_rows, process_day)
+        current_app.logger.info(
+            "deleted %s existing billing rows for %s",
+            deleted_rows,
+            process_day,
+            extra={"deleted_record_count": deleted_rows, "process_day": process_day},
+        )
 
         billing_data = fetch_billing_data_for_day(process_day=process_day, service_ids=service_ids)
         update_ft_billing(billing_data, process_day)
-        current_app.logger.info("added/updated %s billing rows for %s", len(billing_data), process_day)
+        updated_record_count = len(billing_data)
+        current_app.logger.info(
+            "added/updated %s billing rows for %s",
+            updated_record_count,
+            process_day,
+            extra={"updated_record_count": updated_record_count, "process_day": process_day},
+        )
 
     if service_id:
         # get the service to confirm it exists
@@ -394,7 +407,6 @@ def bulk_invite_user_to_service(file_name, service_id, user_id, auth_type, permi
 @click.option(
     "-s", "--start_date", default=datetime(2017, 2, 1), help="start date inclusive", type=click_dt(format="%Y-%m-%d")
 )
-@statsd(namespace="tasks")
 def populate_notification_postage(start_date):
     current_app.logger.info("populating historical notification postage")
 
@@ -416,32 +428,46 @@ def populate_notification_postage(start_date):
 
         if end_date > datetime.utcnow() - timedelta(days=8):
             print("Updating notifications table as well")
-            db.session.execute(sql.format("notifications"), {"start": start_date, "end": end_date})
+            db.session.execute(text(sql.format("notifications"), {"start": start_date, "end": end_date}))
 
-        result = db.session.execute(sql.format("notification_history"), {"start": start_date, "end": end_date})
+        result = db.session.execute(text(sql.format("notification_history"), {"start": start_date, "end": end_date}))
         db.session.commit()
 
+        base_params = {
+            "duration": datetime.utcnow() - execution_start,
+            "migrated_row_count": result.rowcount,
+            "start_date": start_date,
+            "end_date": end_date,
+        }
         current_app.logger.info(
-            "notification postage took %sms. Migrated %s rows for %s to %s",
-            datetime.utcnow() - execution_start,
-            result.rowcount,
-            start_date,
-            end_date,
+            "notification postage took %(duration)s. "
+            "Migrated %(migrated_row_count)s rows for %(start_date)s to %(end_date)s",
+            base_params,
+            extra={
+                **base_params,
+                "duration": base_params["duration"].total_seconds(),
+            },
         )
 
         start_date += timedelta(days=10)
 
         total_updated += result.rowcount
 
-    current_app.logger.info("Total inserted/updated records = %s", total_updated)
+    current_app.logger.info(
+        "Total inserted/updated records = %s", total_updated, extra={"updated_record_count": total_updated}
+    )
 
 
 @notify_command(name="archive-jobs-created-between-dates")
 @click.option("-s", "--start_date", required=True, help="start date inclusive", type=click_dt(format="%Y-%m-%d"))
 @click.option("-e", "--end_date", required=True, help="end date inclusive", type=click_dt(format="%Y-%m-%d"))
-@statsd(namespace="tasks")
 def update_jobs_archived_flag(start_date, end_date):
-    current_app.logger.info("Archiving jobs created between %s to %s", start_date, end_date)
+    current_app.logger.info(
+        "Archiving jobs created between %s and %s",
+        start_date,
+        end_date,
+        extra={"start_date": start_date, "end_date": end_date},
+    )
 
     process_date = start_date
     total_updated = 0
@@ -455,24 +481,30 @@ def update_jobs_archived_flag(start_date, end_date):
                     at time zone 'UTC'
                     and created_at < (date :end + time '00:00:00') at time zone 'Europe/London' at time zone 'UTC'"""
 
-        result = db.session.execute(sql, {"start": process_date, "end": process_date + timedelta(days=1)})
+        result = db.session.execute(text(sql, {"start": process_date, "end": process_date + timedelta(days=1)}))
         db.session.commit()
+        base_params = {
+            "duration": (datetime.now() - start_time).total_seconds(),
+            "updated_record_count": result.rowcount,
+            "process_date": process_date,
+        }
         current_app.logger.info(
-            "jobs: --- Completed took %sms. Archived %s jobs for %s",
-            datetime.now() - start_time,
-            result.rowcount,
-            process_date,
+            "jobs: --- Completed took %(duration)s. Archived %(updated_record_count)s jobs for %(process_date)s",
+            base_params,
+            extra={
+                **base_params,
+                "duration": base_params["duration"].total_seconds(),
+            },
         )
 
         process_date += timedelta(days=1)
 
         total_updated += result.rowcount
-    current_app.logger.info("Total archived jobs = %s", total_updated)
+    current_app.logger.info("Total archived jobs = %s", total_updated, extra={"updated_record_count": total_updated})
 
 
 @notify_command(name="update-emails-to-remove-gsi")
 @click.option("-s", "--service_id", required=True, help="service id. Update all user.email_address to remove .gsi")
-@statsd(namespace="tasks")
 def update_emails_to_remove_gsi(service_id):
     users_to_update = """SELECT u.id user_id, u.name, email_address, s.id, s.name
                            FROM users u
@@ -481,7 +513,7 @@ def update_emails_to_remove_gsi(service_id):
                           WHERE s.id = :service_id
                             AND u.email_address ilike ('%.gsi.gov.uk%')
     """
-    results = db.session.execute(users_to_update, {"service_id": service_id})
+    results = db.session.execute(text(users_to_update), {"service_id": service_id})
     print(f"Updating {results.rowcount} users.")
 
     for user in results:
@@ -493,7 +525,7 @@ def update_emails_to_remove_gsi(service_id):
                updated_at = now()
          WHERE id = :user_id
         """
-        db.session.execute(update_stmt, {"user_id": str(user.user_id)})
+        db.session.execute(text(update_stmt), {"user_id": str(user.user_id)})
         db.session.commit()
 
 
@@ -589,7 +621,7 @@ def populate_organisation_agreement_details_from_file(file_name):
         for row in csv_reader:
             org = dao_get_organisation_by_id(row[0])
 
-            current_app.logger.info("Updating %s", org.name)
+            current_app.logger.info("Updating %s", org.name, extra={"organisation_name": org.name})
 
             assert org.agreement_signed
 
@@ -623,7 +655,7 @@ def get_letters_data_from_references(notification_references):
         FROM notifications
         WHERE reference IN :notification_references
         ORDER BY service_id, job_id"""
-    result = db.session.execute(sql, {"notification_references": notification_references}).fetchall()
+    result = db.session.execute(text(sql), {"notification_references": notification_references}).fetchall()
 
     with open("zips_sent_details.csv", "w") as csvfile:
         csv_writer = csv.writer(csvfile)
@@ -753,8 +785,15 @@ def process_row_from_job(job_id, job_row_number):
 
             process_job_row(template.template_type, task_args_kwargs)
 
+            extra = {
+                "job_row_number": job_row_number,
+                "job_id": job_id,
+                "notification_id": notification_id,
+            }
             current_app.logger.info(
-                "Process row %s for job %s created notification_id: %s", job_row_number, job_id, notification_id
+                "Process row %(job_row_number)s for job %(job_id)s created notification_id: %(notification_id)s",
+                extra,
+                extra=extra,
             )
 
 
@@ -773,7 +812,7 @@ def populate_annual_billing_with_the_previous_years_allowance(year):
         from annual_billing
         where financial_year_start = :year
     """
-    services_without_annual_billing = db.session.execute(sql, {"year": year})
+    services_without_annual_billing = db.session.execute(text(sql), {"year": year})
     for row in services_without_annual_billing:
         latest_annual_billing = """
             Select free_sms_fragment_limit
@@ -781,7 +820,7 @@ def populate_annual_billing_with_the_previous_years_allowance(year):
             where service_id = :service_id
             order by financial_year_start desc limit 1
         """
-        free_allowance_rows = db.session.execute(latest_annual_billing, {"service_id": row.id})
+        free_allowance_rows = db.session.execute(text(latest_annual_billing), {"service_id": row.id})
         free_allowance = [x[0] for x in free_allowance_rows]
         print(f"create free limit of {free_allowance[0]} for service: {row.id}")
         dao_create_or_update_annual_billing_for_year(
@@ -808,6 +847,7 @@ def functional_test_fixtures():
         SQLALCHEMY_DATABASE_URI
         REDIS_URL
         SECRET_KEY
+        TOKEN_SECRET_KEY
         INTERNAL_CLIENT_API_KEYS
         ADMIN_BASE_URL
         API_HOST_NAME
@@ -817,9 +857,9 @@ def functional_test_fixtures():
 
         REQUEST_BIN_API_TOKEN - request bin token to be used by functional tests
 
-        FUNCTIONAL_TEST_ENV_FILE - (optional) output file for the environment variables
-
         SSM_UPLOAD_PATH - (optional) path to upload the environment variables to AWS SSM
+
+        PERFORMANCE_SSM_UPLOAD_PATH - (optional) path to upload performance-only environment variables to AWS SSM
 
     """
     if current_app.config["REGISTER_FUNCTIONAL_TESTING_BLUEPRINT"]:
@@ -904,7 +944,7 @@ def generate_bulktest_data(user_id):
             template_type="letter",
             subject="letter",
             content="letter body",
-            postage="second",
+            postage=NETHERLANDS,
             created_by_id=user_id,
         ),
     }
@@ -928,7 +968,7 @@ def generate_bulktest_data(user_id):
         for i in range(batch_size):
             notification_num = (batch * batch_size) + i
             notification_type = random.choice(["sms", "letter", "email"])
-            extra_kwargs = {"postage": "second"} if notification_type == "letter" else {}
+            extra_kwargs = {"postage": NETHERLANDS} if notification_type == "letter" else {}
             template = TEMPLATES[notification_type]
             notifications_batch.append(
                 Notification(
@@ -974,3 +1014,229 @@ def generate_bulktest_data(user_id):
     pprint("Committing...")
     db.session.commit()
     pprint("Finished.")
+
+
+#
+# NotifyNL
+#
+@notify_command(name="create-platform-admin")
+@click.option("-e", "--email", required=True, help="Admin user email")
+@click.option("-p", "--password", required=True, help="Admin user password")
+@click.option("-m", "--mobile", required=True, help="Admin user phone number")
+def create_platform_admin(email, password, mobile):
+    """Create a platform admin user"""
+    from app.dao.users_dao import get_user_by_email, save_model_user
+    from app.models import User
+
+    try:
+        existing_user = get_user_by_email(email)
+        print(f"User with email {email} already exists. Returning existing user ID: {existing_user.id}")
+        return existing_user.id
+    except NoResultFound:
+        user = User(
+            name="Platform Admin",
+            email_address=email,
+            mobile_number=mobile,
+            auth_type="sms_auth",
+            state="active",
+            platform_admin=True,
+        )
+
+        save_model_user(user, password=password, validated_email_access=True)
+        print(f"Created new platform admin user with ID: {user.id}")
+        return user.id
+
+
+@notify_command(name="create-test-service")
+@click.option("-u", "--user-id", required=True, help="User ID who will own the service")
+@click.option("-n", "--name", default="Test service", help="Name of the test service")
+def create_test_service(user_id, name):
+    """Create a test service"""
+    user = User.query.get(user_id)
+    if not user:
+        print(f"User with ID {user_id} not found")
+        return
+
+    service = Service(
+        name=name,
+        created_by_id=user.id,
+        active=True,
+        restricted=False,
+        organisation_type="central",
+        email_message_limit=1000,
+        sms_message_limit=1000,
+        letter_message_limit=1000,
+    )
+
+    dao_create_service(service, user)
+    set_default_free_allowance_for_service(service=service, year_start=None)
+
+    print(f"Created test service with ID: {service.id}")
+    return service.id
+
+
+@notify_command(name="make-service-live")
+@click.option("-s", "--service-id", required=True, help="ID of the service to go live")
+@click.option("-u", "--user-id", required=True, help="User ID recorded as having requested go-live")
+def make_service_live(service_id, user_id):
+    """Take a trial-mode service out of restricted mode, for local dev use.
+
+    Skips the checklist/organisation-approval steps and the go-live
+    notification email that the real request-to-go-live flow enforces.
+    """
+    service = dao_fetch_service_by_id(service_id)
+    if not service:
+        print(f"Service with ID {service_id} not found")
+        return
+
+    user = User.query.get(user_id)
+    if not user:
+        print(f"User with ID {user_id} not found")
+        return
+
+    service.restricted = False
+    service.go_live_at = datetime.utcnow()
+    service.go_live_user = user
+    service.email_message_limit = 1000
+    service.sms_message_limit = 1000
+    service.letter_message_limit = 1000
+
+    dao_update_service(service)
+    db.session.commit()
+
+    print(f"Service {service.id} is now live")
+
+
+@notify_command(name="create-sms-template")
+@click.option("-s", "--service-id", required=True, help="Service ID to create template in")
+@click.option("-u", "--user-id", required=True, help="User ID who creates the template")
+@click.option("-n", "--name", default="Test SMS Template", help="Name of the SMS template")
+def create_sms_template(service_id, user_id, name):
+    """Create a basic SMS template in the specified service and print its ID"""
+    service = dao_fetch_service_by_id(service_id)
+    if not service:
+        print(f"Service with ID {service_id} not found")
+        return
+
+    user = User.query.get(user_id)
+    if not user:
+        print(f"User with ID {user_id} not found")
+        return
+
+    template = Template(
+        name=name,
+        service_id=service_id,
+        template_type="sms",
+        content="This is a test SMS message",
+        created_by_id=user_id,
+    )
+
+    dao_create_template(template)
+    print(f"Created SMS template with ID: {template.id}")
+    return template.id
+
+
+@notify_command(name="create-email-template")
+@click.option("-s", "--service-id", required=True, help="Service ID to create template in")
+@click.option("-u", "--user-id", required=True, help="User ID who creates the template")
+@click.option("-n", "--name", default="Test Email Template", help="Name of the email template")
+def create_email_template(service_id, user_id, name):
+    """Create a basic email template in the specified service and print its ID"""
+    service = dao_fetch_service_by_id(service_id)
+    if not service:
+        print(f"Service with ID {service_id} not found")
+        return
+
+    user = User.query.get(user_id)
+    if not user:
+        print(f"User with ID {user_id} not found")
+        return
+
+    template = Template(
+        name=name,
+        service_id=service_id,
+        template_type="email",
+        subject="Test email subject",
+        content="This is a test email message",
+        created_by_id=user_id,
+    )
+
+    dao_create_template(template)
+    print(f"Created email template with ID: {template.id}")
+    return template.id
+
+
+@notify_command(name="create-letter-template")
+@click.option("-s", "--service-id", required=True, help="Service ID to create template in")
+@click.option("-u", "--user-id", required=True, help="User ID who creates the template")
+@click.option("-n", "--name", default="Test Letter Template", help="Name of the letter template")
+@click.option(
+    "-p",
+    "--postage",
+    default=DEFAULT_POSTAGE,
+    type=click.Choice(POSTAGE_TYPES),
+    help="Postage class for the letter template",
+)
+def create_letter_template(service_id, user_id, name, postage):
+    """Create a basic letter template in the specified service and print its ID"""
+    service = dao_fetch_service_by_id(service_id)
+    if not service:
+        print(f"Service with ID {service_id} not found")
+        return
+
+    user = User.query.get(user_id)
+    if not user:
+        print(f"User with ID {user_id} not found")
+        return
+
+    template = Template(
+        name=name,
+        service_id=service_id,
+        template_type="letter",
+        subject="Test letter subject",
+        content="This is a test letter message",
+        postage=postage,
+        created_by_id=user_id,
+    )
+
+    dao_create_template(template)
+    print(f"Created letter template with ID: {template.id}")
+    return template.id
+
+
+@notify_command(name="create-api-key")
+@click.option("-s", "--service-id", required=True, help="Service ID to create API key for")
+@click.option("-u", "--user-id", required=True, help="User ID who creates the API key")
+@click.option("-n", "--name", default="Test API Key", help="Name of the API key")
+@click.option("-t", "--key-type", default="normal", help="Type of API key (normal, team, test)")
+def create_api_key(service_id, user_id, name, key_type):
+    """Create an API key in the specified service and print it"""
+    service = dao_fetch_service_by_id(service_id)
+    if not service:
+        print(f"Service with ID {service_id} not found")
+        return
+
+    user = User.query.get(user_id)
+    if not user:
+        print(f"User with ID {user_id} not found")
+        return
+
+    api_key = ApiKey.query.filter_by(name=name, service_id=service.id, expiry_date=None).first()
+
+    if not api_key:
+        api_key = ApiKey(
+            name=name,
+            service_id=service.id,
+            created_by=user,
+            key_type=key_type,
+        )
+
+        save_model_api_key(api_key)
+
+    full_key = f"{api_key.name}-{api_key.service_id}-{api_key.secret}"
+
+    # codeql[py/clear-text-logging-sensitive-data] intentional: this CLI command's sole purpose
+    # is to print a newly generated API key to the operator's terminal so they can copy it once.
+    print(full_key)
+
+    return full_key

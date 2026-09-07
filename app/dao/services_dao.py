@@ -2,10 +2,10 @@ from datetime import date, datetime, timedelta
 
 from flask import current_app
 from sqlalchemy import Float, cast
-from sqlalchemy.orm import joinedload
+from sqlalchemy.orm import Session, joinedload, scoped_session
 from sqlalchemy.sql.expression import and_, asc, case, func
 
-from app import db
+from app import db, redis_store
 from app.constants import (
     CROWN_ORGANISATION_TYPES,
     EMAIL_TYPE,
@@ -64,6 +64,7 @@ from app.utils import (
     escape_special_characters,
     get_archived_db_column_value,
     get_london_midnight_in_utc,
+    retryable_query,
 )
 
 DEFAULT_SERVICE_PERMISSIONS = [
@@ -72,12 +73,12 @@ DEFAULT_SERVICE_PERMISSIONS = [
     LETTER_TYPE,
     INTERNATIONAL_SMS_TYPE,
     INTERNATIONAL_LETTERS,
-    MESSAGEBOX_TYPE
+    MESSAGEBOX_TYPE,
 ]
 
 
 def dao_fetch_all_services(only_active=False):
-    query = Service.query.order_by(asc(Service.created_at)).options(joinedload("users"))
+    query = Service.query.order_by(asc(Service.created_at)).options(joinedload(Service.users))
 
     if only_active:
         query = query.filter(Service.active)
@@ -98,11 +99,12 @@ def dao_count_live_services():
     ).count()
 
 
-def dao_fetch_live_services_data():
+@retryable_query()
+def dao_fetch_live_services_data(session: Session | scoped_session = db.session):
     year_start_date, year_end_date = get_current_financial_year()
 
     most_recent_annual_billing = (
-        db.session.query(
+        session.query(
             AnnualBilling.service_id.label("service_id"),
             AnnualBilling.free_sms_fragment_limit.label("free_sms_fragment_limit"),
             AnnualBilling.financial_year_start.label("financial_year_start"),
@@ -113,9 +115,9 @@ def dao_fetch_live_services_data():
     )
 
     data = (
-        db.session.query(
+        session.query(
             Service.id.label("service_id"),
-            Service.name.label("service_name"),
+            Service.name.label("service_name"),  # type: ignore[attr-defined]
             Organisation.name.label("organisation_name"),
             Organisation.organisation_type.label("organisation_type"),
             Service.consent_to_research.label("consent_to_research"),
@@ -126,15 +128,15 @@ def dao_fetch_live_services_data():
             Service.volume_sms.label("sms_volume_intent"),
             Service.volume_email.label("email_volume_intent"),
             Service.volume_letter.label("letter_volume_intent"),
-            func.sum(case([(FactBilling.notification_type == "email", FactBilling.notifications_sent)], else_=0)).label(
+            func.sum(case((FactBilling.notification_type == "email", FactBilling.notifications_sent), else_=0)).label(
                 "email_totals"
             ),
-            func.sum(case([(FactBilling.notification_type == "sms", FactBilling.notifications_sent)], else_=0)).label(
+            func.sum(case((FactBilling.notification_type == "sms", FactBilling.notifications_sent), else_=0)).label(
                 "sms_totals"
             ),
-            func.sum(
-                case([(FactBilling.notification_type == "letter", FactBilling.notifications_sent)], else_=0)
-            ).label("letter_totals"),
+            func.sum(case((FactBilling.notification_type == "letter", FactBilling.notifications_sent), else_=0)).label(
+                "letter_totals"
+            ),
             most_recent_annual_billing.c.free_sms_fragment_limit,
         )
         .join(most_recent_annual_billing, Service.id == most_recent_annual_billing.c.service_id)
@@ -171,11 +173,14 @@ def dao_fetch_live_services_data():
     return [row._asdict() for row in data]
 
 
-def dao_fetch_service_by_id(service_id, only_active=False, with_users=True):
-    query = Service.query.filter_by(id=service_id)
+@retryable_query()
+def dao_fetch_service_by_id(
+    service_id, only_active=False, with_users=True, session: Session | scoped_session = db.session
+):
+    query = session.query(Service).filter_by(id=service_id)
 
     if with_users:
-        query = query.options(joinedload("users"))
+        query = query.options(joinedload(Service.users))
 
     if only_active:
         query = query.filter(Service.active)
@@ -193,7 +198,7 @@ def dao_fetch_service_by_inbound_number(number):
 
 
 def dao_fetch_service_by_id_with_api_keys(service_id, only_active=False):
-    query = Service.query.filter_by(id=service_id).options(joinedload("api_keys"))
+    query = Service.query.filter_by(id=service_id).options(joinedload(Service.api_keys))
 
     if only_active:
         query = query.filter(Service.active)
@@ -205,7 +210,7 @@ def dao_fetch_all_services_by_user(user_id, only_active=False):
     query = (
         Service.query.filter(Service.users.any(id=user_id))
         .order_by(asc(Service.created_at))
-        .options(joinedload("users"))
+        .options(joinedload(Service.users))
     )
 
     if only_active:
@@ -231,9 +236,8 @@ def dao_archive_service(service_id):
     # to ensure that db.session still contains the models when it comes to creating history objects
     service = (
         Service.query.options(
-            joinedload("templates"),
-            joinedload("templates.template_redacted"),
-            joinedload("api_keys"),
+            joinedload(Service.templates).joinedload(Template.template_redacted),
+            joinedload(Service.api_keys),
         )
         .filter(Service.id == service_id)
         .one()
@@ -250,10 +254,16 @@ def dao_archive_service(service_id):
         if not api_key.expiry_date:
             api_key.expiry_date = datetime.utcnow()
 
+    # Bust SerialisedService's cache (app/serialised_models.py) so delivery/admin don't keep
+    # reading a stale dict missing whatever fields were added after it was last cached.
+    redis_store.delete(f"service-{service_id}")
+
 
 def dao_fetch_service_by_id_and_user(service_id, user_id):
     return (
-        Service.query.filter(Service.users.any(id=user_id), Service.id == service_id).options(joinedload("users")).one()
+        Service.query.filter(Service.users.any(id=user_id), Service.id == service_id)
+        .options(joinedload(Service.users))
+        .one()
     )
 
 
@@ -315,6 +325,10 @@ def dao_create_service(  # noqa: C901
 def dao_update_service(service):
     db.session.add(service)
 
+    # Bust SerialisedService's cache (app/serialised_models.py) so delivery/admin don't keep
+    # reading a stale dict missing whatever fields were added after it was last cached.
+    redis_store.delete(f"service-{service.id}")
+
 
 def dao_add_user_to_service(service, user, permissions=None, folder_permissions=None):
     permissions = permissions or []
@@ -323,7 +337,9 @@ def dao_add_user_to_service(service, user, permissions=None, folder_permissions=
     try:
         from app.dao.permissions_dao import permission_dao
 
-        service.users.append(user)
+        if user not in service.users:
+            service.users.append(user)
+
         permission_dao.set_user_service_permission(user, service, permissions, _commit=False)
         db.session.add(service)
 
@@ -491,9 +507,12 @@ def dao_fetch_active_users_for_service(service_id):
     return query.all()
 
 
-def dao_find_services_sending_to_tv_numbers(start_date, end_date, threshold=500):
+@retryable_query()
+def dao_find_services_sending_to_tv_numbers(
+    start_date: datetime, end_date: datetime, threshold: int = 500, session: Session | scoped_session = db.session
+):
     return (
-        db.session.query(
+        session.query(
             Notification.service_id.label("service_id"), func.count(Notification.id).label("notification_count")
         )
         .filter(
@@ -514,9 +533,12 @@ def dao_find_services_sending_to_tv_numbers(start_date, end_date, threshold=500)
     )
 
 
-def dao_find_services_with_high_failure_rates(start_date, end_date, threshold=10000):
+@retryable_query()
+def dao_find_services_with_high_failure_rates(
+    start_date: datetime, end_date: datetime, threshold: int = 10000, session: Session | scoped_session = db.session
+):
     subquery = (
-        db.session.query(func.count(Notification.id).label("total_count"), Notification.service_id.label("service_id"))
+        session.query(func.count(Notification.id).label("total_count"), Notification.service_id.label("service_id"))
         .filter(
             Notification.service_id == Service.id,
             Notification.created_at >= start_date,
@@ -535,7 +557,7 @@ def dao_find_services_with_high_failure_rates(start_date, end_date, threshold=10
     subquery = subquery.subquery()
 
     query = (
-        db.session.query(
+        session.query(
             Notification.service_id.label("service_id"),
             func.count(Notification.id).label("permanent_failure_count"),
             subquery.c.total_count.label("total_count"),
@@ -577,9 +599,10 @@ def get_live_services_with_organisation():
     return query.all()
 
 
-def fetch_billing_details_for_all_services():
+@retryable_query()
+def fetch_billing_details_for_all_services(session: Session | scoped_session = db.session):
     return (
-        db.session.query(
+        session.query(
             Service.id.label("service_id"),
             func.coalesce(Service.purchase_order_number, Organisation.purchase_order_number).label(
                 "purchase_order_number"

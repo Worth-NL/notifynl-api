@@ -17,6 +17,11 @@ from sqlalchemy.orm.exc import NoResultFound
 from app.constants import LETTER_TYPE, NETHERLANDS, QR_CODE_TOO_LONG, SMS_TYPE
 from app.dao.notifications_dao import get_notification_by_id
 from app.dao.services_dao import dao_fetch_service_by_id
+from app.dao.template_email_files_dao import (
+    dao_archive_template_email_file,
+    dao_get_template_email_file_by_id,
+    dao_get_template_email_files_by_template_id,
+)
 from app.dao.template_folder_dao import (
     dao_get_template_folder_by_id_and_service_id,
 )
@@ -111,7 +116,7 @@ def create_template(service_id):
 
 
 @template_blueprint.route("/<uuid:template_id>", methods=["POST"])
-def update_template(service_id, template_id):
+def update_template(service_id, template_id):  # noqa: C901
     fetched_template = dao_get_template_by_id_and_service_id(template_id=template_id, service_id=service_id)
 
     if not fetched_template.service.has_permission(fetched_template.template_type):
@@ -154,7 +159,21 @@ def update_template(service_id, template_id):
     update_dict = template_schema.load(updated_template)
     if update_dict.archived:
         update_dict.folder = None
+
     dao_update_template(update_dict)
+    if update_dict.archived:
+        file_ids_to_archive = [file.id for file in dao_get_template_email_files_by_template_id(template_id)]
+    else:
+        file_ids_to_archive = data.get("archive_email_file_ids")
+    if file_ids_to_archive:
+        for file_id in file_ids_to_archive:
+            file_to_archive = dao_get_template_email_file_by_id(file_id)
+            dao_archive_template_email_file(
+                file_to_archive=file_to_archive,
+                archived_by_id=data.get("created_by"),
+                template_version=update_dict.version,
+            )
+
     return jsonify(data=template_schema.dump(update_dict)), 200
 
 
@@ -168,11 +187,8 @@ def get_precompiled_template_for_service(service_id):
 
 @template_blueprint.route("", methods=["GET"])
 def get_all_templates_for_service(service_id):
-    templates = dao_get_all_templates_for_service(service_id=service_id)
-    if str(request.args.get("detailed", True)) == "True":
-        data = template_schema.dump(templates, many=True)
-    else:
-        data = template_schema_no_detail.dump(templates, many=True)
+    templates = dao_get_all_templates_for_service(service_id=service_id, no_detail=True)
+    data = template_schema_no_detail.dump(templates, many=True)
     return jsonify(data=data)
 
 
@@ -230,6 +246,15 @@ def redact_template(template, data):
     return "null", 200
 
 
+def _overlay_query_string(file_type, page_number, letter_address_placement):
+    params = {} if file_type != "png" else {"page_number": page_number}
+    if letter_address_placement:
+        params["letter_address_placement"] = letter_address_placement
+    if not params:
+        return ""
+    return "?" + "&".join(f"{key}={value}" for key, value in params.items())
+
+
 @template_blueprint.route("/preview/<uuid:notification_id>/<file_type>", methods=["GET"])
 def preview_letter_template_by_notification_id(service_id, notification_id, file_type):
     if file_type not in ("pdf", "png"):
@@ -261,7 +286,7 @@ def preview_letter_template_by_notification_id(service_id, notification_id, file
 
         if content_outside_printable_area and (file_type == "pdf" or page_is_in_invalid_pages):
             path = f"/precompiled/overlay.{file_type}"
-            query_string = f"?page_number={page_number}" if file_type == "png" else ""
+            query_string = _overlay_query_string(file_type, page_number, notification.service.letter_address_placement)
             content = pdf_file
         elif file_type == "png":
             query_string = "?hide_notify=true" if page_number == "1" else ""
@@ -307,6 +332,7 @@ def preview_letter_template_by_notification_id(service_id, notification_id, file
             "values": notification.personalisation,
             "date": notification.created_at.isoformat(),
             "filename": letter_logo_filename,
+            "letter_address_placement": service.letter_address_placement,
         }
 
         url = "{}/preview.{}{}".format(

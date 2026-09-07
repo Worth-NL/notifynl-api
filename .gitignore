@@ -896,7 +896,7 @@ target/
 environment.sh
 .envrc
 
-celerybeat-schedule
+celerybeat-schedule*
 
 # CloudFoundry
 .cf
@@ -908,3 +908,4 @@ celerybeat-schedule
 docker-compose.yml
 .env
 application.log.json
+.claude/settings.local.json

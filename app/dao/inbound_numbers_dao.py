@@ -1,13 +1,17 @@
 from uuid import UUID
 
+from sqlalchemy.orm import Session, scoped_session
+
 from app import db
 from app.constants import INBOUND_SMS_TYPE
-from app.dao.dao_utils import autocommit, transaction
+from app.dao.dao_utils import autocommit
 from app.models import InboundNumber
+from app.utils import retryable_query
 
 
-def dao_get_inbound_numbers():
-    return InboundNumber.query.order_by(InboundNumber.updated_at).all()
+@retryable_query()
+def dao_get_inbound_numbers(session: Session | scoped_session = db.session):
+    return session.query(InboundNumber).order_by(InboundNumber.updated_at).all()
 
 
 def dao_get_available_inbound_numbers():
@@ -49,10 +53,8 @@ def dao_allocate_number_for_service(service_id, inbound_number_id):
 def archive_or_release_inbound_number_for_service(service_id: UUID, archive: bool, commit=True):
     update_data = {
         "service_id": None,
+        "active": False if archive else True,
     }
-
-    if archive:
-        update_data["active"] = False
 
     result = InboundNumber.query.filter_by(service_id=service_id, active=True).update(
         update_data, synchronize_session="fetch"
@@ -67,7 +69,11 @@ def dao_remove_inbound_sms_for_service(service_id, archive):
     from app.dao.service_permissions_dao import dao_remove_service_permission
     from app.dao.service_sms_sender_dao import dao_remove_inbound_sms_senders
 
-    with transaction():
+    try:
         dao_remove_service_permission(service_id, INBOUND_SMS_TYPE, commit=False)
         dao_remove_inbound_sms_senders(service_id, commit=False)
         archive_or_release_inbound_number_for_service(service_id, archive, commit=False)
+        db.session.commit()
+    except Exception:
+        db.session.rollback()
+        raise

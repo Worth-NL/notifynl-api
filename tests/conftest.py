@@ -2,11 +2,13 @@ import os
 import subprocess
 from collections import namedtuple
 from contextlib import contextmanager
+from unittest.mock import patch
 from urllib.parse import urlparse
 
 import freezegun
 import pytest
 import sqlalchemy
+from sqlalchemy import delete, text
 
 from app import create_app, db, reset_memos
 from app.authentication.auth import requires_admin_auth, requires_no_auth
@@ -19,6 +21,17 @@ from tests.routes import test_admin_auth_blueprint, test_no_auth_blueprint
 # https://stackoverflow.com/questions/71584885/ipdb-stops-showing-prompt-text-after-carriage-return
 # https://github.com/spulec/freezegun/pull/481
 freezegun.configure(extend_ignore_list=["prompt_toolkit"])
+
+
+def pytest_configure(config):
+    # .env sets AWS_ENDPOINT_URL so local Celery can reach the devcontainer's ministack
+    # service. pytest-dotenv loads .env, and botocore honours that env var even inside
+    # moto's mock_aws() context -- so without this, every "mocked" AWS call in the test
+    # suite silently hits (and pollutes) the real, persistent ministack container instead
+    # of an isolated in-memory mock. Cleared in pytest_configure (rather than at module
+    # import time) since it must run after pytest-dotenv/pytest-env have set it, and
+    # their relative load order isn't guaranteed.
+    os.environ.pop("AWS_ENDPOINT_URL", None)
 
 
 @pytest.fixture(scope="session")
@@ -68,12 +81,11 @@ def create_test_db(database_uri):
     db_uri_parts = database_uri.split("/")
     postgres_db_uri = "/".join(db_uri_parts[:-1] + ["postgres"])
 
-    postgres_db = sqlalchemy.create_engine(
-        postgres_db_uri, echo=False, isolation_level="AUTOCOMMIT", client_encoding="utf8"
-    )
+    postgres_db = sqlalchemy.create_engine(postgres_db_uri, echo=False, client_encoding="utf8")
     try:
-        result = postgres_db.execute(sqlalchemy.sql.text(f"CREATE DATABASE {db_uri_parts[-1]}"))
-        result.close()
+        with postgres_db.connect() as connection:
+            connection.execution_options(isolation_level="AUTOCOMMIT")
+            connection.execute(text(f"CREATE DATABASE {db_uri_parts[-1]}"))
     except sqlalchemy.exc.ProgrammingError:
         # database "test_notification_api_master" already exists
         pass
@@ -89,12 +101,14 @@ def _notify_db(notify_api, worker_id):
     """
     from flask import current_app
 
+    base_uri = current_app.config["SQLALCHEMY_DATABASE_URI"]
     # the path as used with urlparse has a leading slash
     db_name = f"/test_notification_api_{worker_id}"
-    db_uri = urlparse(str(db.engine.url))._replace(path=db_name).geturl()
+    db_uri = urlparse(str(base_uri))._replace(path=db_name).geturl()
 
     # create a database for this worker thread -
     current_app.config["SQLALCHEMY_DATABASE_URI"] = db_uri
+    current_app.config["SQLALCHEMY_BINDS"]["bulk"]["url"] = db_uri
 
     # get rid of the old SQLAlchemy instance because we can’t have multiple on the same app
     notify_api.extensions.pop("sqlalchemy")
@@ -137,7 +151,9 @@ def _notify_db(notify_api, worker_id):
         yield db
 
         db.session.remove()
-        db.engine.dispose()
+        db.session_bulk.remove()
+        for engine in db.engines.values():
+            engine.dispose()
 
 
 @pytest.fixture(scope="function")
@@ -147,9 +163,9 @@ def sms_providers(_notify_db):
     time, make sure we always choose mmg. You'll need to override them in your tests if you wish to do something
     different.
     """
-    get_provider_details_by_identifier("mmg").priority = 100
+    get_provider_details_by_identifier("mmg").priority = 0
     get_provider_details_by_identifier("firetext").priority = 0
-    # get_provider_details_by_identifier("spryng").priority = 0
+    get_provider_details_by_identifier("spryng").priority = 100
 
 
 @pytest.fixture(scope="function")
@@ -167,6 +183,7 @@ def notify_db_session(_notify_db, sms_providers):
 
 def _clean_database(_db):
     _db.session.remove()
+    _db.session_bulk.remove()
     for tbl in reversed(_db.metadata.sorted_tables):
         if tbl.name not in [
             "provider_details",
@@ -184,7 +201,8 @@ def _clean_database(_db):
             "service_callback_type",
             "default_annual_allowance",
         ]:
-            _db.engine.execute(tbl.delete())
+            stmt = delete(tbl)
+            _db.session.execute(stmt)
     _db.session.commit()
 
 
@@ -270,6 +288,12 @@ def set_config_values(app, dict):
     finally:
         for key in dict:
             app.config[key] = old_values[key]
+
+
+@contextmanager
+def _with_message_group_id(task, value):
+    with patch("notifications_utils.celery.NotifyTask.message_group_id", new=value, create=True):
+        yield
 
 
 class Matcher:

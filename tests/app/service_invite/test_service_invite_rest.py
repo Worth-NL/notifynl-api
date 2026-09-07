@@ -65,7 +65,11 @@ def test_create_invited_user(
     assert len(notification.personalisation["url"]) > len(expected_start_of_invite_url.format(hostnames=hostnames))
     assert str(notification.template_id) == current_app.config["INVITATION_EMAIL_TEMPLATE_ID"]
 
-    mocked.assert_called_once_with([(str(notification.id))], queue="notify-internal-tasks")
+    mocked.assert_called_once_with(
+        [(str(notification.id))],
+        queue="notify-internal-tasks",
+        MessageGroupId=str(notification.service_id),
+    )
 
 
 def test_create_invited_user_without_auth_type(admin_request, sample_service, mocker, invitation_email_template):
@@ -244,8 +248,8 @@ def test_validate_invitation_token_for_expired_token_returns_400(client):
     json_resp = json.loads(response.get_data(as_text=True))
     assert json_resp["result"] == "error"
     assert json_resp["message"] == {
-        "invitation": "Your invitation to GOV.UK Notify has expired. "
-        "Please ask the person that invited you to send you another one"
+        "invitation": "Je uitnodiging voor NotifyNL is verlopen. "
+        "Vraag degene die je heeft uitgenodigd om je een nieuwe uitnodiging te sturen."
     }
 
 

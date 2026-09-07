@@ -3,6 +3,7 @@ from unittest.mock import call
 
 import pytest
 from flask import current_app, json
+from notifications_utils.markdown import notify_email_markdown, notify_plain_text_email_markdown
 
 from app.constants import (
     EMAIL_TYPE,
@@ -21,6 +22,7 @@ from app.v2.notifications.notification_schemas import (
     post_email_response,
     post_sms_response,
 )
+from app.v2.notifications.post_notifications import sanitise_personalisation_item
 from tests import create_service_authorization_header
 from tests.app.db import (
     create_reply_to_email,
@@ -92,7 +94,11 @@ def test_post_sms_notification_uses_inbound_number_as_sender(api_client_request,
     assert resp_json["id"] == str(notification_id)
     assert resp_json["content"]["from_number"] == "1"
     assert notifications[0].reply_to_text == "1"
-    mocked.assert_called_once_with([str(notification_id)], queue="send-sms-tasks")
+    mocked.assert_called_once_with(
+        [str(notification_id)],
+        queue="send-sms-tasks",
+        MessageGroupId=str(service.id),
+    )
 
 
 @pytest.mark.skip(reason="[NOTIFYNL] Dutch phone number implementation breaks this test")
@@ -117,7 +123,11 @@ def test_post_sms_notification_uses_inbound_number_reply_to_as_sender(api_client
     assert resp_json["id"] == str(notification_id)
     assert resp_json["content"]["from_number"] == "447123123123"
     assert notifications[0].reply_to_text == "447123123123"
-    mocked.assert_called_once_with([str(notification_id)], queue="send-sms-tasks")
+    mocked.assert_called_once_with(
+        [str(notification_id)],
+        queue="send-sms-tasks",
+        MessageGroupId=str(service.id),
+    )
 
 
 def test_post_sms_notification_returns_201_with_sms_sender_id(
@@ -144,7 +154,11 @@ def test_post_sms_notification_returns_201_with_sms_sender_id(
     notifications = Notification.query.all()
     assert len(notifications) == 1
     assert notifications[0].reply_to_text == sms_sender.sms_sender
-    mocked.assert_called_once_with([resp_json["id"]], queue="send-sms-tasks")
+    mocked.assert_called_once_with(
+        [resp_json["id"]],
+        queue="send-sms-tasks",
+        MessageGroupId=str(sample_template_with_placeholders.service_id),
+    )
 
 
 @pytest.mark.skip(reason="[NOTIFYNL] Dutch phone number implementation breaks this test")
@@ -173,7 +187,11 @@ def test_post_sms_notification_uses_sms_sender_id_reply_to(
     notifications = Notification.query.all()
     assert len(notifications) == 1
     assert notifications[0].reply_to_text == "447123123123"
-    mocked.assert_called_once_with([resp_json["id"]], queue="send-sms-tasks")
+    mocked.assert_called_once_with(
+        [resp_json["id"]],
+        queue="send-sms-tasks",
+        MessageGroupId=str(sample_template_with_placeholders.service_id),
+    )
 
 
 @pytest.mark.skip(reason="[NOTIFYNL] Dutch phone number implementation breaks this test")
@@ -472,13 +490,16 @@ def test_notification_returns_400_and_for_schema_problems(
     } in error_resp["errors"]
 
 
+@pytest.mark.parametrize(
+    "email_address", ("notify@digital.cabinet-office.gov.uk", "\nnotify@digital.cabinet-office.gov.uk ")
+)
 @pytest.mark.parametrize("reference", [None, "reference_from_client"])
 def test_post_email_notification_returns_201(
-    api_client_request, sample_email_template_with_placeholders, mocker, reference
+    api_client_request, sample_email_template_with_placeholders, mocker, reference, email_address
 ):
     mocked = mocker.patch("app.celery.provider_tasks.deliver_email.apply_async")
     data = {
-        "email_address": sample_email_template_with_placeholders.service.users[0].email_address,
+        "email_address": email_address,
         "template_id": sample_email_template_with_placeholders.id,
         "personalisation": {"name": "Bob"},
     }
@@ -494,6 +515,7 @@ def test_post_email_notification_returns_201(
 
     assert validate(resp_json, post_email_response) == resp_json
     notification = Notification.query.one()
+    assert notification.to == "notify@digital.cabinet-office.gov.uk"
     assert notification.status == NOTIFICATION_CREATED
     assert notification.postage is None
     assert resp_json["id"] == str(notification.id)
@@ -704,6 +726,243 @@ def test_post_email_notification_validates_personalisation_send_a_file_values(
         ]
         if expect_upload
         else []
+    )
+
+
+@pytest.mark.parametrize("placeholder_name", ("first name", "first_name", "First_Name", "FIRST NAME"))
+def test_post_email_notification_sanitise_content_for_selected_personalisation(
+    api_client_request, sample_email_template_with_distinct_placeholders, mocker, placeholder_name
+):
+    mocker.patch("app.celery.provider_tasks.deliver_email.apply_async")
+    data = {
+        "email_address": "amala@example.com",
+        "template_id": sample_email_template_with_distinct_placeholders.id,
+        "personalisation": {
+            "First_Name": "Amala, please [click this evil link](https://evil.link)",
+            "link": "https://pab.gov.uk/123",
+        },
+        "sanitise_content_for": [placeholder_name],
+    }
+
+    response = api_client_request.post(
+        sample_email_template_with_distinct_placeholders.service_id,
+        "v2_notifications.post_notification",
+        notification_type="email",
+        _data=data,
+    )
+
+    assert validate(response, post_email_response) == response
+    assert response["sanitised_content"] == {
+        "First_Name": {
+            "sanitised": "Amala, please \\[click this evil link\\]\\(\\)",
+            "unsanitised": "Amala, please [click this evil link](https://evil.link)",
+        }
+    }
+
+    notification = Notification.query.one()
+
+    assert notification.content == (
+        "Hello Amala, please \\[click this evil link\\]\\(\\)\n"
+        "Please confirm your registration on [Pigeons' Affair Bureau website](https://pab.gov.uk/123)"
+    )
+
+    # this is what end user will see:
+    # as plain email:
+    assert notify_plain_text_email_markdown(notification.content).strip() == (
+        "Hello Amala, please [click this evil link]()\n"
+        "Please confirm your registration on Pigeons' Affair Bureau website: https://pab.gov.uk/123"
+    )
+    # as html email
+    assert notify_email_markdown(notification.content).strip() == (
+        '<p style="Margin: 0 0 20px 0; font-size: 19px; line-height: 25px; color: #0B0C0C;">Hello Amala, please '
+        '[click this evil link]()<br>Please confirm your registration on <a style="word-wrap: break-word; '
+        'color: #1D70B8;" href="https://pab.gov.uk/123">Pigeons\' Affair Bureau website</a></p>'
+    )
+
+
+@pytest.mark.parametrize(
+    "template_type, recipient_dict, has_sanitised_content",
+    (
+        ("email", {"email_address": "amala@example.com"}, True),
+        pytest.param(
+            "sms",
+            {"phone_number": "07900111222"},
+            False,
+            marks=pytest.mark.skip(reason="[NOTIFYNL] Dutch phone number implementation breaks this test"),
+        ),
+        pytest.param(
+            "letter",
+            {
+                "personalisation": {
+                    "address_line_1": "Amala Pidge",
+                    "address_line_2": "6 Dove St",
+                    "address_line_3": "SW1 1AA",
+                }
+            },
+            False,
+            marks=pytest.mark.skip(reason="[NOTIFYNL] Dutch postal address implementation breaks this test"),
+        ),
+    ),
+)
+def test_post_email_notification_response_has_sanitised_content_info_for_emails_only(
+    api_client_request, sample_service, mocker, template_type, recipient_dict, has_sanitised_content
+):
+    template = create_template(service=sample_service, template_type=template_type)
+    mocker.patch("app.celery.provider_tasks.deliver_email.apply_async")
+    mocker.patch("app.celery.letters_pdf_tasks.get_pdf_for_templated_letter.apply_async")
+    data = {
+        "template_id": template.id,
+    } | recipient_dict
+
+    response = api_client_request.post(
+        template.service_id,
+        "v2_notifications.post_notification",
+        notification_type=template_type,
+        _data=data,
+        _api_key_type="test",
+    )
+
+    assert ("sanitised_content" in response) == has_sanitised_content
+
+
+@pytest.mark.parametrize(
+    "value, expected_sanitised, expected_sanitised_plain_text, expected_sanitised_html",
+    (
+        # sanitise link with link text by removing the link and escaping markdonw characters:
+        (
+            r"Amala, please [click this (evil link](https://evil.link)",
+            r"Amala, please \[click this \(evil link\]\(\)",
+            r"Amala, please [click this (evil link]()",
+            r"Amala, please [click this (evil link]()",
+        ),
+        # treat content that looks like a link but could be an honest mistake more leniently
+        # by only adding the allegedly missing space after the dot
+        # (someone not putting a space after an initial etc.)
+        (
+            "Marie.Curie-Sklodowska is rad",
+            "Marie\\. Curie\\-Sklodowska is rad",
+            "Marie. Curie-Sklodowska is rad",
+            "Marie. Curie-Sklodowska is rad",
+        ),
+        # two full links:
+        (
+            "https://evil.link and www.evil.link?arg=nam",
+            " and ",
+            "and",
+            " and ",
+        ),
+        # two links with just dots:
+        (
+            "evil. link and other-evil. lnk",
+            "evil\\. link and other\\-evil\\. lnk",
+            "evil. link and other-evil. lnk",
+            "evil. link and other-evil. lnk",
+        ),
+        # mixed link types:
+        (
+            "https://evil.link and www.evil.link",
+            " and www\\. evil\\. link",
+            "and www. evil. link",
+            " and www. evil. link",
+        ),
+        # mixed link types changed order:
+        (
+            "www.evil.link and https://evil.link",
+            "www\\. evil\\. link and ",
+            "www. evil. link and",
+            "www. evil. link and ",
+        ),
+        # earlier url is a substring of a later url:
+        (
+            "foo.bar/baz and https://evil.link/foo.bar/bazpwnme",
+            " and ",
+            "and",
+            " and ",
+        ),
+        # earlier url is a substring of a later (undotted) url:
+        (
+            "foo.bar/baz and https://localhost/foo.bar/bazsomething/weird",
+            " and https://localhost/",
+            "and https://localhost/",
+            ' and <a style="word-wrap: break-word; color: #1D70B8;" href="https://localhost/">https://localhost/</a>',
+        ),
+        # double sanitisation can happen:
+        (
+            r"\# Rogue Header",
+            r"\\\# Rogue Header",
+            r"\# Rogue Header",
+            r"\# Rogue Header",
+        ),
+        # escape two Markdown characters in a row:
+        (
+            r"## Rogue Header",
+            r"\#\# Rogue Header",
+            r"## Rogue Header",
+            r"## Rogue Header",
+        ),
+        # similar, but for a multi-line string:
+        (
+            "# Rogue Header\\\n# Rogue Header",
+            "\\# Rogue Header\\\\\n\\# Rogue Header",
+            "# Rogue Header\\\n# Rogue Header",
+            "# Rogue Header\\<br># Rogue Header",
+        ),
+        # sanitise where there is an escaped backslash:
+        (
+            r"\\# Rogue Header",
+            r"\\\\\# Rogue Header",
+            r"\\# Rogue Header",
+            r"\\# Rogue Header",
+        ),
+        # user accidentally puts backslash instead of forward slash:
+        (
+            r"Ulica Ceynowy 5\44",
+            r"Ulica Ceynowy 5\\44",
+            r"Ulica Ceynowy 5\44",
+            r"Ulica Ceynowy 5\44",
+        ),
+        # unicode-heavy text
+        (
+            r"[żądło rządzi tą pszczołą](to-jest-atak.com)",
+            r"\[żądło rządzi tą pszczołą\]\(to\-jest\-atak\. com\)",
+            r"[żądło rządzi tą pszczołą](to-jest-atak. com)",
+            r"[żądło rządzi tą pszczołą](to-jest-atak. com)",
+        ),
+        # user accidentally puts three backslashes instead of forward slash:
+        (
+            r"Ulica Ceynowy 5\\\44",
+            r"Ulica Ceynowy 5\\\\\\44",
+            r"Ulica Ceynowy 5\\\44",
+            r"Ulica Ceynowy 5\\\44",
+        ),
+        # test all Markdown characters get escaped:
+        (
+            r"`*_(){}[]<>#+-.!|",
+            r"\`\*\_\(\)\{\}\[\]\<\>\#\+\-\.\!\|",
+            r"`*_(){}[]\&lt;&gt;#+-.!|",
+            r"`*_(){}[]\&lt;&gt;#+-.!|",
+        ),
+    ),
+)
+def test_sanitise_personalisation_item(
+    value, expected_sanitised, expected_sanitised_plain_text, expected_sanitised_html
+):
+    sanitised_value = sanitise_personalisation_item(value)
+
+    assert sanitised_value == expected_sanitised
+
+    # this is what end user will see
+    # as plain email
+    assert expected_sanitised_plain_text == notify_plain_text_email_markdown(sanitised_value).strip()
+
+    # as html email
+    assert notify_email_markdown(sanitised_value).strip() == (
+        (
+            f'<p style="Margin: 0 0 20px 0; font-size: 19px; line-height: 25px; color: #0B0C0C;">'
+            f"{expected_sanitised_html}</p>"
+        )
+        if expected_sanitised_html
+        else ""
     )
 
 
@@ -993,10 +1252,16 @@ def test_post_sms_notification_returns_400_if_not_allowed_to_send_to_uk_landline
     assert error_json["errors"] == [{"error": "InvalidPhoneError", "message": "Not a UK mobile number"}]
 
 
-def test_post_sms_should_persist_supplied_sms_number(api_client_request, sample_template_with_placeholders, mocker):
+@pytest.mark.parametrize("supplied_number", ("+(44) 77009-00855", "  +(44) 77009-00855\n"))
+def test_post_sms_should_persist_supplied_sms_number(
+    api_client_request,
+    sample_template_with_placeholders,
+    mocker,
+    supplied_number,
+):
     mocked = mocker.patch("app.celery.provider_tasks.deliver_sms.apply_async")
     data = {
-        "phone_number": "+(44) 77009-00855",
+        "phone_number": supplied_number,
         "template_id": str(sample_template_with_placeholders.id),
         "personalisation": {" Name": "Jo"},
     }

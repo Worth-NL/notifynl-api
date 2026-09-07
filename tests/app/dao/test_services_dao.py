@@ -35,6 +35,7 @@ from app.dao.service_user_dao import (
 )
 from app.dao.services_dao import (
     dao_add_user_to_service,
+    dao_archive_service,
     dao_create_service,
     dao_fetch_active_users_for_service,
     dao_fetch_all_services,
@@ -88,6 +89,7 @@ from tests.app.db import (
     create_template_folder,
     create_user,
 )
+from tests.utils import QueryRecorder
 
 
 def test_create_service(notify_db_session):
@@ -425,7 +427,12 @@ def test_get_all_user_services_should_return_empty_list_if_no_services_for_user(
 
 
 @freeze_time("2019-04-23T10:00:00")
-def test_dao_fetch_live_services_data(sample_user, nhs_email_branding, nhs_letter_branding):
+@pytest.mark.parametrize(
+    "session,expected_bind_key",
+    ((db.session, None), (db.session_bulk, "bulk")),
+    ids=("default", "bulk"),
+)
+def test_dao_fetch_live_services_data(sample_user, nhs_email_branding, nhs_letter_branding, session, expected_bind_key):
     org = create_organisation(organisation_type="nhs_central")
     service = create_service(go_live_user=sample_user, go_live_at="2014-04-20T10:00:00")
     sms_template = create_template(service=service)
@@ -459,7 +466,11 @@ def test_dao_fetch_live_services_data(sample_user, nhs_email_branding, nhs_lette
     # 3rd service: billing from 2019
     create_annual_billing(service_3.id, 200, 2019)
 
-    results = dao_fetch_live_services_data()
+    with QueryRecorder() as qr:
+        results = dao_fetch_live_services_data(session=session)
+
+    assert {q.bind_key for q in qr.queries} == {expected_bind_key}
+
     assert len(results) == 3
     # checks the results and that they are ordered by date:
     assert results == [
@@ -642,6 +653,38 @@ def test_update_service_creates_a_history_record_with_current_data(notify_db_ses
 
     assert Service.get_history_model().query.filter_by(name="service_name").one().version == 1
     assert Service.get_history_model().query.filter_by(name="updated_service_name").one().version == 2
+
+
+def test_dao_update_service_busts_the_serialised_service_redis_cache(notify_db_session, mocker):
+    # Regression test: SerialisedService.get_dict() (app/serialised_models.py) caches a service's
+    # schema-dumped dict in Redis for 28 days with no invalidation on update - so a service fetched
+    # via SerialisedService.from_id() (used directly by the delivery pipeline,
+    # app/delivery/send_to_providers.py) before a new Service field shipped would keep returning
+    # the old, shorter dict and hard-crash with a KeyError on that field for weeks.
+    mock_redis_delete = mocker.patch("app.dao.services_dao.redis_store.delete")
+
+    user = create_user()
+    service = Service(name="service_name", restricted=False, created_by=user)
+    dao_create_service(service, user)
+    mock_redis_delete.reset_mock()
+
+    service.name = "updated_service_name"
+    dao_update_service(service)
+
+    mock_redis_delete.assert_called_once_with(f"service-{service.id}")
+
+
+def test_dao_archive_service_busts_the_serialised_service_redis_cache(notify_db_session, mocker):
+    mock_redis_delete = mocker.patch("app.dao.services_dao.redis_store.delete")
+
+    user = create_user()
+    service = Service(name="service_name", restricted=False, created_by=user)
+    dao_create_service(service, user)
+    mock_redis_delete.reset_mock()
+
+    dao_archive_service(service.id)
+
+    mock_redis_delete.assert_called_once_with(f"service-{service.id}")
 
 
 def test_update_service_permission_creates_a_history_record_with_current_data(notify_db_session):
@@ -1182,7 +1225,15 @@ def create_email_sms_letter_template():
 
 
 @freeze_time("2019-12-02 12:00:00.000000")
-def test_dao_find_services_sending_to_tv_numbers(notify_db_session, fake_uuid):
+@pytest.mark.parametrize(
+    "session,expected_bind_key",
+    (
+        (db.session, None),
+        (db.session_bulk, "bulk"),
+    ),
+    ids=("default", "bulk"),
+)
+def test_dao_find_services_sending_to_tv_numbers(notify_db_session, fake_uuid, session, expected_bind_key):
     service_1 = create_service(service_name="Service 1", service_id=fake_uuid)
     service_3 = create_service(service_name="Service 3", restricted=True)  # restricted is excluded
     service_4 = create_service(service_name="Service 4", active=False)  # not active is excluded
@@ -1217,12 +1268,23 @@ def test_dao_find_services_sending_to_tv_numbers(notify_db_session, fake_uuid):
     start_date = datetime.utcnow() - timedelta(days=1)
     end_date = datetime.utcnow()
 
-    result = dao_find_services_sending_to_tv_numbers(start_date, end_date, threshold=4)
+    with QueryRecorder() as query_recorder:
+        result = dao_find_services_sending_to_tv_numbers(start_date, end_date, threshold=4, session=session)
+
+    assert {query_info.bind_key for query_info in query_recorder.queries} == {expected_bind_key}
     assert len(result) == 1
     assert str(result[0].service_id) == fake_uuid
 
 
-def test_dao_find_services_with_high_failure_rates(notify_db_session, fake_uuid):
+@pytest.mark.parametrize(
+    "session,expected_bind_key",
+    (
+        (db.session, None),
+        (db.session_bulk, "bulk"),
+    ),
+    ids=("default", "bulk"),
+)
+def test_dao_find_services_with_high_failure_rates(notify_db_session, fake_uuid, session, expected_bind_key):
     service_1 = create_service(service_name="Service 1", service_id=fake_uuid)
     service_3 = create_service(service_name="Service 3", restricted=True)  # restricted is excluded
     service_4 = create_service(service_name="Service 4", active=False)  # not active is excluded
@@ -1251,9 +1313,10 @@ def test_dao_find_services_with_high_failure_rates(notify_db_session, fake_uuid)
     start_date = datetime.utcnow() - timedelta(days=1)
     end_date = datetime.utcnow()
 
-    result = dao_find_services_with_high_failure_rates(start_date, end_date, threshold=3)
-    # assert len(result) == 3
-    # assert str(result[0].service_id) == fake_uuid
+    with QueryRecorder() as query_recorder:
+        result = dao_find_services_with_high_failure_rates(start_date, end_date, threshold=3, session=session)
+
+    assert {query_info.bind_key for query_info in query_recorder.queries} == {expected_bind_key}
     assert len(result) == 1
     assert str(result[0].service_id) == fake_uuid
     assert result[0].permanent_failure_rate == 0.25

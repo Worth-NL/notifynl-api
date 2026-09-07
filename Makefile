@@ -10,6 +10,8 @@ GIT_COMMIT ?= $(shell git rev-parse HEAD)
 VIRTUALENV_ROOT := $(shell [ -z $$VIRTUAL_ENV ] && echo $$(pwd)/venv || echo $$VIRTUAL_ENV)
 PYTHON_EXECUTABLE_PREFIX := $(shell test -d "$${VIRTUALENV_ROOT}" && echo "$${VIRTUALENV_ROOT}/bin/" || echo "")
 
+EXCLUDE_REQUIREMENTS_NEWER_THAN_DAYS ?= 7
+
 
 ## DEVELOPMENT
 
@@ -92,22 +94,34 @@ drop-test-dbs-in-docker:
 	@echo "Done."
 
 .PHONY: test
-test: ## Run tests
-	ruff check .
-	ruff format --check .
-	pytest -n auto --maxfail=10 -v
+test: lint ## Run tests
+	pytest -n logical --maxfail=10
 
 .PHONY: watch-tests
 watch-tests: ## Watch tests and run on change
 	ptw --runner "pytest --testmon -n auto"
 
+.PHONY: lint
+lint: ## Run static type checks
+	ruff check .
+	ruff format --check .
+	mypy
+
+.PHONY: refreeze-requirements
+refreeze-requirements: ## Upgrade unpinned requirements
+	EXTRA_UV_PIP_COMPILE_FLAGS="--upgrade --exclude-newer $(EXCLUDE_REQUIREMENTS_NEWER_THAN_DAYS)d" make freeze-requirements
+
 .PHONY: freeze-requirements
 freeze-requirements: ## Pin all requirements including sub dependencies into requirements.txt
-	uv pip compile requirements.in -o requirements.txt
+	uv pip compile requirements.in -o requirements.txt $(EXTRA_UV_PIP_COMPILE_FLAGS)
 	uv pip sync requirements.txt
 	python -c "from notifications_utils.version_tools import copy_config; copy_config()"
-	uv pip compile requirements_for_test.in -o requirements_for_test.txt
+	uv pip compile requirements_for_test.in -o requirements_for_test.txt $(EXTRA_UV_PIP_COMPILE_FLAGS)
 	uv pip sync requirements_for_test.txt
+
+.PHONY: show-outdated-requirements
+show-outdated-requirements: ## Audit requirements.in
+	python -c "from notifications_utils.version_tools import show_outdated_requirements; show_outdated_requirements()"
 
 .PHONY: bump-utils
 bump-utils:  # Bump notifications-utils package to latest version

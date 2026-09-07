@@ -84,7 +84,12 @@ def update_invited_user(service_id, invited_user_id):
 
 
 def invited_user_url(invited_user_id, invite_link_host=None):
-    token = generate_token(str(invited_user_id), current_app.config["SECRET_KEY"], current_app.config["DANGEROUS_SALT"])
+    token = generate_token(
+        str(invited_user_id),
+        current_app.config["SECRET_KEY"],
+        current_app.config["DANGEROUS_SALT"],
+        current_app.config["TOKEN_SECRET_KEY"],
+    )
 
     if invite_link_host is None:
         invite_link_host = current_app.config["ADMIN_BASE_URL"]
@@ -105,12 +110,16 @@ def validate_service_invitation_token(token):
 
     try:
         invited_user_id = check_token(
-            token, current_app.config["SECRET_KEY"], current_app.config["DANGEROUS_SALT"], max_age_seconds
+            token,
+            current_app.config["SECRET_KEY"],
+            current_app.config["DANGEROUS_SALT"],
+            max_age_seconds,
+            current_app.config["TOKEN_SECRET_KEY"],
         )
     except SignatureExpired as e:
         errors = {
-            "invitation": "Your invitation to GOV.UK Notify has expired. "
-            "Please ask the person that invited you to send you another one"
+            "invitation": "Je uitnodiging voor NotifyNL is verlopen. "
+            "Vraag degene die je heeft uitgenodigd om je een nieuwe uitnodiging te sturen."
         }
         raise InvalidRequest(errors, status_code=400) from e
     except BadData as e:
@@ -160,6 +169,7 @@ def send_service_invite_request(
                 "request-to-join-service email not sent to user %s - they are not part of service %s",
                 recipient.id,
                 service.id,
+                extra={"user_id": recipient.id, "service_id": service.id},
             )
 
     if number_of_notifications_generated == 0:

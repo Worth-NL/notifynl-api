@@ -1,4 +1,4 @@
-# This file was automatically copied from notifications-utils@101.1.0
+# This file was automatically copied from notifications-utils@115.0.1
 
 repos:
 - repo: https://github.com/pre-commit/pre-commit-hooks
@@ -9,8 +9,27 @@ repos:
   - id: check-yaml
   - id: debug-statements
 - repo: https://github.com/charliermarsh/ruff-pre-commit
-  rev: 'v0.11.4'
+  rev: 'v0.15.2'
   hooks:
     - id: ruff
       args: [--fix, --exit-non-zero-on-fix]
     - id: ruff-format
+- repo: https://github.com/astral-sh/uv-pre-commit
+  # uv version.
+  rev: 0.12.3
+  hooks:
+    - id: pip-compile
+      name: pip-compile requirements.in
+      args: [requirements.in, -o, requirements.txt]
+    - id: pip-compile
+      name: pip-compile requirements_for_test.in
+      args: [requirements_for_test.in, -o, requirements_for_test.txt]
+      files: ^requirements_for_test\.(in|txt)$
+    - id: pip-compile
+      name: pip-compile requirements_nl.in
+      args: [requirements_nl.in, -o, requirements_nl.txt]
+      files: ^requirements_nl\.(in|txt)$
+    - id: pip-compile
+      name: pip-compile requirements_nl_test.in
+      args: [requirements_nl_test.in, -o, requirements_nl_test.txt]
+      files: ^requirements_nl_test\.(in|txt)$

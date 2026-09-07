@@ -12,6 +12,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from app import signing
 from app.celery.service_callback_tasks import (
     _send_data_to_service_callback_api,
+    create_delivery_status_callback_data,
     create_returned_letter_callback_data,
     send_complaint_to_service,
     send_delivery_status_to_service,
@@ -20,9 +21,11 @@ from app.celery.service_callback_tasks import (
 )
 from app.constants import (
     KEY_TYPE_NORMAL,
+    MESSAGEBOX_TYPE,
     NOTIFICATION_RETURNED_LETTER,
     ServiceCallbackTypes,
 )
+from app.dao.templates_messagebox_dao import get_messagebox_template
 from app.utils import DATETIME_FORMAT
 from tests.app.db import (
     create_api_key,
@@ -148,6 +151,7 @@ def test_send_delivery_status_to_service_sends_callback_to_service(notify_db_ses
         "reference": notification.client_reference,
         "to": notification.to,
         "status": notification.status,
+        "detailed_status_code": None,
         "created_at": datestr.strftime(DATETIME_FORMAT),
         "completed_at": datestr.strftime(DATETIME_FORMAT),
         "sent_at": datestr.strftime(DATETIME_FORMAT),
@@ -157,8 +161,81 @@ def test_send_delivery_status_to_service_sends_callback_to_service(notify_db_ses
     }
 
     send_callback_mock.assert_called_once_with(
-        mock.ANY, expected_data, callback_api.url, callback_api.bearer_token, "send_delivery_status_to_service"
+        mock.ANY,
+        expected_data,
+        callback_api.url,
+        callback_api.bearer_token,
+        expected_data["id"],
+        {"notification_id": expected_data["id"]},
     )
+
+
+def test_create_delivery_status_callback_data_omits_recipient_for_messagebox(notify_db_session, notify_user):
+    service = create_service(service_permissions=[MESSAGEBOX_TYPE], restricted=True)
+    template = get_messagebox_template(service.id)
+    callback_api = create_service_callback_api(
+        service=service,
+        url="https://some.service.gov.uk/",
+        bearer_token="something_unique",
+        callback_type="delivery_status",
+    )
+    notification = create_notification(template=template, status="delivered")
+
+    encoded = create_delivery_status_callback_data(notification, callback_api)
+    data = signing.decode(encoded)
+
+    assert data["notification_to"] is None
+
+
+def test_create_delivery_status_callback_data_keeps_recipient_for_non_messagebox(notify_db_session):
+    callback_api, template = _set_up_test_data("email", "delivery_status")
+    notification = create_notification(template=template, status="delivered")
+
+    encoded = create_delivery_status_callback_data(notification, callback_api)
+    data = signing.decode(encoded)
+
+    assert data["notification_to"] == notification.to
+
+
+def test_create_delivery_status_callback_data_includes_detailed_status_code(notify_db_session):
+    callback_api, template = _set_up_test_data("letter", "delivery_status")
+    notification = create_notification(template=template, status="validation-failed")
+    notification.detailed_status_code = "letter-too-long"
+
+    encoded = create_delivery_status_callback_data(notification, callback_api)
+    data = signing.decode(encoded)
+
+    assert data["notification_detailed_status_code"] == "letter-too-long"
+
+
+def test_send_delivery_status_to_service_includes_detailed_status_code(notify_db_session, mocker):
+    callback_api, template = _set_up_test_data("letter", "delivery_status")
+    notification = create_notification(template=template, status="validation-failed")
+    notification.detailed_status_code = "letter-too-long"
+    encoded_status_update = signing.encode(
+        {
+            "notification_id": str(notification.id),
+            "notification_client_reference": notification.client_reference,
+            "notification_to": notification.to,
+            "notification_status": notification.status,
+            "notification_detailed_status_code": notification.detailed_status_code,
+            "notification_created_at": notification.created_at.strftime(DATETIME_FORMAT),
+            "notification_updated_at": (
+                notification.updated_at.strftime(DATETIME_FORMAT) if notification.updated_at else None
+            ),
+            "notification_sent_at": notification.sent_at.strftime(DATETIME_FORMAT) if notification.sent_at else None,
+            "notification_type": notification.notification_type,
+            "service_callback_api_url": callback_api.url,
+            "service_callback_api_bearer_token": callback_api.bearer_token,
+            "template_id": str(notification.template_id),
+            "template_version": notification.template_version,
+        }
+    )
+    send_callback_mock = mocker.patch("app.celery.service_callback_tasks._send_data_to_service_callback_api")
+
+    send_delivery_status_to_service(notification.id, encoded_status_update=encoded_status_update)
+
+    assert send_callback_mock.call_args[0][1]["detailed_status_code"] == "letter-too-long"
 
 
 def test_send_complaint_to_service_sends_callback_to_service(notify_db_session, mocker):
@@ -181,7 +258,12 @@ def test_send_complaint_to_service_sends_callback_to_service(notify_db_session, 
         }
 
         send_callback_mock.assert_called_once_with(
-            mock.ANY, expected_data, callback_api.url, callback_api.bearer_token, "send_complaint_to_service"
+            mock.ANY,
+            expected_data,
+            callback_api.url,
+            callback_api.bearer_token,
+            expected_data["notification_id"],
+            {"notification_id": expected_data["notification_id"], "complaint_id": expected_data["complaint_id"]},
         )
 
 
@@ -211,7 +293,7 @@ def test_send_inbound_sms_to_service_sends_callback_to_service(notify_api, sampl
 
     send_inbound_sms_to_service(inbound_sms.id, inbound_sms.service_id)
     send_callback_mock.assert_called_once_with(
-        mock.ANY, data, "https://some.service.gov.uk/", "something_unique", "send_inbound_sms_to_service"
+        mock.ANY, data, "https://some.service.gov.uk/", "something_unique", data["id"], {"inbound_sms_id": data["id"]}
     )
 
 
@@ -268,27 +350,26 @@ def test_send_returned_letter_to_service_sends_callback_to_service(
     send_callback_mock = mocker.patch("app.celery.service_callback_tasks._send_data_to_service_callback_api")
     send_returned_letter_to_service(encoded_returned_letter=encoded_returned_letter)
     send_callback_mock.assert_called_once_with(
-        mock.ANY, expected_data, callback_api.url, callback_api.bearer_token, "send_returned_letter_to_service"
+        mock.ANY,
+        expected_data,
+        callback_api.url,
+        callback_api.bearer_token,
+        expected_data["notification_id"],
+        {"notification_id": expected_data["notification_id"]},
     )
-
-
-@pytest.mark.parametrize("data", [{"id": "hello"}, {"notification_id": "hello"}])
-def test__send_data_to_service_callback_api_handles_data_with_notification_id_or_id(notify_db_session, mocker, data):
-    callback_url = "https://www.example.com/callback"
-
-    with requests_mock.Mocker() as request_mock:
-        request_mock.post(callback_url, json={}, status_code=200)
-        _send_data_to_service_callback_api(mock.MagicMock(), data, callback_url, "my-token", "my_function_name")
 
 
 def test__send_data_to_service_callback_api_posts_https_request_to_service(notify_db_session, mocker):
     data = {"id": "hello"}
     callback_url = "https://www.example.com/callback"
     celery_task_mock = mock.MagicMock()
+    celery_task_mock.name = "my-task-name"
 
     with requests_mock.Mocker() as request_mock:
         request_mock.post(callback_url, json={}, status_code=200)
-        _send_data_to_service_callback_api(celery_task_mock, data, callback_url, "my-token", "my_function_name")
+        _send_data_to_service_callback_api(
+            celery_task_mock, data, callback_url, "my-token", data["id"], {"foo_id": data["id"]}
+        )
 
     assert request_mock.call_count == 1
     assert request_mock.request_history[0].url == callback_url
@@ -308,10 +389,13 @@ def test__send_data_to_service_callback_api_retries_if_request_returns_retryable
     callback_url = "https://www.example.com/callback"
 
     celery_task_mock = mock.MagicMock()
+    celery_task_mock.name = "my-task-name"
 
     with requests_mock.Mocker() as request_mock:
         request_mock.post(callback_url, json={}, status_code=status_code)
-        _send_data_to_service_callback_api(celery_task_mock, data, callback_url, "my-token", "my_function_name")
+        _send_data_to_service_callback_api(
+            celery_task_mock, data, callback_url, "my-token", data["id"], {"foo_id": data["id"]}
+        )
 
     celery_task_mock.retry.assert_called_once_with(queue="service-callbacks-retry")
 
@@ -321,10 +405,13 @@ def test__send_data_to_service_callback_api_retries_if_request_raises_unknown_ex
     callback_url = "https://www.example.com/callback"
 
     celery_task_mock = mock.MagicMock()
+    celery_task_mock.name = "my-task-name"
 
     mocker.patch("app.celery.service_callback_tasks.requests_session.request", side_effect=RequestException())
 
-    _send_data_to_service_callback_api(celery_task_mock, data, callback_url, "my-token", "my_function_name")
+    _send_data_to_service_callback_api(
+        celery_task_mock, data, callback_url, "my-token", data["id"], {"foo_id": data["id"]}
+    )
 
     celery_task_mock.retry.assert_called_once_with(queue="service-callbacks-retry")
 
@@ -337,9 +424,12 @@ def test__send_data_to_service_callback_api_doesnt_retry_if_non_retry_status_cod
     callback_url = "https://www.example.com/callback"
 
     celery_task_mock = mock.MagicMock()
+    celery_task_mock.name = "my-task-name"
 
     with requests_mock.Mocker() as request_mock:
         request_mock.post(callback_url, json={}, status_code=status_code)
-        _send_data_to_service_callback_api(celery_task_mock, data, callback_url, "my-token", "my_function_name")
+        _send_data_to_service_callback_api(
+            celery_task_mock, data, callback_url, "my-token", data["id"], {"foo_id": data["id"]}
+        )
 
     celery_task_mock.retry.assert_not_called()

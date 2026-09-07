@@ -42,7 +42,10 @@ def handle_integrity_error(exc):
 def get_template_folders_for_service(service_id):
     service = (
         Service.query.filter_by(id=service_id)
-        .options(raiseload("users"), selectinload("all_template_folders").options(selectinload("users")))
+        .options(
+            raiseload(Service.users),
+            selectinload(Service.all_template_folders).options(selectinload(TemplateFolder.users)),
+        )
         .one()
     )
 
@@ -135,7 +138,11 @@ def move_to_template_folder(service_id, target_template_folder_id=None):
             raise InvalidRequest(msg, status_code=400) from e
 
         if template.archived:
-            current_app.logger.info("Could not move to folder: Template %s is archived. (Skipping)", template_id)
+            current_app.logger.info(
+                "Could not move to folder: Template %s is archived. (Skipping)",
+                template_id,
+                extra={"template_id": template_id},
+            )
         else:
             template.folder = target_template_folder
     return "", 204

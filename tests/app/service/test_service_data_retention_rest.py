@@ -94,7 +94,9 @@ def test_create_service_data_retention_returns_400_when_notification_type_is_inv
     json_resp = json.loads(response.get_data(as_text=True))
     assert response.status_code == 400
     assert json_resp["errors"][0]["error"] == "ValidationError"
-    assert json_resp["errors"][0]["message"] == "notification_type unknown is not one of [sms, letter, email]"
+    assert (
+        json_resp["errors"][0]["message"] == "notification_type unknown is not one of [sms, letter, email, messagebox]"
+    )
 
 
 def test_create_service_data_retention_returns_400_when_data_retention_for_notification_type_already_exists(

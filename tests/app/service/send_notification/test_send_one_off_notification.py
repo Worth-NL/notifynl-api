@@ -160,6 +160,47 @@ def test_send_one_off_notification_calls_persist_correctly_for_email(persist_moc
     )
 
 
+def test_send_one_off_notification_calls_persist_correctly_for_email_with_email_file(
+    persist_mock,
+    celery_mock,
+    notify_db_session,
+    sample_email_template_with_template_email_files,
+    mock_utils_s3_download,
+    mock_document_download_client_upload,
+):
+    template = sample_email_template_with_template_email_files
+
+    post_data = {
+        "template_id": str(template.id),
+        "to": "test@example.com",
+        "personalisation": {"name": "foo"},
+        "created_by": str(template.service.created_by_id),
+    }
+
+    send_one_off_notification(template.service.id, post_data)
+
+    persist_mock.assert_called_once_with(
+        template_id=template.id,
+        template_version=template.version,
+        recipient=post_data["to"],
+        service=template.service,
+        personalisation={
+            "name": "foo",
+            "invitation.pdf": "[follow this link](documents.gov.uk/invitation.pdf)",
+            "form.pdf": "[follow this link](documents.gov.uk/form.pdf)",
+        },
+        notification_type=EMAIL_TYPE,
+        api_key_id=None,
+        key_type=KEY_TYPE_NORMAL,
+        created_by_id=str(template.service.created_by_id),
+        reply_to_text=None,
+        reference=None,
+        postage=None,
+        client_reference=None,
+        template_has_unsubscribe_link=False,
+    )
+
+
 @pytest.mark.skip(reason="[NOTIFYNL] Dutch postal address implementation")
 def test_send_one_off_notification_calls_persist_correctly_for_letter(
     mocker, persist_mock, celery_mock, notify_db_session
@@ -244,7 +285,7 @@ def test_send_one_off_notification_raises_if_cant_send_to_recipient(
     with pytest.raises(BadRequestError) as e:
         send_one_off_notification(service.id, post_data)
 
-    assert "service is in trial mode" in e.value.message
+    assert "je dienst in proefmodus staat" in e.value.message
 
 
 def test_send_one_off_notification_raises_if_over_limit(notify_db_session, mocker):

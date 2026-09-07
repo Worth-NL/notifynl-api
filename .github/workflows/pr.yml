@@ -1,24 +1,32 @@
-name: Test
+name: PR
 
 on:
   pull_request:
     branches:
-      - "main"
+      - develop
+    types:
+      - opened
+      - synchronize
+      - reopened
+      - ready_for_review
 
 concurrency:
   group: ${{ github.workflow }}.${{ github.ref }}
   cancel-in-progress: true
 
+permissions:
+  contents: read
+
 env:
   IMAGE: ghcr.io/worth-nl/notifynl-api
 
 jobs:
-  test:
+  unit-test:
     runs-on: ubuntu-latest
 
     strategy:
       matrix:
-        python-version: ["3.11"]
+        python-version: ["3.13"]
 
     services:
       db:
@@ -72,8 +80,7 @@ jobs:
           activate-environment: true
           enable-cache: true
           cache-dependency-glob: |
-            requirements_for_test.in
-            requirements_for_test.txt
+            requirements_nl.txt
             requirements_nl_test.txt
 
       - name: Install application requirements (pip)
@@ -104,11 +111,58 @@ jobs:
           use-actions-summary: false
           badge-title: PYTEST
 
+  docker-test:
+    runs-on: ubuntu-latest
+
+    needs: unit-test
+
+    strategy:
+      matrix:
+        python-version: ["3.13"]
+        dockerfile-target: ["test", "concourse_tests"]
+
+    steps:
+      - uses: szenius/set-timezone@v2.0
+        with:
+          timezoneLinux: "Europe/Amsterdam"
+
+      - uses: actions/checkout@v4
+
+      - uses: gerlero/apt-install@v1
+        with:
+          packages: build-essential git libcurl4-openssl-dev curl libssl-dev
+          install-recommends: false
+
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: ${{ matrix.python-version }}
+          activate-environment: true
+          enable-cache: true
+          cache-dependency-glob: |
+            requirements_nl.txt
+            requirements_nl_test.txt
+
+      - name: Install application requirements (pip)
+        run: uv pip install -r requirements_nl_test.txt
+
+      - uses: docker/setup-qemu-action@v3
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/build-push-action@v6
+        with:
+          file: docker/Dockerfile
+          load: true
+          tags: ${{ env.IMAGE }}:test-${{ matrix.dockerfile-target }}
+          platforms: linux/amd64
+          provenance: false
+          target: ${{ matrix.dockerfile-target }}
+
   build:
     if: github.event.pull_request.draft == false
     runs-on: ubuntu-latest
 
-    needs: test
+    needs: docker-test
 
     permissions:
       contents: read
@@ -118,7 +172,7 @@ jobs:
       - name: Set tag
         id: set-tag
         run: |
-          TAG=$(date +%Y%m%d).${{ github.run_number }}-dev
+          TAG=$(date +%Y%m%d).${{ github.run_number }}-pr
           echo "tag=$TAG" >> $GITHUB_OUTPUT
 
       - uses: docker/login-action@v3
@@ -155,7 +209,35 @@ jobs:
       contents: read
       pull-requests: write
 
+    env:
+      HELM_SET_ARGS: >-
+        --set apps.api.image.tag=${{ needs.build.outputs.tag }}
+        --set apps.apiWorkerRetryTasks.image.tag=${{ needs.build.outputs.tag }}
+        --set apps.apiWorkerLetters.image.tag=${{ needs.build.outputs.tag }}
+        --set apps.apiWorkerJobs.image.tag=${{ needs.build.outputs.tag }}
+        --set apps.apiWorkerJobsSave.image.tag=${{ needs.build.outputs.tag }}
+        --set apps.apiWorkerJobsSaveDocuments.image.tag=${{ needs.build.outputs.tag }}
+        --set apps.apiWorkerResearch.image.tag=${{ needs.build.outputs.tag }}
+        --set apps.apiWorkerSender.image.tag=${{ needs.build.outputs.tag }}
+        --set apps.apiWorkerSenderLetters.image.tag=${{ needs.build.outputs.tag }}
+        --set apps.apiWorkerPeriodic.image.tag=${{ needs.build.outputs.tag }}
+        --set apps.apiWorkerReporting.image.tag=${{ needs.build.outputs.tag }}
+        --set apps.apiWorkerInternal.image.tag=${{ needs.build.outputs.tag }}
+        --set apps.apiWorkerReceipts.image.tag=${{ needs.build.outputs.tag }}
+        --set apps.apiWorkerServiceCallbacks.image.tag=${{ needs.build.outputs.tag }}
+        --set apps.apiWorkerServiceCallbacksRetry.image.tag=${{ needs.build.outputs.tag }}
+        --set apps.apiWorkerMessagebox.image.tag=${{ needs.build.outputs.tag }}
+        --set apps.apiWorkerReportRequestsNotificationsTasks.image.tag=${{ needs.build.outputs.tag }}
+        --set apps.celeryBeat.image.tag=${{ needs.build.outputs.tag }}
+        --set migrations.apiUpgrade.image.tag=${{ needs.build.outputs.tag }}
+
     steps:
+      # Order matters: actions/checkout defaults to `clean: true`, which runs
+      # `git clean -ffdx` in its checkout path. A checkout with no `path:`
+      # (this one) targets the workspace root, and that clean can wipe a
+      # sibling directory checked out earlier by a separate actions/checkout
+      # step (https://github.com/orgs/community/discussions/27030) — so the
+      # root-targeting checkout must run first, before notifynl-api exists.
       - uses: actions/checkout@v4
         with:
           repository: Worth-NL/notifynl-charts-private
@@ -163,13 +245,73 @@ jobs:
           token: ${{ secrets.RELEASE_TOKEN }}
         name: Checkout Worth-NL/notifynl-charts-private
 
-      - uses: bwvolleyball/k8s-toolkit@v1.0.0
+      - uses: actions/checkout@v4
         with:
-          config: ${{ secrets.K8S_CONFIG }}
+          path: notifynl-api
+        name: Checkout notifynl-api (this PR)
+
+      # K8S_CONFIG is stored base64-encoded (shared with the other submodules'
+      # workflows, which still use bwvolleyball/k8s-toolkit and decode it
+      # internally). azure/k8s-set-context's `kubeconfig` method expects raw
+      # kubeconfig YAML, not base64, so decode it here first.
+      - name: Decode kubeconfig
+        id: decode-kubeconfig
+        run: |
+          {
+            echo "content<<KUBECONFIG_EOF"
+            echo "${{ secrets.K8S_CONFIG }}" | base64 -d
+            echo "KUBECONFIG_EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - uses: azure/k8s-set-context@v4
+        with:
+          method: kubeconfig
+          kubeconfig: ${{ steps.decode-kubeconfig.outputs.content }}
+
+      - uses: azure/setup-helm@v4
+        with:
+          version: v4.2.2
+
+      - name: Add chart repositories
+        run: |
+          helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
+          helm repo add grafana https://grafana.github.io/helm-charts
 
       - name: Helm chart dependency build
         run: helm dependency build
         working-directory: ${{ github.workspace }}/notifynl-full
+
+      # notifynl-full pins migrations.apiUpgrade.{alphagovRevision,nlRevision}
+      # explicitly per release rather than implicitly running whatever HEAD
+      # the image bundles. A PR build's image can bundle newer migrations
+      # than the chart's currently pinned defaults, so derive the two heads
+      # from this PR's own migration trees (mirrors tests/test_migrations.py's
+      # "sorted glob, last file wins" head detection) and override them below.
+      - name: Determine migration revisions
+        id: migration-revisions
+        run: |
+          set -euo pipefail
+          alphagov_revision=$(basename "$(ls notifynl-api/migrations/versions/*.py | sort | tail -1)" .py)
+          nl_revision=$(basename "$(ls notifynl-api/migrations_nl/versions/*.py | sort | tail -1)" .py | cut -d_ -f1)
+          echo "alphagov-revision=$alphagov_revision" >> "$GITHUB_OUTPUT"
+          echo "nl-revision=$nl_revision" >> "$GITHUB_OUTPUT"
+
+      # Renders the chart and validates against the live cluster API/CRDs
+      # (required/fail template checks included) without persisting anything
+      # or scheduling any pods. Uses the exact same flags as the real deploy
+      # below so it can't drift out of sync and give a false pass.
+      - name: Pre-flight validation (dry-run, no cluster mutation)
+        id: helm-dry-run
+        run: |
+          set -x
+          helm upgrade --install notifynl notifynl-full/ \
+          -n ${{ vars.NAMESPACE }} \
+          --reset-then-reuse-values \
+          $HELM_SET_ARGS \
+          --set migrations.apiUpgrade.alphagovRevision=${{ steps.migration-revisions.outputs.alphagov-revision }} \
+          --set migrations.apiUpgrade.nlRevision=${{ steps.migration-revisions.outputs.nl-revision }} \
+          --rollback-on-failure \
+          --dry-run=server
 
       - name: Deploy new tag
         id: helm-deploy
@@ -177,48 +319,52 @@ jobs:
           set -x
           helm upgrade --install notifynl notifynl-full/ \
           -n ${{ vars.NAMESPACE }} \
-          --reuse-values \
-          --set apps.api.image.tag=${{ needs.build.outputs.tag }} \
-          --set apps.apiWorkerRetryTasks.image.tag=${{ needs.build.outputs.tag }} \
-          --set apps.apiWorkerLetters.image.tag=${{ needs.build.outputs.tag }} \
-          --set apps.apiWorkerJobs.image.tag=${{ needs.build.outputs.tag }} \
-          --set apps.apiWorkerResearch.image.tag=${{ needs.build.outputs.tag }} \
-          --set apps.apiWorkerSender.image.tag=${{ needs.build.outputs.tag }} \
-          --set apps.apiWorkerSenderLetters.image.tag=${{ needs.build.outputs.tag }} \
-          --set apps.apiWorkerPeriodic.image.tag=${{ needs.build.outputs.tag }} \
-          --set apps.apiWorkerReporting.image.tag=${{ needs.build.outputs.tag }} \
-          --set apps.apiWorkerInternal.image.tag=${{ needs.build.outputs.tag }} \
-          --set apps.apiWorkerReceipts.image.tag=${{ needs.build.outputs.tag }} \
-          --set apps.apiWorkerServiceCallbacks.image.tag=${{ needs.build.outputs.tag }} \
-          --set apps.apiWorkerReportRequestsNotificationsTasks.image.tag=${{ needs.build.outputs.tag }} \
-          --set apps.celeryBeat.image.tag=${{ needs.build.outputs.tag }} \
-          --wait \
+          --reset-then-reuse-values \
+          $HELM_SET_ARGS \
+          --set migrations.apiUpgrade.alphagovRevision=${{ steps.migration-revisions.outputs.alphagov-revision }} \
+          --set migrations.apiUpgrade.nlRevision=${{ steps.migration-revisions.outputs.nl-revision }} \
+          --rollback-on-failure \
           --timeout 300s
 
       - name: Comment on PR if deployment fails
-        if: failure() && steps.helm-deploy.outcome == 'failure' && github.event_name == 'pull_request'
+        if: failure() && (steps.helm-dry-run.outcome == 'failure' || steps.helm-deploy.outcome == 'failure') && github.event_name == 'pull_request'
         uses: actions/github-script@v7
         with:
           script: |
+            const dryRunFailed = "${{ steps.helm-dry-run.outcome }}" === "failure";
+            const body = dryRunFailed
+              ? [
+                  "⚠️ **Test environment deployment blocked (pre-flight check failed)**",
+                  "",
+                  "- Environment: `Test`",
+                  "- Image tag: `${{ needs.build.outputs.tag }}`",
+                  "",
+                  "The pre-flight `helm upgrade --dry-run=server` check failed, so the real deploy never ran — **the cluster was not touched**, nothing to clean up.",
+                  "",
+                  "Check the workflow logs for the Helm error output. Most likely cause: `notifynl-full` added a new value with no chart default that this release doesn't have set yet — seed it once with a manual `helm upgrade --set <key>=<value>`, and future deploys will carry it forward automatically."
+                ].join("\n")
+              : [
+                  "❌ **Test environment deployment failed**",
+                  "",
+                  "- Environment: `Test`",
+                  "- Image tag: `${{ needs.build.outputs.tag }}`",
+                  "",
+                  "The pre-flight check passed but the real deploy failed — the cluster may be in a partial state.",
+                  "",
+                  "Check the workflow logs for the Helm error output.",
+                  "",
+                  "Check the test env k8s state/logs.",
+                  "",
+                  "Check if the helm release needs a rollback.",
+                  "",
+                  "Most likely issues:",
+                  "- DB migration desync",
+                  "- Package visibility",
+                  "- ghcr.io credentials expiration or change"
+                ].join("\n");
             github.rest.issues.createComment({
               owner: context.repo.owner,
               repo: context.repo.repo,
               issue_number: context.issue.number,
-              body: [
-                "❌ **Test environment deployment failed**",
-                "",
-                "- Environment: `Test`",
-                "- Image tag: `${{ needs.build.outputs.tag }}`",
-                "",
-                "Check the workflow logs for the Helm error output.",
-                "",
-                "Check the test env k8s state/logs.",
-                "",
-                "Check if the helm release needs a rollback.",
-                "",
-                "Most likely issues:",
-                "- DB migration desync",
-                "- Package visibility",
-                "- ghcr.io credentials expiration or change"
-              ].join("\n")
+              body
             })

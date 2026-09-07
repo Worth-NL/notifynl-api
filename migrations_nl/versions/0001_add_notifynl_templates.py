@@ -7,6 +7,7 @@ Create Date: 2025-04-29 12:15:32.597184
 """
 from alembic import op
 from flask import current_app
+from sqlalchemy import text
 
 # revision identifiers, used by Alembic.
 revision = '0001'
@@ -144,7 +145,7 @@ templates = [
 
 
 def upgrade():
-    op.get_bind()
+    con = op.get_bind()
     insert = """INSERT INTO {} (id, name, template_type, created_at, content, archived, service_id,
                                 subject, created_by_id, version, hidden, has_unsubscribe_link)
                 VALUES ('{}', '{}', '{}', current_timestamp, '{}', False, '{}', '{}', '{}', 1, False, False)
@@ -157,33 +158,37 @@ def upgrade():
 
     for template in templates:
         for table_name in ["templates", "templates_history"]:
-            op.execute(
-                insert.format(
-                    table_name,
-                    template["id"],
-                    template["name"],
-                    template["type"],
-                    template["content"],
-                    current_app.config["NOTIFY_SERVICE_ID"],
-                    template["subject"],
-                    current_app.config["NOTIFY_USER_ID"]
+            con.execute(
+                text(
+                    insert.format(
+                        table_name,
+                        template["id"],
+                        template["name"],
+                        template["type"],
+                        template["content"],
+                        current_app.config["NOTIFY_SERVICE_ID"],
+                        template["subject"],
+                        current_app.config["NOTIFY_USER_ID"]
+                    )
                 )
             )
 
-        op.execute(
-            template_redacted_insert.format(
-                template["id"],
-                current_app.config["NOTIFY_USER_ID"],
+        con.execute(
+            text(
+                template_redacted_insert.format(
+                    template["id"],
+                    current_app.config["NOTIFY_USER_ID"],
+                )
             )
         )
 
 
 def downgrade():
-    op.get_bind()
+    con = op.get_bind()
 
     for template in templates:
-        op.execute("DELETE FROM notifications WHERE template_id = '{}'".format(template["id"]))
-        op.execute("DELETE FROM notification_history WHERE template_id = '{}'".format(template["id"]))
-        op.execute("DELETE FROM template_redacted WHERE template_id = '{}'".format(template["id"]))
-        op.execute("DELETE FROM templates WHERE id = '{}'".format(template["id"]))
-        op.execute("DELETE FROM templates_history WHERE id = '{}'".format(template["id"]))
+        con.execute(text("DELETE FROM notifications WHERE template_id = '{}'".format(template["id"])))
+        con.execute(text("DELETE FROM notification_history WHERE template_id = '{}'".format(template["id"])))
+        con.execute(text("DELETE FROM template_redacted WHERE template_id = '{}'".format(template["id"])))
+        con.execute(text("DELETE FROM templates WHERE id = '{}'".format(template["id"])))
+        con.execute(text("DELETE FROM templates_history WHERE id = '{}'".format(template["id"])))

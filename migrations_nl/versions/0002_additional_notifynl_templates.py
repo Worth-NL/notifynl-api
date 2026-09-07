@@ -7,6 +7,7 @@ Create Date: 2025-04-29 12:33:36.975727
 """
 from alembic import op
 from flask import current_app
+from sqlalchemy import text
 
 # revision identifiers, used by Alembic.
 revision = '0002'
@@ -43,22 +44,26 @@ def upgrade():
     for template in templates:
         for table_name in ["templates", "templates_history"]:
             op.execute(
-                insert.format(
-                    table_name,
-                    template["id"],
-                    template["name"],
-                    template["type"],
-                    template["content"],
-                    current_app.config["NOTIFY_SERVICE_ID"],
-                    template["subject"],
-                    current_app.config["NOTIFY_USER_ID"]
+                text(
+                    insert.format(
+                        table_name,
+                        template["id"],
+                        template["name"],
+                        template["type"],
+                        template["content"],
+                        current_app.config["NOTIFY_SERVICE_ID"],
+                        template["subject"],
+                        current_app.config["NOTIFY_USER_ID"]
+                    )
                 )
             )
 
         op.execute(
-            template_redacted_insert.format(
-                template["id"],
-                current_app.config["NOTIFY_USER_ID"],
+            text (
+                template_redacted_insert.format(
+                    template["id"],
+                    current_app.config["NOTIFY_USER_ID"],
+                )
             )
         )
 
@@ -67,8 +72,8 @@ def downgrade():
     op.get_bind()
 
     for template in templates:
-        op.execute("DELETE FROM notifications WHERE template_id = '{}'".format(template["id"]))
-        op.execute("DELETE FROM notification_history WHERE template_id = '{}'".format(template["id"]))
-        op.execute("DELETE FROM template_redacted WHERE template_id = '{}'".format(template["id"]))
-        op.execute("DELETE FROM templates WHERE id = '{}'".format(template["id"]))
-        op.execute("DELETE FROM templates_history WHERE id = '{}'".format(template["id"]))
+        op.execute(text("DELETE FROM notifications WHERE template_id = '{}'".format(template["id"])))
+        op.execute(text("DELETE FROM notification_history WHERE template_id = '{}'".format(template["id"])))
+        op.execute(text("DELETE FROM template_redacted WHERE template_id = '{}'".format(template["id"])))
+        op.execute(text("DELETE FROM templates WHERE id = '{}'".format(template["id"])))
+        op.execute(text("DELETE FROM templates_history WHERE id = '{}'".format(template["id"])))

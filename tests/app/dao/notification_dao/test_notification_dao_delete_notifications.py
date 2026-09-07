@@ -5,6 +5,7 @@ import pytest
 from flask import current_app
 from freezegun import freeze_time
 from moto import mock_aws
+from sqlalchemy import text
 
 from app.constants import KEY_TYPE_NORMAL, KEY_TYPE_TEAM, KEY_TYPE_TEST
 from app.dao.notifications_dao import (
@@ -244,6 +245,44 @@ def test_move_notifications_does_not_delete_letters_not_yet_in_final_state(sampl
     mock_s3_object.assert_not_called()
 
 
+@pytest.mark.parametrize("notification_status", ["pending-virus-check", "created", "sending"])
+def test_move_notifications_does_not_delete_messagebox_not_yet_in_final_state(sample_service, notification_status):
+    # This is the compliance-critical case: a messagebox notification's BSN
+    # destination must never be purged while still in flight -- we need to
+    # know there was a definitive success or failure first, to respect
+    # messagebox_deliver's retry logic.
+    messagebox_template = create_template(service=sample_service, template_type="messagebox")
+    create_notification(
+        template=messagebox_template,
+        status=notification_status,
+        created_at=datetime.utcnow() - timedelta(days=8),
+    )
+    assert Notification.query.count() == 1
+    assert NotificationHistory.query.count() == 0
+
+    move_notifications_to_notification_history("messagebox", sample_service.id, datetime.utcnow())
+
+    assert Notification.query.count() == 1
+    assert NotificationHistory.query.count() == 0
+
+
+@pytest.mark.parametrize("notification_status", ["delivered", "permanent-failure", "technical-failure"])
+def test_move_notifications_deletes_messagebox_in_final_state(sample_service, notification_status):
+    messagebox_template = create_template(service=sample_service, template_type="messagebox")
+    create_notification(
+        template=messagebox_template,
+        status=notification_status,
+        created_at=datetime.utcnow() - timedelta(days=8),
+    )
+    assert Notification.query.count() == 1
+    assert NotificationHistory.query.count() == 0
+
+    move_notifications_to_notification_history("messagebox", sample_service.id, datetime.utcnow())
+
+    assert Notification.query.count() == 0
+    assert NotificationHistory.query.count() == 1
+
+
 def test_move_notifications_only_moves_notifications_older_than_provided_timestamp(sample_template):
     delete_time = datetime(2020, 6, 1, 12)
     one_second_before = delete_time - timedelta(seconds=1)
@@ -443,7 +482,7 @@ def test_delete_test_notifications_copes_if_letter_not_in_s3(sample_letter_templ
         datetime(2020, 1, 2),
     )
 
-    assert f"No S3 object to delete for letter: {notification_id}" in caplog.messages
+    assert f"No S3 object to delete for letter notification {notification_id}" in caplog.messages
 
 
 @freeze_time("2020-03-20 14:00")
@@ -612,18 +651,22 @@ def test_insert_notification_history_delete_notifications_can_handle_different_c
         key_type="team",
     )
 
-    with notify_db_session.begin_nested():
-        notify_db_session.execute("drop view notifications_all_time_view")
-        notify_db_session.execute("alter table notification_history drop column client_reference")
-        notify_db_session.execute("alter table notification_history add column client_reference varchar")
+    nested = notify_db_session.begin_nested()
+    # context manager not quite appropriate for cases where we always want to roll back
+    try:
+        notify_db_session.execute(text("drop view notifications_all_time_view"))
+        notify_db_session.execute(text("alter table notification_history drop column client_reference"))
+        notify_db_session.execute(text("alter table notification_history add column client_reference varchar"))
 
         del_count = insert_notification_history_delete_notifications(
             notification_type=sample_template.template_type,
             service_id=sample_template.service_id,
             timestamp_to_delete_backwards_from=datetime.utcnow(),
+            # must not let @autocommit act here
+            _autocommit=False,
         )
-
-        assert del_count == 2
-
+    finally:
         # Restore the view and undo column changes.
-        notify_db_session.rollback()
+        nested.rollback()
+
+    assert del_count == 2

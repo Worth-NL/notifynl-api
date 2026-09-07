@@ -2,6 +2,7 @@ import itertools
 import json
 import uuid
 from datetime import datetime
+from uuid import UUID
 
 from flask import Blueprint, current_app, jsonify, request
 from notifications_utils.letter_timings import (
@@ -13,6 +14,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm.exc import NoResultFound
 from werkzeug.datastructures import MultiDict
 
+from app import db
 from app.aws import s3
 from app.celery.tasks import process_report_request
 from app.config import QueueNames
@@ -35,7 +37,7 @@ from app.dao.api_key_dao import (
     get_unsigned_secret,
     save_model_api_key,
 )
-from app.dao.dao_utils import dao_rollback, transaction
+from app.dao.dao_utils import dao_rollback
 from app.dao.date_util import get_financial_year
 from app.dao.fact_notification_status_dao import (
     fetch_monthly_template_usage_for_service,
@@ -51,6 +53,7 @@ from app.dao.report_requests_dao import (
     dao_get_oldest_ongoing_report_request,
 )
 from app.dao.returned_letters_dao import (
+    count_orphaned_returned_letters,
     fetch_most_recent_returned_letter,
     fetch_recent_returned_letter_count,
     fetch_returned_letter_summary,
@@ -125,7 +128,7 @@ from app.dao.unsubscribe_request_dao import (
     get_unsubscribe_requests_statistics_dao,
     update_unsubscribe_request_report_processed_by_date_dao,
 )
-from app.dao.users_dao import get_user_by_id, save_user_attribute
+from app.dao.users_dao import get_user_by_id, save_user_attribute, user_can_be_removed_from_service
 from app.errors import InvalidRequest, register_errors
 from app.letters.utils import adjust_daily_service_limits_for_cancelled_letters, letter_print_day
 from app.models import (
@@ -253,7 +256,7 @@ def find_services_by_name():
 
 @service_blueprint.route("/live-services-data", methods=["GET"])
 def get_live_services_data():
-    data = dao_fetch_live_services_data()
+    data = dao_fetch_live_services_data(session=db.session_bulk, retry_attempts=2)
     return jsonify(data=data)
 
 
@@ -293,9 +296,13 @@ def create_service():
     # unpack valid json into service object
     valid_service = Service.from_json(data)
 
-    with transaction():
-        dao_create_service(valid_service, user)
-        set_default_free_allowance_for_service(service=valid_service, year_start=None)
+    try:
+        dao_create_service(service=valid_service, user=user, _autocommit=False)
+        set_default_free_allowance_for_service(service=valid_service, year_start=None, _autocommit=False)
+        db.session.commit()
+    except Exception:
+        db.session.rollback()
+        raise
 
     return jsonify(data=service_schema.dump(valid_service)), 201
 
@@ -403,9 +410,8 @@ def remove_user_from_service(service_id, user_id):
         error = "User not found"
         raise InvalidRequest(error, status_code=404)
 
-    elif len(service.users) == 1:
-        error = "You cannot remove the only user for a service"
-        raise InvalidRequest(error, status_code=400)
+    if not user_can_be_removed_from_service(user=user, service=service):
+        raise InvalidRequest("User cannot be removed from the service", status_code=400)
 
     dao_remove_user_from_service(service, user)
     return jsonify({}), 204
@@ -461,6 +467,8 @@ def get_all_notifications_for_service_for_csv(service_id):
         include_jobs=True,
         include_from_test_key=False,
         include_one_off=True,
+        session=db.session_bulk,
+        retry_attempts=2,
     )
 
     kwargs = request.args.to_dict()
@@ -513,6 +521,8 @@ def get_all_notifications_for_service(service_id):
         include_jobs=include_jobs,
         include_from_test_key=include_from_test_key,
         include_one_off=include_one_off,
+        session=db.session_bulk,
+        retry_attempts=2,
     )
 
     kwargs = request.args.to_dict()
@@ -537,6 +547,8 @@ def get_all_notifications_for_service(service_id):
         include_from_test_key=include_from_test_key,
         include_one_off=include_one_off,
         error_out=False,  # False so that if there are no results, it doesn't end in aborting with a 404
+        session=db.session_bulk,
+        retry_attempts=2,
     )
 
     # count_pages is not being used for whether to count the number of pages, but instead as a flag
@@ -578,6 +590,8 @@ def count_notifications_for_service(service_id):
         service_id=service_id,
         template_types=template_types,
         limit_days=limit_days,
+        session=db.session_bulk,
+        retry_attempts=2,
     )
 
     return jsonify({"notifications_sent_count": notification_count}), 200
@@ -636,6 +650,8 @@ def search_for_notification_by_to_field(service_id, search_term, statuses, notif
         notification_type=notification_type,
         page=1,
         page_size=current_app.config["PAGE_SIZE"],
+        session=db.session_bulk,
+        retry_attempts=2,
     )
 
     # We try and get the next page of results to work out if we need provide a pagination link to the next page
@@ -653,6 +669,8 @@ def search_for_notification_by_to_field(service_id, search_term, statuses, notif
         page=2,
         page_size=current_app.config["PAGE_SIZE"],
         error_out=False,  # False so that if there are no results, it doesn't end in aborting with a 404
+        session=db.session_bulk,
+        retry_attempts=2,
     )
 
     return (
@@ -674,7 +692,7 @@ def search_for_notification_by_to_field(service_id, search_term, statuses, notif
 @service_blueprint.route("/<uuid:service_id>/notifications/monthly", methods=["GET"])
 def get_monthly_notification_stats(service_id):
     # check service_id validity
-    dao_fetch_service_by_id(service_id)
+    dao_fetch_service_by_id(service_id, session=db.session_bulk, retry_attempts=2)
 
     try:
         year = int(request.args.get("year", "NaN"))
@@ -685,12 +703,19 @@ def get_monthly_notification_stats(service_id):
 
     data = statistics.create_empty_monthly_notification_status_stats_dict(year)
 
-    stats = fetch_notification_status_for_service_by_month(start_date, end_date, service_id)
+    session = db.session_bulk
+    retry_attempts = 2
+
+    stats = fetch_notification_status_for_service_by_month(
+        start_date, end_date, service_id, session=session, retry_attempts=retry_attempts
+    )
     statistics.add_monthly_notification_status_stats(data, stats)
 
     now = datetime.utcnow()
     if end_date > now:
-        todays_deltas = fetch_notification_status_for_service_for_day(convert_utc_to_bst(now), service_id=service_id)
+        todays_deltas = fetch_notification_status_for_service_for_day(
+            convert_utc_to_bst(now), service_id=service_id, session=session, retry_attempts=retry_attempts
+        )
         statistics.add_monthly_notification_status_stats(data, todays_deltas)
 
     return jsonify(data=data)
@@ -1051,7 +1076,9 @@ def get_monthly_notification_data_by_service():
     start_date = request.args.get("start_date")
     end_date = request.args.get("end_date")
 
-    rows = fact_notification_status_dao.fetch_monthly_notification_statuses_per_service(start_date, end_date)
+    rows = fact_notification_status_dao.fetch_monthly_notification_statuses_per_service(
+        start_date, end_date, session=db.session_bulk, retry_attempts=2
+    )
 
     serialized_results = [
         [
@@ -1128,7 +1155,12 @@ def get_returned_letters(service_id):
     report_date = request.args.get("reported_at")
     json_results = _fetch_returned_letter_data(service_id, report_date)
 
-    return jsonify(sorted(json_results, key=lambda i: i["created_at"], reverse=True))
+    return jsonify(
+        {
+            "returned_letters": sorted(json_results, key=lambda i: i["created_at"], reverse=True),
+            "orphaned_count": count_orphaned_returned_letters(service_id, report_date),
+        }
+    )
 
 
 @service_blueprint.route("/<uuid:service_id>/unsubscribe-request-reports-summary", methods=["GET"])
@@ -1368,6 +1400,7 @@ def send_service_invite_request(
                 "request-to-join-service email not sent to user %s - they are not part of service %s",
                 recipient.id,
                 service.id,
+                extra={"user_id": recipient.id, "service_id": service.id},
             )
 
     if number_of_notifications_generated == 0:
@@ -1462,7 +1495,7 @@ def update_service_join_request_by_id(service_id: uuid.UUID, request_id: uuid.UU
     return jsonify(updated_request.serialize()), 200
 
 
-def create_personalisation(requester_name: str, approver_name: str, service_name: str, service_id: uuid):
+def create_personalisation(requester_name: str, approver_name: str, service_name: str, service_id: uuid.UUID):
     admin_base_url = current_app.config["ADMIN_BASE_URL"]
     return {
         "requester_name": requester_name,
@@ -1524,7 +1557,7 @@ def _fetch_returned_letter_data(service_id, report_date):
 
 
 @service_blueprint.route("/<uuid:service_id>/report-request/<uuid:request_id>", methods=["GET"])
-def get_report_request_by_id(service_id, request_id):
+def get_report_request_by_id(service_id: UUID, request_id: UUID):
     request = dao_get_active_report_request_by_id(service_id, request_id)
     return jsonify(data=request.serialize())
 
@@ -1555,12 +1588,17 @@ def create_report_request_by_type(service_id):
     existing_request = dao_get_oldest_ongoing_report_request(report_request, timeout_minutes=timeout_minutes)
 
     if existing_request:
+        extra = {
+            "user_id": existing_request.user_id,
+            "service_id": existing_request.service_id,
+            "report_request_parameter": json.dumps(existing_request.parameter, separators=(",", ":")),
+            "report_request_id": existing_request.id,
+        }
         current_app.logger.info(
-            "Duplicate report request detected for user %s (service %s) with params %s – returning existing request %s",
-            existing_request.user_id,
-            existing_request.service_id,
-            json.dumps(existing_request.parameter, separators=(",", ":")),
-            existing_request.id,
+            "Duplicate report request detected for user %(user_id)s (service %(service_id)s) "
+            "with params %(report_request_parameter)r – returning existing request %(report_request_id)s",
+            extra,
+            extra=extra,
         )
 
         return jsonify(data=existing_request.serialize()), 200
@@ -1568,17 +1606,23 @@ def create_report_request_by_type(service_id):
     # 2. If no ongoing request is present, create and enqueue the request
     created_request = dao_create_report_request(report_request)
 
+    extra = {
+        "report_request_id": created_request.id,
+        "user_id": created_request.user_id,
+        "service_id": created_request.service_id,
+        "report_request_parameter": json.dumps(created_request.parameter, separators=(",", ":")),
+    }
     current_app.logger.info(
-        "Report request %s for user %s (service %s) created with params %s",
-        created_request.id,
-        created_request.user_id,
-        created_request.service_id,
-        json.dumps(created_request.parameter, separators=(",", ":")),
+        "Report request %(report_request_id)s for user %(user_id)s (service %(service_id)s) "
+        "created with params %(report_request_parameter)r",
+        extra,
+        extra=extra,
     )
 
     process_report_request.apply_async(
-        kwargs={"service_id": str(report_request.service_id), "report_request_id": str(report_request.id)},
+        kwargs={"service_id": report_request.service_id, "report_request_id": report_request.id},
         queue=QueueNames.REPORT_REQUESTS_NOTIFICATIONS,
+        MessageGroupId=str(report_request.service_id),
     )
 
     return jsonify(data=created_request.serialize()), 201

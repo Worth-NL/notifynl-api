@@ -39,6 +39,7 @@ from app.celery.scheduled_tasks import (
     run_populate_annual_billing,
     run_scheduled_jobs,
     switch_current_sms_provider_on_slow_delivery,
+    update_status_of_fully_processed_jobs,
     weekly_dwp_report,
     weekly_user_research_email,
     zendesk_new_email_branding_report,
@@ -48,10 +49,11 @@ from app.clients.letter.dvla import (
     DvlaNonRetryableException,
     DvlaThrottlingException,
 )
-from app.config import Config, QueueNames, TaskNames
+from app.config import Config, QueueNames, TaskNames, TaskNamesNL
 from app.constants import (
     JOB_STATUS_ERROR,
     JOB_STATUS_FINISHED,
+    JOB_STATUS_FINISHED_ALL_NOTIFICATIONS_CREATED,
     JOB_STATUS_IN_PROGRESS,
     JOB_STATUS_PENDING,
     NOTIFICATION_DELIVERED,
@@ -71,7 +73,7 @@ from tests.app.db import (
     create_template,
     create_user,
 )
-from tests.conftest import set_config, set_config_values
+from tests.conftest import _with_message_group_id, set_config, set_config_values
 
 
 def test_should_call_delete_codes_on_delete_verify_codes_task(notify_db_session, mocker):
@@ -96,7 +98,11 @@ def test_should_update_scheduled_jobs_and_put_on_queue(mock_celery_task, sample_
 
     updated_job = dao_get_job_by_id(job.id)
     assert updated_job.job_status == "pending"
-    mocked.assert_called_with([str(job.id)], queue="job-tasks")
+    mocked.assert_called_with(
+        [str(job.id)],
+        queue="job-tasks",
+        MessageGroupId=str(job.service_id),
+    )
 
 
 def test_should_update_all_scheduled_jobs_and_put_on_queue(sample_template, mock_celery_task):
@@ -115,11 +121,12 @@ def test_should_update_all_scheduled_jobs_and_put_on_queue(sample_template, mock
     assert dao_get_job_by_id(job_2.id).job_status == "pending"
     assert dao_get_job_by_id(job_2.id).job_status == "pending"
 
+    service_id = str(sample_template.service_id)
     mocked.assert_has_calls(
         [
-            call([str(job_3.id)], queue="job-tasks"),
-            call([str(job_2.id)], queue="job-tasks"),
-            call([str(job_1.id)], queue="job-tasks"),
+            call([str(job_3.id)], queue="job-tasks", MessageGroupId=service_id),
+            call([str(job_2.id)], queue="job-tasks", MessageGroupId=service_id),
+            call([str(job_1.id)], queue="job-tasks", MessageGroupId=service_id),
         ]
     )
 
@@ -404,8 +411,11 @@ def test_check_job_status_task_sets_jobs_to_error(mock_celery_task, sample_templ
 
 
 def test_replay_created_notifications(sample_service, mock_celery_task):
-    email_delivery_queue = mock_celery_task(deliver_email)
-    sms_delivery_queue = mock_celery_task(deliver_sms)
+    with _with_message_group_id(deliver_email, str(sample_service.id)):
+        email_delivery_queue = mock_celery_task(deliver_email)
+
+    with _with_message_group_id(deliver_sms, str(sample_service.id)):
+        sms_delivery_queue = mock_celery_task(deliver_sms)
 
     sms_template = create_template(service=sample_service, template_type="sms")
     email_template = create_template(service=sample_service, template_type="email")
@@ -428,8 +438,12 @@ def test_replay_created_notifications(sample_service, mock_celery_task):
     create_notification(template=email_template, created_at=datetime.utcnow(), status="created")
 
     replay_created_notifications()
-    email_delivery_queue.assert_called_once_with([str(old_email.id)], queue="send-email-tasks")
-    sms_delivery_queue.assert_called_once_with([str(old_sms.id)], queue="send-sms-tasks")
+    email_delivery_queue.assert_called_once_with(
+        [str(old_email.id)], queue="send-email-tasks", MessageGroupId=str(sample_service.id)
+    )
+    sms_delivery_queue.assert_called_once_with(
+        [str(old_sms.id)], queue="send-sms-tasks", MessageGroupId=str(sample_service.id)
+    )
 
 
 def test_replay_created_notifications_get_pdf_for_templated_letter_tasks_for_letters_not_ready_to_send(
@@ -452,9 +466,10 @@ def test_replay_created_notifications_get_pdf_for_templated_letter_tasks_for_let
 
     replay_created_notifications()
 
+    service_id = str(sample_letter_template.service_id)
     calls = [
-        call([str(notification_1.id)], queue=QueueNames.CREATE_LETTERS_PDF),
-        call([str(notification_2.id)], queue=QueueNames.CREATE_LETTERS_PDF),
+        call([str(notification_1.id)], queue=QueueNames.CREATE_LETTERS_PDF, MessageGroupId=service_id),
+        call([str(notification_2.id)], queue=QueueNames.CREATE_LETTERS_PDF, MessageGroupId=service_id),
     ]
     mock_task.assert_has_calls(calls, any_order=True)
 
@@ -511,7 +526,10 @@ def test_check_if_letters_still_pending_virus_check_restarts_scan_for_stuck_lett
     mock_file_exists.assert_called_once_with("test-letters-scan", expected_filename)
 
     mock_celery.assert_called_once_with(
-        name=TaskNames.SCAN_FILE, kwargs={"filename": expected_filename}, queue=QueueNames.ANTIVIRUS
+        name=TaskNames.SCAN_FILE,
+        kwargs={"filename": expected_filename},
+        queue=QueueNames.ANTIVIRUS,
+        MessageGroupId=str(sample_letter_template.service_id),
     )
 
     assert mock_create_ticket.called is False
@@ -582,6 +600,52 @@ def test_check_if_letters_still_pending_virus_check_raises_zendesk_if_files_cant
 
 
 @freeze_time("2019-05-30 14:00:00")
+def test_check_if_letters_still_pending_virus_check_restarts_scan_for_stuck_letter_attachments(
+    mocker, sample_letter_template
+):
+    # generate_letter_pdf_filename is mocked out here (rather than exercised for real) to
+    # sidestep the unrelated postage-resolution issue the two tests above are skipped for -
+    # this test is only exercising the new ad-hoc-attachments branch, not that lookup.
+    mocker.patch("app.celery.scheduled_tasks.generate_letter_pdf_filename", return_value="LETTER.PDF")
+    mocker.patch("app.aws.s3.file_exists", return_value=False)
+    mock_create_ticket = mocker.spy(NotifySupportTicket, "__init__")
+    mock_celery = mocker.patch("app.celery.scheduled_tasks.notify_celery.send_task")
+    mocker.patch("app.celery.scheduled_tasks.zendesk_client.send_ticket_to_zendesk", autospec=True)
+
+    stuck_with_attachments = create_notification(
+        template=sample_letter_template,
+        status=NOTIFICATION_PENDING_VIRUS_CHECK,
+        created_at=datetime.utcnow() - timedelta(minutes=10, seconds=1),
+        reference="has-attachments",
+    )
+    stuck_without_attachments = create_notification(
+        template=sample_letter_template,
+        status=NOTIFICATION_PENDING_VIRUS_CHECK,
+        created_at=datetime.utcnow() - timedelta(minutes=10, seconds=1),
+        reference="no-attachments",
+    )
+
+    def fake_get_letter_attachment_keys(notification_id):
+        if str(notification_id) == str(stuck_with_attachments.id):
+            return [f"{notification_id}/attachment-1.pdf"]
+        return []
+
+    mocker.patch("app.celery.scheduled_tasks.get_letter_attachment_keys", side_effect=fake_get_letter_attachment_keys)
+
+    check_if_letters_still_pending_virus_check()
+
+    mock_celery.assert_called_once_with(
+        name=TaskNamesNL.SCAN_LETTER_ATTACHMENTS,
+        kwargs={"notification_id": str(stuck_with_attachments.id)},
+        queue=QueueNames.ANTIVIRUS,
+    )
+    # the notification with no ad-hoc attachments still falls through to the Zendesk alert,
+    # not an auto-retry - only stuck_with_attachments.id got a SCAN_LETTER_ATTACHMENTS redispatch
+    assert mock_create_ticket.called is True
+    assert str(stuck_without_attachments.id) in mock_create_ticket.call_args.kwargs["message"]
+
+
+@freeze_time("2019-05-30 14:00:00")
 def test_check_if_letters_still_in_created_during_bst(sample_letter_template, caplog, mocker):
     mock_create_ticket = mocker.spy(NotifySupportTicket, "__init__")
     mock_send_ticket_to_zendesk = mocker.patch(
@@ -601,7 +665,7 @@ def test_check_if_letters_still_in_created_during_bst(sample_letter_template, ca
 
         check_if_letters_still_in_created()
 
-    assert "2 letters created before 17:30 yesterday still have 'created' status" in caplog.messages
+    assert "2 letter notifications created before 17:30 yesterday still have 'created' status" in caplog.messages
     mock_create_ticket.assert_called_with(
         ANY,
         message=(
@@ -637,7 +701,7 @@ def test_check_if_letters_still_in_created_during_utc(sample_letter_template, ca
 
         check_if_letters_still_in_created()
 
-    assert "2 letters created before 17:30 yesterday still have 'created' status" in caplog.messages
+    assert "2 letter notifications created before 17:30 yesterday still have 'created' status" in caplog.messages
     mock_create_ticket.assert_called_once_with(
         ANY,
         message=(
@@ -690,9 +754,12 @@ def test_check_for_missing_rows_in_completed_jobs_ignores_old_and_new_jobs(
     assert process_job_row.called is False
 
 
-def test_check_for_missing_rows_in_completed_jobs(mocker, sample_email_template, mock_celery_task):
+@pytest.mark.parametrize("has_files", [True, False])
+def test_check_for_missing_rows_in_completed_jobs(
+    mocker, sample_email_template, sample_email_template_with_template_email_files, mock_celery_task, has_files
+):
     job = create_job(
-        template=sample_email_template,
+        template=sample_email_template_with_template_email_files if has_files else sample_email_template,
         notification_count=5,
         job_status=JOB_STATUS_FINISHED,
         processing_finished=datetime.utcnow() - timedelta(minutes=20),
@@ -724,7 +791,12 @@ def test_check_for_missing_rows_in_completed_jobs(mocker, sample_email_template,
         )
     ]
     assert mock_save_email.mock_calls == [
-        mock.call((str(job.service_id), "some-uuid", "something_encoded"), {}, queue="database-tasks")
+        mock.call(
+            (str(job.service_id), "some-uuid", "something_encoded"),
+            {},
+            queue="database-tasks-documents" if has_files else "database-tasks",
+            MessageGroupId=str(job.service_id),
+        )
     ]
 
 
@@ -765,20 +837,38 @@ def test_check_for_missing_rows_in_completed_jobs_uses_sender_id(
     ]
     assert mock_save_email.mock_calls == [
         mock.call(
-            (str(job.service_id), "some-uuid", "something_encoded"), {"sender_id": fake_uuid}, queue="database-tasks"
+            (str(job.service_id), "some-uuid", "something_encoded"),
+            {"sender_id": fake_uuid},
+            queue="database-tasks",
+            MessageGroupId=str(job.service_id),
         )
     ]
 
 
+def test_update_status_of_fully_processed_jobs(mocker, sample_email_template, mock_celery_task):
+    job = create_job(
+        template=sample_email_template,
+        notification_count=5,
+        job_status=JOB_STATUS_FINISHED,
+        processing_finished=datetime.utcnow() - timedelta(minutes=3),
+    )
+    for i in range(5):
+        create_notification(job=job, job_row_number=i)
+
+    update_status_of_fully_processed_jobs()
+
+    assert job.job_status == JOB_STATUS_FINISHED_ALL_NOTIFICATIONS_CREATED
+
+
 MockServicesSendingToTVNumbers = namedtuple(
-    "ServicesSendingToTVNumbers",
+    "MockServicesSendingToTVNumbers",
     [
         "service_id",
         "notification_count",
     ],
 )
 MockServicesWithHighFailureRate = namedtuple(
-    "ServicesWithHighFailureRate",
+    "MockServicesWithHighFailureRate",
     [
         "service_id",
         "permanent_failure_rate",
@@ -787,26 +877,42 @@ MockServicesWithHighFailureRate = namedtuple(
 
 
 @pytest.mark.parametrize(
-    "failure_rates, sms_to_tv_numbers, expected_log, expected_message",
+    "failure_rates, sms_to_tv_numbers, expected_logs, expected_message",
     [
         [
-            [MockServicesWithHighFailureRate("123", 0.3)],
+            [MockServicesWithHighFailureRate("123", 0.3), MockServicesWithHighFailureRate("456", 0.7)],
             [],
-            "1 services have had a high permanent-failure rate for text messages in the last 24 hours.",
-            "1 service(s) have had high permanent-failure rates for sms messages in last "
-            "24 hours:\nservice: {}/services/{} failure rate: 0.3,\n".format(Config.ADMIN_BASE_URL, "123"),
+            [
+                "Service 123 has had a high permanent-failure rate (0.3) for text messages in the last 24 hours",
+                "Service 456 has had a high permanent-failure rate (0.7) for text messages in the last 24 hours",
+            ],
+            "2 service(s) have had high permanent-failure rates for sms messages in last 24 hours:\n"
+            f"service: {Config.ADMIN_BASE_URL}/services/123 failure rate: 0.3,\n"
+            f"service: {Config.ADMIN_BASE_URL}/services/456 failure rate: 0.7,\n",
         ],
         [
             [],
-            [MockServicesSendingToTVNumbers("123", 300)],
-            "1 services have sent over 500 text messages to tv numbers in the last 24 hours.",
+            [MockServicesSendingToTVNumbers("123", 567)],
+            ["Service 123 has sent 567 text messages to tv numbers in the last 24 hours"],
             "1 service(s) have sent over 500 sms messages to tv numbers in last 24 hours:\n"
-            "service: {}/services/{} count of sms to tv numbers: 300,\n".format(Config.ADMIN_BASE_URL, "123"),
+            f"service: {Config.ADMIN_BASE_URL}/services/123 count of sms to tv numbers: 567,\n",
+        ],
+        [
+            [MockServicesWithHighFailureRate("123", 0.3)],
+            [MockServicesSendingToTVNumbers("456", 567)],
+            [
+                "Service 123 has had a high permanent-failure rate (0.3) for text messages in the last 24 hours",
+                "Service 456 has sent 567 text messages to tv numbers in the last 24 hours",
+            ],
+            "1 service(s) have had high permanent-failure rates for sms messages in last 24 hours:\n"
+            f"service: {Config.ADMIN_BASE_URL}/services/123 failure rate: 0.3,\n"
+            "1 service(s) have sent over 500 sms messages to tv numbers in last 24 hours:\n"
+            f"service: {Config.ADMIN_BASE_URL}/services/456 count of sms to tv numbers: 567,\n",
         ],
     ],
 )
 def test_check_for_services_with_high_failure_rates_or_sending_to_tv_numbers(
-    notify_db_session, failure_rates, sms_to_tv_numbers, expected_log, expected_message, caplog, mocker
+    notify_db_session, failure_rates, sms_to_tv_numbers, expected_logs, expected_message, caplog, mocker
 ):
     mock_create_ticket = mocker.spy(NotifySupportTicket, "__init__")
     mock_send_ticket_to_zendesk = mocker.patch(
@@ -827,7 +933,7 @@ def test_check_for_services_with_high_failure_rates_or_sending_to_tv_numbers(
 
     assert mock_failure_rates.called
     assert mock_sms_to_tv_numbers.called
-    assert expected_log in caplog.messages
+    assert set(expected_logs) == set(caplog.messages)
     mock_create_ticket.assert_called_with(
         ANY,
         message=expected_message + zendesk_actions,
@@ -1138,7 +1244,9 @@ def test_weekly_user_research_email_skips_environments_with_setting_disabled(
     with set_config(notify_api, "WEEKLY_USER_RESEARCH_EMAIL_ENABLED", False):
         weekly_user_research_email()
 
-    assert "Skipping weekly user research email run in test" in caplog.messages
+    assert (
+        "Not running weekly-user-research-email - configured not to send weekly user research email" in caplog.messages
+    )
     assert not mock_send_email.called
 
 
@@ -1228,7 +1336,9 @@ class TestWeeklyDWPReport:
         ):
             weekly_dwp_report()
 
-        assert (f"Skipping DWP report run in {environment}" in caplog.messages) != should_run
+        assert (
+            "Not running weekly-dwp-report - configured not to send zendesk alerts" in caplog.messages
+        ) != should_run
 
         # 'Successful' runs for this test still don't get to the zendesk_update_ticket call because of other checks.
         assert mock_zendesk_update_ticket.call_args_list == []

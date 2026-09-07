@@ -11,6 +11,7 @@ from werkzeug.local import LocalProxy
 
 from app import memo_resetters, notify_celery, signing
 from app.config import QueueNames
+from app.constants import MESSAGEBOX_TYPE
 from app.dao.inbound_sms_dao import dao_get_inbound_sms_by_id
 from app.dao.returned_letters_dao import fetch_returned_letter_callback_data_dao
 from app.dao.service_callback_api_dao import get_service_callback_api_by_callback_type
@@ -48,7 +49,8 @@ def send_returned_letter_to_service(self, encoded_returned_letter):
         data,
         returned_letter["service_callback_api_url"],
         returned_letter["service_callback_api_bearer_token"],
-        "send_returned_letter_to_service",
+        data["notification_id"],
+        {"notification_id": data["notification_id"]},
     )
 
 
@@ -63,6 +65,11 @@ def send_delivery_status_to_service(self, notification_id, encoded_status_update
         "reference": status_update["notification_client_reference"],
         "to": status_update["notification_to"],
         "status": status_update["notification_status"],
+        # [NOTIFYNL] the reason a validation-failed/virus-scan-failed notification failed
+        # (e.g. "letter-too-long", "virus-detected") - always present, None when not
+        # applicable. .get() rather than a plain lookup so callback data signed before
+        # this field existed still decodes.
+        "detailed_status_code": status_update.get("notification_detailed_status_code"),
         "created_at": status_update["notification_created_at"],
         "completed_at": status_update["notification_updated_at"],
         "sent_at": status_update["notification_sent_at"],
@@ -76,7 +83,8 @@ def send_delivery_status_to_service(self, notification_id, encoded_status_update
         data,
         status_update["service_callback_api_url"],
         status_update["service_callback_api_bearer_token"],
-        "send_delivery_status_to_service",
+        data["id"],
+        {"notification_id": data["id"]},
     )
 
 
@@ -97,7 +105,8 @@ def send_complaint_to_service(self, complaint_data):
         data,
         complaint["service_callback_api_url"],
         complaint["service_callback_api_bearer_token"],
-        "send_complaint_to_service",
+        data["notification_id"],
+        {"notification_id": data["notification_id"], "complaint_id": data["complaint_id"]},
     )
 
 
@@ -120,12 +129,16 @@ def send_inbound_sms_to_service(self, inbound_sms_id, service_id):
     }
 
     _send_data_to_service_callback_api(
-        self, data, inbound_api.url, inbound_api.bearer_token, "send_inbound_sms_to_service"
+        self, data, inbound_api.url, inbound_api.bearer_token, data["id"], {"inbound_sms_id": data["id"]}
     )
 
 
-def _send_data_to_service_callback_api(self, data, service_callback_url, token, function_name):
-    object_id = data["notification_id"] if "notification_id" in data else data["id"]
+def _send_data_to_service_callback_api(self, data, service_callback_url, token, id_display, log_extra):
+    log_extra = {
+        "celery_task": self.name,
+        "service_callback_url": service_callback_url,
+        **log_extra,
+    }
     try:
         request_kwargs = {
             "method": "POST",
@@ -151,19 +164,24 @@ def _send_data_to_service_callback_api(self, data, service_callback_url, token, 
 
         current_app.logger.info(
             "%s sending %s to %s, response %s",
-            function_name,
-            object_id,
+            self.name,
+            id_display,
             service_callback_url,
             response.status_code,
+            extra={
+                "status_code": response.status_code,
+                **log_extra,
+            },
         )
         response.raise_for_status()
     except requests.RequestException as e:
         current_app.logger.warning(
             "%s request failed for id: %s and url: %s. exception: %s",
-            function_name,
-            object_id,
+            self.name,
+            id_display,
             service_callback_url,
             e,
+            extra=log_extra,
         )
         if not isinstance(e, requests.HTTPError) or e.response.status_code >= 500 or e.response.status_code == 429:
             try:
@@ -171,17 +189,19 @@ def _send_data_to_service_callback_api(self, data, service_callback_url, token, 
             except self.MaxRetriesExceededError as e:
                 current_app.logger.warning(
                     "Retry: %s has retried the max num of times for callback url %s and id: %s",
-                    function_name,
+                    self.name,
                     service_callback_url,
-                    object_id,
+                    id_display,
+                    extra=log_extra,
                 )
         else:
             current_app.logger.warning(
                 "%s callback is not being retried for id: %s and url: %s. exception: %s",
-                function_name,
-                object_id,
+                self.name,
+                id_display,
                 service_callback_url,
                 e,
+                extra=log_extra,
             )
 
 
@@ -189,8 +209,13 @@ def create_delivery_status_callback_data(notification, service_callback_api):
     data = {
         "notification_id": str(notification.id),
         "notification_client_reference": notification.client_reference,
-        "notification_to": notification.to,
+        # Messagebox's `to` is the BSN -- never send it to a service's callback
+        # URL, encrypted or not: it's meaningless ciphertext to the receiving
+        # service, and decrypting it just to re-send over HTTP would reintroduce
+        # exposure this change is meant to close.
+        "notification_to": None if notification.notification_type == MESSAGEBOX_TYPE else notification.to,
         "notification_status": notification.status,
+        "notification_detailed_status_code": notification.detailed_status_code,
         "notification_created_at": notification.created_at.strftime(DATETIME_FORMAT),
         "notification_updated_at": (
             notification.updated_at.strftime(DATETIME_FORMAT) if notification.updated_at else None

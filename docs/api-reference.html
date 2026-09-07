@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html lang="nl">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>NotifyNL API Referentie</title>
+    <meta name="description" content="Volledige API-referentie voor de NotifyNL REST API v2" />
+    <style>
+      body { margin: 0; padding: 0; }
+    </style>
+  </head>
+  <body>
+    <redoc spec-url="./openapi.yaml"
+           hide-download-button="false"
+           expand-responses="201,200"
+           required-props-first="true"
+           sort-props-alphabetically="false"
+           theme='{
+             "colors": {
+               "primary": { "main": "#1a5276" }
+             },
+             "typography": {
+               "fontSize": "15px",
+               "fontFamily": "\"Inter\", system-ui, sans-serif"
+             },
+             "sidebar": {
+               "backgroundColor": "#f8f9fa",
+               "textColor": "#2c3e50"
+             }
+           }'>
+    </redoc>
+    <script>window.process = { env: {} };</script>
+    <script src="https://cdn.jsdelivr.net/npm/redoc@2.1.5/bundles/redoc.standalone.js"></script>
+  </body>
+</html>

@@ -19,10 +19,16 @@ case "$1" in
     exec flask run --host 0.0.0.0 --port $PORT
     ;;
   migration)
-    exec flask db upgrade
+    exec flask db upgrade "${2:-head}"
     ;;
   migration-nl)
-    exec flask db upgrade --directory migrations_nl
+    exec flask db upgrade --directory migrations_nl "${2:-head}"
+    ;;
+  migration-downgrade)
+    exec flask db downgrade "${2:?migration-downgrade requires a target revision as \$2}"
+    ;;
+  migration-nl-downgrade)
+    exec flask db downgrade --directory migrations_nl "${2:?migration-nl-downgrade requires a target revision as \$2}"
     ;;
   functional-test-fixtures)
     exec flask command functional-test-fixtures
@@ -34,7 +40,13 @@ case "$1" in
     exec $COMMON_CMD create-letters-pdf-tasks,letter-tasks
     ;;
   api-worker-jobs)
-    exec $COMMON_CMD database-tasks,job-tasks
+    exec $COMMON_CMD job-tasks
+    ;;
+  api-worker-jobs-save)
+    exec $COMMON_CMD database-tasks
+    ;;
+  api-worker-jobs-save-documents)
+    exec $COMMON_CMD database-tasks-documents
     ;;
   api-worker-research)
     exec $COMMON_CMD research-mode-tasks
@@ -59,11 +71,19 @@ case "$1" in
     exec $COMMON_CMD ses-callbacks,sms-callbacks,letter-callbacks,messagebox-callbacks
     ;;
   api-worker-service-callbacks)
-    exec $COMMON_CMD service-callbacks,service-callbacks-retry
+    exec $COMMON_CMD service-callbacks
+    ;;
+  api-worker-service-callbacks-retry)
+    exec $COMMON_CMD service-callbacks-retry
     ;;
   api-worker-report-requests-notifications)
     exec $COMMON_CMD report-requests-notifications-tasks
     ;;
+  # === NotifyNL
+  api-worker-messagebox)
+    exec $COMMON_CMD messagebox-tasks
+    ;;
+  # ============
   celery-beat)
     exec celery --quiet -A run_celery.notify_celery beat
     ;;

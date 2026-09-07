@@ -28,10 +28,13 @@
         "run_celery.notify_celery",
         "worker",
         "-l",
-        "INFO",
+        "DEBUG",
         "-E",
         "-P",
-        "solo"
+        "solo",
+        "--without-gossip",
+        "--without-mingle",
+        "--without-heartbeat"
       ],
       "consoleName": "API worker",
       "preLaunchTask": "API pre-launch"
@@ -47,7 +50,7 @@
         "run_celery.notify_celery",
         "beat",
         "-l",
-        "INFO"
+        "DEBUG"
       ],
       "consoleName": "Celery beat",
       "preLaunchTask": "API pre-launch"

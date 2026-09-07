@@ -1,15 +1,16 @@
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 
 from botocore.exceptions import ClientError as BotoClientError
 from flask import current_app
 from notifications_utils.letter_timings import LETTER_PROCESSING_DEADLINE
 from notifications_utils.recipient_validation.notifynl.postal_address import PostalAddress
+from notifications_utils.s3 import s3_move_folder_between_buckets
 from notifications_utils.timezones import convert_bst_to_utc, convert_utc_to_bst
 
 from app import notify_celery, signing
 from app.aws import s3
 from app.celery.provider_tasks import deliver_letter
-from app.config import QueueNames, TaskNames
+from app.config import QueueNames, TaskNames, TaskNamesNL
 from app.constants import (
     INTERNATIONAL_LETTERS,
     INTERNATIONAL_POSTAGE_TYPES,
@@ -41,6 +42,7 @@ from app.letters.utils import (
     get_billable_units_for_letter_page_count,
     get_file_names_from_error_bucket,
     get_folder_name,
+    get_letter_attachment_keys,
     get_reference_from_filename,
     move_error_pdf_to_scan_bucket,
     move_failed_pdf,
@@ -48,7 +50,13 @@ from app.letters.utils import (
     move_scan_to_invalid_pdf_bucket,
 )
 from app.models import Service
+from app.notifications.notifications_ses_callback import check_and_queue_callback_task
 from app.utils import batched
+
+# [NOTIFYNL] Fixed detailed_status_code used for every virus-scan-failed callback/reason
+# below -- no per-scan detail (e.g. signature name) is available at any of these call
+# sites, only a filename, so a single fixed code is all there is to report.
+VIRUS_DETECTED_STATUS_CODE = "virus-detected"
 
 
 @notify_celery.task(bind=True, name="get-pdf-for-templated-letter", max_retries=15, default_retry_delay=300)
@@ -80,26 +88,38 @@ def get_pdf_for_templated_letter(self, notification_id):
             },
             "values": notification.personalisation,
             "logo_filename": notification.service.letter_branding and notification.service.letter_branding.filename,
+            "letter_address_placement": notification.service.letter_address_placement,
             "letter_filename": letter_filename,
             "notification_id": str(notification_id),
             "key_type": notification.key_type,
+            "date": notification.created_at.replace(tzinfo=UTC).isoformat(),
+            # [NOTIFYNL] populates the ad-hoc attachments (if any) uploaded by
+            # upload_letter_attachments at send time - empty for the common no-attachment
+            # case, which keeps this a safe no-op for every pre-existing call site.
+            "attachments": get_letter_attachment_keys(notification_id),
+            "allow_international_letters": notification.service.has_permission(INTERNATIONAL_LETTERS),
         }
 
         encoded_data = signing.encode(letter_data)
 
         notify_celery.send_task(
-            name=TaskNames.CREATE_PDF_FOR_TEMPLATED_LETTER, args=(encoded_data,), queue=QueueNames.SANITISE_LETTERS
+            name=TaskNames.CREATE_PDF_FOR_TEMPLATED_LETTER,
+            args=(encoded_data,),
+            queue=QueueNames.SANITISE_LETTERS,
+            MessageGroupId=self.message_group_id if self.message_group_id is not None else str(notification.service_id),
         )
     except Exception as e:
         try:
             current_app.logger.exception(
-                "RETRY: calling create-letter-pdf task for notification %s failed", notification_id
+                "RETRY: calling get-pdf-for-templated-letter task for notification %s failed",
+                notification_id,
+                extra={"notification_id": notification_id},
             )
             self.retry(exc=e, queue=QueueNames.RETRY)
         except self.MaxRetriesExceededError as e:
             message = (
                 f"RETRY FAILED: Max retries reached. "
-                f"The task create-letter-pdf failed for notification id {notification_id}. "
+                f"The task get-pdf-for-templated-letter failed for notification id {notification_id}. "
                 f"Notification has been updated to technical-failure"
             )
             update_notification_status_by_id(notification_id, NOTIFICATION_TECHNICAL_FAILURE)
@@ -116,9 +136,16 @@ def update_billable_units_for_letter(self, notification_id, page_count):
         notification.billable_units = billable_units
         dao_update_notification(notification)
 
+        extra = {
+            "notification_id": notification_id,
+            "notification_reference": notification.reference,
+            "notification_billable_units": billable_units,
+        }
         current_app.logger.info(
-            "Letter notification id: %(id)s reference %(ref)s: billable units set to %(units)s",
-            {"id": notification_id, "ref": notification.reference, "units": billable_units},
+            "Letter notification id: %(notification_id)s reference %(notification_reference)s: "
+            "billable units set to %(notification_billable_units)s",
+            extra,
+            extra=extra,
         )
 
 
@@ -128,10 +155,95 @@ def update_billable_units_for_letter(self, notification_id, page_count):
 def update_validation_failed_for_templated_letter(self, notification_id, page_count):
     notification = get_notification_by_id(notification_id, _raise=True)
     notification.status = NOTIFICATION_VALIDATION_FAILED
+    notification.detailed_status_code = "letter-too-long"
     dao_update_notification(notification)
+    extra = {"page_count": page_count, "notification_id": notification_id}
     current_app.logger.info(
-        "Validation failed: letter is too long %(page_count)s for letter with id: %(id)s",
-        {"page_count": page_count, "id": notification_id},
+        "Validation failed: letter is too long %(page_count)s for letter with id: %(notification_id)s",
+        extra,
+        extra=extra,
+    )
+    check_and_queue_callback_task(notification)
+
+
+# [NOTIFYNL] Three-way virus-scan callback split for ad-hoc letter attachments, mirroring
+# app.celery.messagebox_tasks's messagebox_virus_scan_{success,failed,error}. Unlike that
+# sibling flow, success here doesn't move the attachments to a separate long-lived bucket -
+# they stay in the scan bucket for notifynl-template-preview to pick up moments later
+# (see get_pdf_for_templated_letter, dispatched below).
+
+LETTER_ATTACHMENTS_VIRUS_SCAN_ERROR_RETRY_DELAY = 900
+
+
+@notify_celery.task(name=TaskNamesNL.PROCESS_VIRUS_SCAN_SUCCESS_LETTER_ATTACHMENTS, bind=True)
+def process_virus_scan_success_letter_attachments(self, notification_id: str):
+    current_app.logger.info("[%s] [%s]", self.name, notification_id)
+    notification = get_notification_by_id(notification_id, _raise=True)
+
+    if notification.status != NOTIFICATION_PENDING_VIRUS_CHECK:
+        current_app.logger.info(
+            "[%s] [%s] notification already in status %s, not proceeding",
+            self.name,
+            notification_id,
+            notification.status,
+        )
+        return
+
+    update_notification_status_by_id(notification.id, NOTIFICATION_CREATED)
+
+    get_pdf_for_templated_letter.apply_async([str(notification.id)], queue=QueueNames.CREATE_LETTERS_PDF)
+
+
+@notify_celery.task(name=TaskNamesNL.PROCESS_VIRUS_SCAN_FAILED_LETTER_ATTACHMENTS, bind=True)
+def process_virus_scan_failed_letter_attachments(self, notification_id: str):
+    current_app.logger.info("[%s] [%s]", self.name, notification_id)
+    notification = get_notification_by_id(notification_id, _raise=True)
+
+    s3_move_folder_between_buckets(
+        source_bucket=current_app.config["S3_BUCKET_LETTERS_SCAN"],
+        dest_bucket=current_app.config["S3_BUCKET_INVALID_PDF"],
+        folder_name=str(notification.id),
+        dest_folder_name=f"FAILURE/{notification.id}",
+    )
+
+    updated_notification = update_notification_status_by_id(
+        notification.id, NOTIFICATION_VIRUS_SCAN_FAILED, detailed_status_code=VIRUS_DETECTED_STATUS_CODE
+    )
+    # [NOTIFYNL] update_notification_status_by_id returns None if the notification is no
+    # longer in an eligible pre-callback status (e.g. this task is invoked a second time
+    # for the same notification) - guard against passing None into check_and_queue_callback_task.
+    if updated_notification:
+        check_and_queue_callback_task(updated_notification)
+
+    raise VirusScanError(f"notification id {notification.id} Virus scan failed")
+
+
+@notify_celery.task(name=TaskNamesNL.PROCESS_VIRUS_SCAN_ERROR_LETTER_ATTACHMENTS, bind=True)
+def process_virus_scan_error_letter_attachments(self, notification_id: str):
+    current_app.logger.info("[%s] [%s]", self.name, notification_id)
+    notification = get_notification_by_id(notification_id, _raise=True)
+
+    if notification.status != NOTIFICATION_PENDING_VIRUS_CHECK:
+        current_app.logger.info(
+            "[%s] [%s] notification already in status %s, not rescheduling scan",
+            self.name,
+            notification_id,
+            notification.status,
+        )
+        return
+
+    current_app.logger.warning(
+        "[%s] [%s] virus scan errored, rescheduling scan in %ss",
+        self.name,
+        notification_id,
+        LETTER_ATTACHMENTS_VIRUS_SCAN_ERROR_RETRY_DELAY,
+    )
+
+    notify_celery.send_task(
+        name=TaskNamesNL.SCAN_LETTER_ATTACHMENTS,
+        kwargs={"notification_id": str(notification.id)},
+        queue=QueueNames.ANTIVIRUS,
+        countdown=LETTER_ATTACHMENTS_VIRUS_SCAN_ERROR_RETRY_DELAY,
     )
 
 
@@ -145,7 +257,6 @@ def collate_letter_pdfs_to_be_sent(print_run_deadline_utc_str: str):
     that have not yet been sent.
     """
     print_run_deadline_local = convert_utc_to_bst(datetime.fromisoformat(print_run_deadline_utc_str))
-    _get_letters_and_sheets_volumes_and_send_to_dvla(print_run_deadline_local)
 
     send_dvla_letters_via_api(print_run_deadline_local)
 
@@ -172,6 +283,8 @@ def check_time_to_collate_letters():
     collate_letter_pdfs_to_be_sent.apply_async([print_run_deadline_utc.isoformat()], queue=QueueNames.PERIODIC)
 
 
+# Not called from collate_letter_pdfs_to_be_sent as of 2026-08-20 -- the DVLA volume-report
+# email was deliberately disabled. Kept for a possible future re-enable.
 def _get_letters_and_sheets_volumes_and_send_to_dvla(print_run_deadline_local):
     letters_volumes = dao_get_letters_and_sheets_volume_by_postage(print_run_deadline_local)
     send_letters_volume_email_to_dvla(letters_volumes, print_run_deadline_local.date())
@@ -180,22 +293,21 @@ def _get_letters_and_sheets_volumes_and_send_to_dvla(print_run_deadline_local):
 def send_letters_volume_email_to_dvla(letters_volumes, date):
     personalisation = {
         "total_volume": 0,
-        "first_class_volume": 0,
-        "second_class_volume": 0,
-        "economy_mail_volume": 0,
-        "international_volume": 0,
+        "netherlands_volume": 0,
+        "europe_volume": 0,
+        "rest_of_world_volume": 0,
         "total_sheets": 0,
-        "first_class_sheets": 0,
-        "second_class_sheets": 0,
-        "economy_mail_sheets": 0,
-        "international_sheets": 0,
+        "netherlands_sheets": 0,
+        "europe_sheets": 0,
+        "rest_of_world_sheets": 0,
         "date": date.strftime("%d %B %Y"),
     }
     for item in letters_volumes:
         personalisation["total_volume"] += item.letters_count
         personalisation["total_sheets"] += item.sheets_count
-        personalisation[f"{item.postage}_class_volume"] = item.letters_count
-        personalisation[f"{item.postage}_class_sheets"] = item.sheets_count
+        postage_key = item.postage.replace("-", "_")
+        personalisation[f"{postage_key}_volume"] = item.letters_count
+        personalisation[f"{postage_key}_sheets"] = item.sheets_count
 
     template = dao_get_template_by_id(current_app.config["LETTERS_VOLUME_EMAIL_TEMPLATE_ID"])
     recipients = current_app.config["DVLA_EMAIL_ADDRESSES"]
@@ -253,11 +365,17 @@ def sanitise_letter(self, filename):
         reference = get_reference_from_filename(filename)
         notification = dao_get_notification_by_reference(reference)
 
-        current_app.logger.info("Notification ID %s Virus scan passed: %s", notification.id, filename)
+        extra = {"notification_id": notification.id, "file_name": filename}
+        current_app.logger.info(
+            "Notification ID %(notification_id)s Virus scan passed: %(file_name)s", extra, extra=extra
+        )
 
         if notification.status != NOTIFICATION_PENDING_VIRUS_CHECK:
             current_app.logger.info(
-                "Sanitise letter called for notification %s which is in %s state", notification.id, notification.status
+                "Sanitise letter called for notification %s which is in %s state",
+                notification.id,
+                notification.status,
+                extra={"notification_id": notification.id, "notification_status": notification.status},
             )
             return
 
@@ -267,19 +385,71 @@ def sanitise_letter(self, filename):
                 "notification_id": str(notification.id),
                 "filename": filename,
                 "allow_international_letters": notification.service.has_permission(INTERNATIONAL_LETTERS),
+                "letter_address_placement": notification.service.letter_address_placement,
             },
             queue=QueueNames.SANITISE_LETTERS,
+            MessageGroupId=self.message_group_id,
         )
     except Exception:
         try:
             current_app.logger.exception(
-                "RETRY: calling sanitise_letter task for notification %s failed", notification.id
+                "RETRY: calling sanitise_letter task for notification %s failed",
+                notification.id,
+                extra={"notification_id": notification.id},
             )
             self.retry(queue=QueueNames.RETRY)
         except self.MaxRetriesExceededError as e:
             message = (
                 "RETRY FAILED: Max retries reached. "
                 f"The task sanitise_letter failed for notification {notification.id}. "
+                "Notification has been updated to technical-failure"
+            )
+            update_notification_status_by_id(notification.id, NOTIFICATION_TECHNICAL_FAILURE)
+            raise NotificationTechnicalFailureException(message) from e
+
+
+@notify_celery.task(bind=True, name=TaskNamesNL.SANITISE_LETTER_PARTS, max_retries=15, default_retry_delay=300)
+def sanitise_letter_parts(self, filenames):
+    """
+    [NOTIFYNL] Precompiled letters submitted as multiple PDFs (up to 3), to be merged into one
+    letter before delivery - own dedicated task, parallel to (not a branch of) sanitise_letter
+    above. See app.celery.letters_pdf_tasks (template-preview repo)
+    .sanitise_and_merge_letter_parts for where the actual merge happens.
+    """
+    try:
+        reference = get_reference_from_filename(filenames[0])
+        notification = dao_get_notification_by_reference(reference)
+
+        current_app.logger.info("Notification ID %s Virus scan passed: %s", notification.id, filenames)
+
+        if notification.status != NOTIFICATION_PENDING_VIRUS_CHECK:
+            current_app.logger.info(
+                "Sanitise letter parts called for notification %s which is in %s state",
+                notification.id,
+                notification.status,
+            )
+            return
+
+        notify_celery.send_task(
+            name=TaskNamesNL.SANITISE_AND_MERGE_LETTER_PARTS,
+            kwargs={
+                "notification_id": str(notification.id),
+                "filenames": filenames,
+                "allow_international_letters": notification.service.has_permission(INTERNATIONAL_LETTERS),
+                "letter_address_placement": notification.service.letter_address_placement,
+            },
+            queue=QueueNames.SANITISE_LETTERS,
+        )
+    except Exception:
+        try:
+            current_app.logger.exception(
+                "RETRY: calling sanitise_letter_parts task for notification %s failed", notification.id
+            )
+            self.retry(queue=QueueNames.RETRY)
+        except self.MaxRetriesExceededError as e:
+            message = (
+                "RETRY FAILED: Max retries reached. "
+                f"The task sanitise_letter_parts failed for notification {notification.id}. "
                 "Notification has been updated to technical-failure"
             )
             update_notification_status_by_id(notification.id, NOTIFICATION_TECHNICAL_FAILURE)
@@ -293,7 +463,11 @@ def process_sanitised_letter(self, sanitise_data):
     filename = letter_details["filename"]
     notification_id = letter_details["notification_id"]
 
-    current_app.logger.info("Processing sanitised letter with id %s", notification_id)
+    current_app.logger.info(
+        "Processing sanitised letter with id %s",
+        notification_id,
+        extra={"notification_id": notification_id},
+    )
     notification = get_notification_by_id(notification_id, _raise=True)
 
     if notification.status != NOTIFICATION_PENDING_VIRUS_CHECK:
@@ -301,6 +475,7 @@ def process_sanitised_letter(self, sanitise_data):
             "process-sanitised-letter task called for notification %s which is in %s state",
             notification.id,
             notification.status,
+            extra={"notification_id": notification.id, "notification_status": notification.status},
         )
         return
 
@@ -309,13 +484,18 @@ def process_sanitised_letter(self, sanitise_data):
 
         if letter_details["validation_status"] == "failed":
             current_app.logger.info(
-                "Processing invalid precompiled pdf with id %s (file %s)", notification_id, filename
+                "Processing invalid precompiled pdf with id %s (file %s)",
+                notification_id,
+                filename,
+                extra={"notification_id": notification_id, "file_name": filename},
             )
 
             # Log letters that fail with no fixed abode error so we can check for false positives
             if letter_details["message"] == "no-fixed-abode-address":
                 current_app.logger.info(
-                    "Precomiled PDF with id %s was invalid due to no fixed abode address", notification_id
+                    "Precomiled PDF with id %s was invalid due to no fixed abode address",
+                    notification_id,
+                    extra={"notification_id": notification_id},
                 )
 
             _move_invalid_letter_and_update_status(
@@ -328,7 +508,12 @@ def process_sanitised_letter(self, sanitise_data):
             )
             return
 
-        current_app.logger.info("Processing valid precompiled pdf with id %s (file %s)", notification_id, filename)
+        current_app.logger.info(
+            "Processing valid precompiled pdf with id %s (file %s)",
+            notification_id,
+            filename,
+            extra={"notification_id": notification_id, "file_name": filename},
+        )
 
         billable_units = get_billable_units_for_letter_page_count(letter_details["page_count"])
         is_test_key = notification.key_type == KEY_TYPE_TEST
@@ -341,6 +526,12 @@ def process_sanitised_letter(self, sanitise_data):
             billable_units=billable_units,
             recipient_address=letter_details["address"],
         )
+
+        if is_test_key:
+            # [NOTIFYNL] update_letter_pdf_status is a bulk UPDATE (synchronize_session=False) -
+            # it doesn't refresh `notification`, so re-fetch before building the callback payload
+            # or it would report the pre-update status. Mirrors the failure branches below.
+            check_and_queue_callback_task(get_notification_by_id(notification.id, _raise=True))
 
         # The original filename could be wrong because we didn't know the postage.
         # Now we know if the letter is international, we can check what the filename should be.
@@ -364,14 +555,19 @@ def process_sanitised_letter(self, sanitise_data):
         # Boto exceptions are likely to be caused by the file(s) being in the wrong place, so retrying won't help -
         # we'll need to manually investigate
         current_app.logger.exception(
-            "Boto error when processing sanitised letter for notification %s (file %s)", notification.id, filename
+            "Boto error when processing sanitised letter for notification %s (file %s)",
+            notification.id,
+            filename,
+            extra={"notification_id": notification.id, "file_name": filename},
         )
         update_notification_status_by_id(notification.id, NOTIFICATION_TECHNICAL_FAILURE)
         raise NotificationTechnicalFailureException from e
     except Exception:
         try:
             current_app.logger.exception(
-                "RETRY: calling process_sanitised_letter task for notification %s failed", notification.id
+                "RETRY: calling process_sanitised_letter task for notification %s failed",
+                notification.id,
+                extra={"notification_id": notification.id},
             )
             self.retry(queue=QueueNames.RETRY)
         except self.MaxRetriesExceededError as e:
@@ -394,10 +590,21 @@ def _move_invalid_letter_and_update_status(
         scan_pdf_object.delete()
 
         update_letter_pdf_status(
-            reference=notification.reference, status=NOTIFICATION_VALIDATION_FAILED, billable_units=0
+            reference=notification.reference,
+            status=NOTIFICATION_VALIDATION_FAILED,
+            billable_units=0,
+            detailed_status_code=message,
         )
+        # [NOTIFYNL] update_letter_pdf_status is a bulk UPDATE (synchronize_session=False) -
+        # it doesn't refresh `notification`, so re-fetch before building the callback payload
+        # or it would report the pre-update status.
+        check_and_queue_callback_task(get_notification_by_id(notification.id, _raise=True))
     except BotoClientError as e:
-        current_app.logger.exception("Error when moving letter with id %s to invalid PDF bucket", notification.id)
+        current_app.logger.exception(
+            "Error when moving letter with id %s to invalid PDF bucket",
+            notification.id,
+            extra={"notification_id": notification.id},
+        )
         update_notification_status_by_id(notification.id, NOTIFICATION_TECHNICAL_FAILURE)
         raise NotificationTechnicalFailureException from e
 
@@ -407,12 +614,16 @@ def process_virus_scan_failed(filename):
     move_failed_pdf(filename, ScanErrorType.FAILURE)
     reference = get_reference_from_filename(filename)
     notification = dao_get_notification_by_reference(reference)
-    updated_count = update_letter_pdf_status(reference, NOTIFICATION_VIRUS_SCAN_FAILED, billable_units=0)
+    updated_count = update_letter_pdf_status(
+        reference, NOTIFICATION_VIRUS_SCAN_FAILED, billable_units=0, detailed_status_code=VIRUS_DETECTED_STATUS_CODE
+    )
 
     if updated_count != 1:
         raise Exception(
             f"There should only be one letter notification for each reference. Found {updated_count} notifications"
         )
+
+    check_and_queue_callback_task(get_notification_by_id(notification.id, _raise=True))
 
     error = VirusScanError(f"notification id {notification.id} Virus scan failed: {filename}")
     raise error
@@ -429,11 +640,57 @@ def process_virus_scan_error(filename):
         raise Exception(
             f"There should only be one letter notification for each reference. Found {updated_count} notifications"
         )
-    current_app.logger.error("notification id %s Virus scan error: %s", notification.id, filename)
+    current_app.logger.error(
+        "notification id %s Virus scan error: %s",
+        notification.id,
+        filename,
+        extra={"notification_id": notification.id, "file_name": filename},
+    )
     raise VirusScanError(f"notification id {notification.id} Virus scan error: {filename}")
 
 
-def update_letter_pdf_status(reference, status, billable_units, recipient_address=None):
+@notify_celery.task(name=TaskNamesNL.PROCESS_VIRUS_SCAN_FAILED_LETTER_PARTS)
+def process_virus_scan_failed_letter_parts(filenames):
+    # [NOTIFYNL] mirrors process_virus_scan_failed above, looping over every part's raw
+    # scan-bucket object rather than a single filename.
+    for filename in filenames:
+        move_failed_pdf(filename, ScanErrorType.FAILURE)
+    reference = get_reference_from_filename(filenames[0])
+    notification = dao_get_notification_by_reference(reference)
+    updated_count = update_letter_pdf_status(
+        reference, NOTIFICATION_VIRUS_SCAN_FAILED, billable_units=0, detailed_status_code=VIRUS_DETECTED_STATUS_CODE
+    )
+
+    if updated_count != 1:
+        raise Exception(
+            f"There should only be one letter notification for each reference. Found {updated_count} notifications"
+        )
+
+    check_and_queue_callback_task(get_notification_by_id(notification.id, _raise=True))
+
+    error = VirusScanError(f"notification id {notification.id} Virus scan failed: {filenames}")
+    raise error
+
+
+@notify_celery.task(name=TaskNamesNL.PROCESS_VIRUS_SCAN_ERROR_LETTER_PARTS)
+def process_virus_scan_error_letter_parts(filenames):
+    # [NOTIFYNL] mirrors process_virus_scan_error above, looping over every part's raw
+    # scan-bucket object rather than a single filename.
+    for filename in filenames:
+        move_failed_pdf(filename, ScanErrorType.ERROR)
+    reference = get_reference_from_filename(filenames[0])
+    notification = dao_get_notification_by_reference(reference)
+    updated_count = update_letter_pdf_status(reference, NOTIFICATION_TECHNICAL_FAILURE, billable_units=0)
+
+    if updated_count != 1:
+        raise Exception(
+            f"There should only be one letter notification for each reference. Found {updated_count} notifications"
+        )
+    current_app.logger.error("notification id %s Virus scan error: %s", notification.id, filenames)
+    raise VirusScanError(f"notification id {notification.id} Virus scan error: {filenames}")
+
+
+def update_letter_pdf_status(reference, status, billable_units, recipient_address=None, detailed_status_code=None):
     postage = None
     if recipient_address:
         # fix allow_international_letters
@@ -447,6 +704,10 @@ def update_letter_pdf_status(reference, status, billable_units, recipient_addres
     if recipient_address:
         update_dict["to"] = recipient_address
         update_dict["normalised_to"] = "".join(recipient_address.split()).lower()
+    # [NOTIFYNL] carries the reason a precompiled letter failed validation/virus-scan so it
+    # can be surfaced back to the service - see check_and_queue_callback_task call sites below.
+    if detailed_status_code is not None:
+        update_dict["detailed_status_code"] = detailed_status_code
     return dao_update_notifications_by_reference(references=[reference], update_dict=update_dict)[0]
 
 
@@ -456,7 +717,7 @@ def replay_letters_in_error(filename=None):
     if filename:
         move_error_pdf_to_scan_bucket(filename)
         # call task to add the filename to anti virus queue
-        current_app.logger.info("Calling scan_file for: %s", filename)
+        current_app.logger.info("Calling scan_file for: %s", filename, extra={"file_name": filename})
 
         if current_app.config["ANTIVIRUS_ENABLED"]:
             notify_celery.send_task(
@@ -471,7 +732,7 @@ def replay_letters_in_error(filename=None):
         error_files = get_file_names_from_error_bucket()
         for item in error_files:
             moved_file_name = item.key.split("/")[1]
-            current_app.logger.info("Calling scan_file for: %s", moved_file_name)
+            current_app.logger.info("Calling scan_file for: %s", moved_file_name, extra={"file_name": moved_file_name})
             move_error_pdf_to_scan_bucket(moved_file_name)
             # call task to add the filename to anti virus queue
             if current_app.config["ANTIVIRUS_ENABLED"]:
@@ -485,8 +746,8 @@ def replay_letters_in_error(filename=None):
                 sanitise_letter.apply_async([filename], queue=QueueNames.LETTERS)
 
 
-@notify_celery.task(name="resanitise-pdf")
-def resanitise_pdf(notification_id):
+@notify_celery.task(bind=True, name="resanitise-pdf")
+def resanitise_pdf(self, notification_id):
     """
     `notification_id` is the notification id for a PDF letter which was either uploaded or sent using the API.
 
@@ -512,6 +773,32 @@ def resanitise_pdf(notification_id):
             "notification_id": str(notification.id),
             "file_location": f"{folder_name}{filename}",
             "allow_international_letters": notification.service.has_permission(INTERNATIONAL_LETTERS),
+            "letter_address_placement": notification.service.letter_address_placement,
         },
         queue=QueueNames.SANITISE_LETTERS,
+        MessageGroupId=self.message_group_id if self.message_group_id is not None else str(notification.service_id),
+    )
+
+
+@notify_celery.task(bind=True, name="resanitise-letter-attachment")
+def resanitise_letter_attachment(self, service_id, attachment_id, original_filename):
+    """
+    `service_id` is the service id for a PDF letter attachment/template.
+    `attachment_id` is the attachment id for a PDF letter attachment which was uploaded for a template.
+    `original_filename` is the attachment name for a PDF letter attachment.
+
+    This task calls the `recreate-pdf-for-template-letter-attachments` template preview task which recreates the
+    PDF for a letter attachment which is already sanitised and in the letters-attachment bucket. The new file
+    that is generated will then overwrite the existing letter in the letter-attachments bucket.
+    """
+
+    notify_celery.send_task(
+        name=TaskNames.RECREATE_PDF_FOR_TEMPLATE_LETTER_ATTACHMENTS,
+        kwargs={
+            "service_id": service_id,
+            "attachment_id": attachment_id,
+            "original_filename": original_filename,
+        },
+        queue=QueueNames.SANITISE_LETTERS,
+        MessageGroupId=self.message_group_id if self.message_group_id is not None else str(service_id),
     )

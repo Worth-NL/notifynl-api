@@ -31,6 +31,7 @@ def test_check_if_letters_still_pending_virus_check_raises_zendesk_if_files_cant
     sample_letter_template, mocker
 ):
     mock_file_exists = mocker.patch("app.aws.s3.file_exists", return_value=False)
+    mocker.patch("app.celery.scheduled_tasks.get_letter_attachment_keys", return_value=[])
     mock_create_ticket = mocker.spy(NotifySupportTicket, "__init__")
     mock_celery = mocker.patch("app.celery.scheduled_tasks.notify_celery.send_task")
     mock_send_ticket_to_zendesk = mocker.patch(
@@ -120,7 +121,10 @@ def test_check_if_letters_still_pending_virus_check_restarts_scan_for_stuck_lett
     mock_file_exists.assert_called_once_with("test-letters-scan", expected_filename)
 
     mock_celery.assert_called_once_with(
-        name=TaskNames.SCAN_FILE, kwargs={"filename": expected_filename}, queue=QueueNames.ANTIVIRUS
+        name=TaskNames.SCAN_FILE,
+        kwargs={"filename": expected_filename},
+        queue=QueueNames.ANTIVIRUS,
+        MessageGroupId=str(sample_letter_template.service_id),
     )
 
     assert mock_create_ticket.called is False
@@ -160,7 +164,12 @@ def test_check_for_missing_rows_in_completed_jobs(mocker, sample_email_template,
         )
     ]
     assert mock_save_email.mock_calls == [
-        mock.call((str(job.service_id), "some-uuid", "something_encoded"), {}, queue="database-tasks")
+        mock.call(
+            (str(job.service_id), "some-uuid", "something_encoded"),
+            {},
+            queue="database-tasks",
+            MessageGroupId=str(job.service_id),
+        )
     ]
 
 
@@ -201,6 +210,9 @@ def test_check_for_missing_rows_in_completed_jobs_uses_sender_id(
     ]
     assert mock_save_email.mock_calls == [
         mock.call(
-            (str(job.service_id), "some-uuid", "something_encoded"), {"sender_id": fake_uuid}, queue="database-tasks"
+            (str(job.service_id), "some-uuid", "something_encoded"),
+            {"sender_id": fake_uuid},
+            queue="database-tasks",
+            MessageGroupId=str(job.service_id),
         )
     ]

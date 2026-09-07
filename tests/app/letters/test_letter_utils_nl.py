@@ -7,8 +7,11 @@ from app.constants import (
     PRECOMPILED_TEMPLATE_NAME,
 )
 from app.letters.utils import (
+    build_letter_part_filename,
     generate_letter_pdf_filename,
+    get_reference_from_filename,
     upload_letter_pdf,
+    upload_letter_pdf_parts,
 )
 from tests.app.db import create_notification
 
@@ -88,3 +91,81 @@ def test_upload_letter_pdf_uses_postage_from_notification(sample_letter_template
         filedata=b"\x00\x01",
         region=current_app.config["AWS_REGION"],
     )
+
+
+@pytest.mark.parametrize(
+    "part_index, expected_filename",
+    [
+        (0, "NOTIFY.FOO.D.1.C.20171204172900.PDF"),
+        (1, "NOTIFY.FOO.D.1.C.20171204172900.PART2.PDF"),
+        (2, "NOTIFY.FOO.D.1.C.20171204172900.PART3.PDF"),
+    ],
+)
+def test_build_letter_part_filename(part_index, expected_filename):
+    base_filename = "NOTIFY.FOO.D.1.C.20171204172900.PDF"
+
+    assert build_letter_part_filename(base_filename, part_index) == expected_filename
+
+
+@pytest.mark.parametrize("part_index", [0, 1, 2])
+def test_build_letter_part_filename_preserves_reference_position(part_index):
+    base_filename = "NOTIFY.ABCDEF1234567890.D.1.C.20171204172900.PDF"
+
+    part_filename = build_letter_part_filename(base_filename, part_index)
+
+    assert get_reference_from_filename(part_filename) == "ABCDEF1234567890"
+    assert get_reference_from_filename(base_filename) == "ABCDEF1234567890"
+
+
+def test_upload_letter_pdf_parts_uploads_all_parts_with_part_suffixes(sample_letter_notification, mocker):
+    mock_s3 = mocker.patch("app.letters.utils.s3upload")
+
+    filenames = upload_letter_pdf_parts(
+        sample_letter_notification, [b"\x00\x01", b"\x00\x02", b"\x00\x03"], precompiled=True
+    )
+
+    base_filename = generate_letter_pdf_filename(
+        reference=sample_letter_notification.reference,
+        created_at=sample_letter_notification.created_at,
+        ignore_folder=True,
+        postage=sample_letter_notification.postage,
+    )
+    assert filenames == [
+        base_filename,
+        build_letter_part_filename(base_filename, 1),
+        build_letter_part_filename(base_filename, 2),
+    ]
+    assert mock_s3.call_args_list == [
+        mocker.call(
+            bucket_name=current_app.config["S3_BUCKET_LETTERS_SCAN"],
+            file_location=filenames[0],
+            filedata=b"\x00\x01",
+            region=current_app.config["AWS_REGION"],
+        ),
+        mocker.call(
+            bucket_name=current_app.config["S3_BUCKET_LETTERS_SCAN"],
+            file_location=filenames[1],
+            filedata=b"\x00\x02",
+            region=current_app.config["AWS_REGION"],
+        ),
+        mocker.call(
+            bucket_name=current_app.config["S3_BUCKET_LETTERS_SCAN"],
+            file_location=filenames[2],
+            filedata=b"\x00\x03",
+            region=current_app.config["AWS_REGION"],
+        ),
+    ]
+
+
+def test_upload_letter_pdf_parts_single_part_matches_legacy_filename(sample_letter_notification, mocker):
+    mocker.patch("app.letters.utils.s3upload")
+
+    filenames = upload_letter_pdf_parts(sample_letter_notification, [b"\x00\x01"], precompiled=True)
+
+    legacy_filename = generate_letter_pdf_filename(
+        reference=sample_letter_notification.reference,
+        created_at=sample_letter_notification.created_at,
+        ignore_folder=True,
+        postage=sample_letter_notification.postage,
+    )
+    assert filenames == [legacy_filename]

@@ -1,6 +1,8 @@
 import json
 
 import pytest
+import requests_mock
+from freezegun import freeze_time
 
 from app.constants import EMAIL_TYPE, LETTER_TYPE, SMS_TYPE
 from app.models import Template, TemplateHistory
@@ -10,6 +12,44 @@ from tests.app.db import (
     create_service,
     create_template,
 )
+from tests.conftest import set_config_values
+
+
+@freeze_time("2012-12-12")
+@pytest.mark.parametrize("letter_address_placement", ["50mm", "60mm"])
+def test_preview_letter_template_by_id_includes_letter_address_placement(
+    notify_api,
+    sample_letter_notification,
+    admin_request,
+    mock_onwards_request_headers,
+    letter_address_placement,
+):
+    sample_letter_notification.service.letter_address_placement = letter_address_placement
+
+    with set_config_values(
+        notify_api,
+        {
+            "TEMPLATE_PREVIEW_API_HOST": "http://localhost/notifications-template-preview",
+            "TEMPLATE_PREVIEW_API_KEY": "test-key",
+        },
+    ):
+        with requests_mock.Mocker() as request_mock:
+            mock_post = request_mock.post(
+                "http://localhost/notifications-template-preview/preview.pdf",
+                content=b"\x00\x01",
+                headers={"X-pdf-page-count": "1", "some-onwards": "request-headers"},
+                status_code=200,
+            )
+
+            admin_request.get(
+                "template.preview_letter_template_by_notification_id",
+                service_id=sample_letter_notification.service_id,
+                notification_id=sample_letter_notification.id,
+                file_type="pdf",
+            )
+
+            post_json = mock_post.last_request.json()
+            assert post_json["letter_address_placement"] == letter_address_placement
 
 
 @pytest.mark.parametrize(

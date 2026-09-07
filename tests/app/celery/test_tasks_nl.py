@@ -271,8 +271,10 @@ def test_should_process_letter_job(sample_letter_job, mocker, mock_celery_task_n
                         {},
                     )
                 ],
+                False,
             ),
             queue="job-tasks",
+            MessageGroupId=None,
         )
     ]
 

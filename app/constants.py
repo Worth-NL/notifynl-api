@@ -18,7 +18,6 @@ NOTIFICATION_RETURNED_LETTER = "returned-letter"
 
 # Raw notification status values grouped into types
 NOTIFICATION_STATUS_TYPES_FAILED = [
-    # if changing this group, update ix_notifications_failed_service_id_composite to match
     NOTIFICATION_TECHNICAL_FAILURE,
     NOTIFICATION_TEMPORARY_FAILURE,
     NOTIFICATION_PERMANENT_FAILURE,
@@ -48,6 +47,20 @@ NOTIFICATION_STATUS_TYPES_BILLABLE = [
     NOTIFICATION_PERMANENT_FAILURE,
     NOTIFICATION_RETURNED_LETTER,
 ]
+
+# Statuses that are a permanent end state for a messagebox notification (either
+# a confirmed delivery or a non-retryable failure). Deliberately a dedicated
+# list rather than reusing NOTIFICATION_STATUS_TYPES_COMPLETED above, which
+# omits NOTIFICATION_VIRUS_SCAN_FAILED and includes statuses that don't apply
+# to messagebox (e.g. NOTIFICATION_RETURNED_LETTER). Used to wipe the BSN
+# (Notification.to) once a messagebox notification's outcome is definitive --
+# see app/dao/notifications_dao.py::_update_notification_status.
+MESSAGEBOX_TERMINAL_STATUSES = [
+    NOTIFICATION_DELIVERED,
+    NOTIFICATION_PERMANENT_FAILURE,
+    NOTIFICATION_TECHNICAL_FAILURE,
+    NOTIFICATION_VIRUS_SCAN_FAILED,
+]
 NOTIFICATION_STATUS_TYPES_BILLABLE_SMS = [
     NOTIFICATION_SENDING,
     NOTIFICATION_SENT,  # internationally
@@ -72,6 +85,12 @@ NOTIFICATION_STATUS_TYPES_LETTERS_NEVER_SENT = [
 # we don't really have a concept of billable emails - however the ft billing table only includes emails that we have
 # actually sent.
 NOTIFICATION_STATUS_TYPES_SENT_EMAILS = [
+    NOTIFICATION_SENDING,
+    NOTIFICATION_DELIVERED,
+    NOTIFICATION_TEMPORARY_FAILURE,
+    NOTIFICATION_PERMANENT_FAILURE,
+]
+NOTIFICATION_STATUS_TYPES_SENT_MESSAGEBOX = [
     NOTIFICATION_SENDING,
     NOTIFICATION_DELIVERED,
     NOTIFICATION_TEMPORARY_FAILURE,
@@ -293,6 +312,10 @@ BRANDING_ORG = "org"
 BRANDING_BOTH = "both"
 BRANDING_ORG_BANNER = "org_banner"
 BRANDING_TYPES = [BRANDING_ORG, BRANDING_BOTH, BRANDING_ORG_BANNER]
+BRANDING_ALIGNMENT_LEFT = "left"
+BRANDING_ALIGNMENT_CENTER = "center"
+BRANDING_ALIGNMENT_RIGHT = "right"
+BRANDING_ALIGNMENTS = [BRANDING_ALIGNMENT_LEFT, BRANDING_ALIGNMENT_CENTER, BRANDING_ALIGNMENT_RIGHT]
 
 # API Keys
 KEY_TYPE_NORMAL = "normal"
@@ -337,7 +360,7 @@ LETTER_TEST_API_FILENAME = "test letter submitted via api"
 
 # Miscellaneous
 MOBILE_TYPE = "mobile"
-HIGH_VOLUME_SERVICE_THRESHOLD = 400_000
+HIGH_VOLUME_SERVICE_THRESHOLD = 300_000
 
 # Guest lists
 GUEST_LIST_RECIPIENT_TYPE = [MOBILE_TYPE, EMAIL_TYPE]
@@ -402,3 +425,13 @@ REPORT_REQUEST_STATUS_TYPES = [
 
 # Request report types
 NOTIFICATION_REPORT = "notifications_report"
+
+NOTIFY_RESEARCH_SERVICE_ID = "6c335bf6-ea00-45f1-a40c-6612c7639386"
+NOTIFY_FEATURES_AND_IMPROVEMENTS_SERVICE_ID = "2242f811-1027-44c0-b7d1-1459823d6740"
+
+# Rate limit bucket sizes
+TOKEN_BUCKET_MAX = 1_000
+TOKEN_BUCKET_MIN = 0
+
+# Date and time
+SECONDS_IN_1_MINUTE = 60

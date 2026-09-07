@@ -15,7 +15,7 @@ from notifications_utils.clients.zendesk.zendesk_client import (
 )
 from notifications_utils.timezones import convert_utc_to_bst
 from redis.exceptions import LockError
-from sqlalchemy import and_, between
+from sqlalchemy import and_, between, text
 from sqlalchemy.exc import SQLAlchemyError
 
 from app import db, dvla_client, notify_celery, redis_store, statsd_client, zendesk_client
@@ -29,7 +29,7 @@ from app.celery.tasks import (
     process_job_row,
 )
 from app.clients.letter.dvla import DvlaRetryableException
-from app.config import QueueNames, TaskNames
+from app.config import QueueNames, TaskNames, TaskNamesNL
 from app.constants import (
     EMAIL_TYPE,
     JOB_STATUS_ERROR,
@@ -53,6 +53,7 @@ from app.dao.invited_user_dao import (
 from app.dao.jobs_dao import (
     dao_set_scheduled_jobs_to_pending,
     dao_update_job,
+    find_jobs_that_completed_processing,
     find_jobs_with_missing_rows,
     find_missing_row_for_job,
 )
@@ -74,9 +75,10 @@ from app.dao.services_dao import (
     dao_find_services_sending_to_tv_numbers,
     dao_find_services_with_high_failure_rates,
 )
+from app.dao.template_email_files_dao import dao_get_template_email_files_by_template_id
 from app.dao.templates_dao import dao_get_template_by_id
 from app.dao.users_dao import delete_codes_older_created_more_than_a_day_ago, get_users_for_research
-from app.letters.utils import generate_letter_pdf_filename
+from app.letters.utils import generate_letter_pdf_filename, get_letter_attachment_keys
 from app.models import (
     AnnualBilling,
     EmailBranding,
@@ -95,8 +97,12 @@ from app.utils import get_london_midnight_in_utc
 def run_scheduled_jobs():
     try:
         for job in dao_set_scheduled_jobs_to_pending():
-            process_job.apply_async([str(job.id)], queue=QueueNames.JOBS)
-            current_app.logger.info("Job ID %s added to process job queue", job.id)
+            process_job.apply_async(
+                [str(job.id)],
+                queue=QueueNames.JOBS,
+                MessageGroupId=str(job.service_id),
+            )
+            current_app.logger.info("Job ID %s added to process job queue", job.id, extra={"job_id": job.id})
     except SQLAlchemyError:
         current_app.logger.exception("Failed to run scheduled jobs")
         raise
@@ -107,8 +113,18 @@ def delete_verify_codes():
     try:
         start = datetime.utcnow()
         deleted = delete_codes_older_created_more_than_a_day_ago()
+
+        base_params = {
+            "duration": datetime.utcnow() - start,
+            "deleted_record_count": deleted,
+        }
         current_app.logger.info(
-            "Delete job started %s finished %s deleted %s verify codes", start, datetime.utcnow(), deleted
+            "Delete job took %(duration)s and deleted %(deleted_record_count)s verify codes",
+            base_params,
+            extra={
+                **base_params,
+                "duration": base_params["duration"].total_seconds(),
+            },
         )
     except SQLAlchemyError:
         current_app.logger.exception("Failed to delete verify codes")
@@ -121,8 +137,18 @@ def delete_invitations():
         start = datetime.utcnow()
         deleted_invites = delete_invitations_created_more_than_two_days_ago()
         deleted_invites += delete_org_invitations_created_more_than_two_days_ago()
+
+        base_params = {
+            "duration": datetime.utcnow() - start,
+            "deleted_record_count": deleted_invites,
+        }
         current_app.logger.info(
-            "Delete job started %s finished %s deleted %s invitations", start, datetime.utcnow(), deleted_invites
+            "Delete job took %(duration)s and deleted %(deleted_record_count)s invitations",
+            base_params,
+            extra={
+                **base_params,
+                "duration": base_params["duration"].total_seconds(),
+            },
         )
     except SQLAlchemyError:
         current_app.logger.exception("Failed to delete invitations")
@@ -147,7 +173,11 @@ def switch_current_sms_provider_on_slow_delivery():
     if len(set(slow_delivery_notifications.values())) != 1:
         for provider_name, is_slow in slow_delivery_notifications.items():
             if is_slow:
-                current_app.logger.warning("Slow delivery notifications detected for provider %s", provider_name)
+                current_app.logger.warning(
+                    "Slow delivery notifications detected for provider %s",
+                    provider_name,
+                    extra={"provider_name": provider_name},
+                )
                 dao_reduce_sms_provider_priority(provider_name, time_threshold=timedelta(minutes=5))
 
 
@@ -275,46 +305,46 @@ def check_job_status():
         job.job_status = JOB_STATUS_ERROR
         dao_update_job(job)
         job_ids.append(str(job.id))
+        current_app.logger.warning("Job %s has not completed", job.id, extra={"job_id": job.id})
 
     if job_ids:
-        current_app.logger.info("Job(s) %s have not completed.", job_ids)
         process_incomplete_jobs.apply_async([job_ids], queue=QueueNames.JOBS)
 
 
 @notify_celery.task(name="replay-created-notifications")
-def replay_created_notifications():
-    # if the notification has not be send after 1 hour, then try to resend.
-    resend_created_notifications_older_than = 60 * 60
+def replay_created_notifications() -> None:
+    # if the notification has not be sent after 1 hour, then try to resend.
+    grace_period = timedelta(hours=1)
     for notification_type in (EMAIL_TYPE, SMS_TYPE):
-        notifications_to_resend = notifications_not_yet_sent(resend_created_notifications_older_than, notification_type)
-
-        if len(notifications_to_resend) > 0:
-            current_app.logger.info(
-                (
-                    "Sending %(num)s %(type)s notifications to the delivery queue because the "
-                    "notification status was created."
-                ),
-                {"num": len(notifications_to_resend), "type": notification_type},
-            )
+        notifications_to_resend = notifications_not_yet_sent(
+            grace_period, notification_type, session=db.session_bulk, inner_retry_attempts=2
+        )
 
         for n in notifications_to_resend:
+            extra = {"notification_id": n.id, "notification_status": n.status}
+            current_app.logger.warning(
+                "Re-sending notification %(notification_id)s to the delivery queue because the "
+                "notification status is %(notification_status)r and it is over an hour old",
+                extra,
+                extra=extra,
+            )
             send_notification_to_queue(notification=n)
 
-    # if the letter has not be send after an hour, then create a zendesk ticket
-    letters = letters_missing_from_sending_bucket(resend_created_notifications_older_than)
+    # if the letter has not be sent after an hour, then create a zendesk ticket
+    letters = letters_missing_from_sending_bucket(grace_period, session=db.session_bulk, inner_retry_attempts=2)
 
-    if len(letters) > 0:
-        current_app.logger.info(
-            (
-                "%(num)s letters were created over an hour ago, "
-                "but do not have an updated_at timestamp or billable units.\n"
-                "Creating app.celery.letters_pdf_tasks.create_letters tasks to upload letter to S3 "
-                "and update notifications for the following notification ids:\n%(ids)s"
-            ),
-            {"num": len(letters), "ids": [x.id for x in letters]},
+    for letter in letters:
+        current_app.logger.warning(
+            "Letter notification %s is over an hour old but does not have an updated_at timestamp or "
+            "billable units: (re)creating get-pdf-for-templated-letter task",
+            letter.id,
+            extra={"notification_id": letter.id},
         )
-        for letter in letters:
-            get_pdf_for_templated_letter.apply_async([str(letter.id)], queue=QueueNames.CREATE_LETTERS_PDF)
+        get_pdf_for_templated_letter.apply_async(
+            [str(letter.id)],
+            queue=QueueNames.CREATE_LETTERS_PDF,
+            MessageGroupId=str(letter.service_id),
+        )
 
 
 @notify_celery.task(name="check-if-letters-still-pending-virus-check")
@@ -330,14 +360,37 @@ def check_if_letters_still_pending_virus_check(max_minutes_ago_to_check: int = 3
 
         if s3.file_exists(current_app.config["S3_BUCKET_LETTERS_SCAN"], filename):
             current_app.logger.warning(
-                "Letter id %s got stuck in pending-virus-check. Sending off for scan again.", letter.id
+                "Letter notification %s got stuck in pending-virus-check. Sending off for scan again.",
+                letter.id,
+                extra={"notification_id": letter.id},
             )
             notify_celery.send_task(
                 name=TaskNames.SCAN_FILE,
                 kwargs={"filename": filename},
                 queue=QueueNames.ANTIVIRUS,
+                MessageGroupId=str(letter.service_id),
+            )
+        elif get_letter_attachment_keys(letter.id):
+            # [NOTIFYNL] a templated letter with ad-hoc attachments has no single canonical
+            # scan-bucket file to check above - it's keyed by notification id instead (see
+            # upload_letter_attachments/get_letter_attachment_keys). Without this branch,
+            # such a letter would always miss the check above and fall straight into the
+            # Zendesk alert below with no auto-retry, unlike every other letter type.
+            current_app.logger.warning(
+                "Letter id %s got stuck in pending-virus-check (ad-hoc attachments). Sending off for scan again.",
+                letter.id,
+            )
+            notify_celery.send_task(
+                name=TaskNamesNL.SCAN_LETTER_ATTACHMENTS,
+                kwargs={"notification_id": str(letter.id)},
+                queue=QueueNames.ANTIVIRUS,
             )
         else:
+            current_app.logger.warning(
+                "Letter notification %s is stuck in pending-virus-check and we can't find it in the scan bucket",
+                letter.id,
+                extra={"notification_id": letter.id},
+            )
             letters.append(letter)
 
     if len(letters) > 0:
@@ -349,7 +402,7 @@ def check_if_letters_still_pending_virus_check(max_minutes_ago_to_check: int = 3
 
             Notifications: {sorted(letter_ids)}"""
 
-        if current_app.should_send_zendesk_alerts:
+        if current_app.should_send_zendesk_alerts:  # type: ignore[attr-defined]
             ticket = NotifySupportTicket(
                 subject=f"[{current_app.config['NOTIFY_ENVIRONMENT']}] Letters still pending virus check",
                 message=msg,
@@ -357,11 +410,7 @@ def check_if_letters_still_pending_virus_check(max_minutes_ago_to_check: int = 3
                 notify_ticket_type=NotifyTicketType.TECHNICAL,
                 notify_task_type="notify_task_letters_pending_scan",
             )
-            zendesk_client.send_ticket_to_zendesk(ticket)
-            current_app.logger.error(
-                "Letters still pending virus check",
-                extra={"number_of_letters": len(letters), "notification_ids": sorted(letter_ids)},
-            )
+            zendesk_client.send_ticket_to_zendesk(ticket)  # type: ignore[attr-defined]
 
 
 @notify_celery.task(name="check-if-letters-still-in-created")
@@ -385,9 +434,13 @@ def check_if_letters_still_in_created():
                 notify_task_type="notify_task_letters_created_status",
             )
             zendesk_client.send_ticket_to_zendesk(ticket)
+
+            extra = {"notification_count": len(letters)}
             current_app.logger.error(
-                "%s letters created before 17:30 yesterday still have 'created' status",
-                len(letters),
+                "%(notification_count)s letter notifications created before 17:30 yesterday "
+                "still have 'created' status",
+                extra,
+                extra=extra,
             )
 
 
@@ -407,8 +460,24 @@ def check_for_missing_rows_in_completed_jobs():
             _, task_args_kwargs = get_id_task_args_kwargs_for_job_row(
                 row, template, job, job.service, sender_id=sender_id
             )
-            current_app.logger.info("Processing missing row: %s for job: %s", row_to_process.missing_row, job.id)
-            process_job_row(template.template_type, task_args_kwargs)
+            has_files = bool(dao_get_template_email_files_by_template_id(job.template_id))
+            extra = {"job_row_number": row_to_process.missing_row, "job_id": job.id}
+            current_app.logger.info("Processing missing row %(job_row_number)s for job %(job_id)s", extra, extra=extra)
+            process_job_row(
+                template.template_type,
+                task_args_kwargs,
+                has_files=has_files,
+                message_group_id=str(job.service_id),
+            )
+
+
+@notify_celery.task(name="update-status-of-fully-processed-jobs")
+def update_status_of_fully_processed_jobs():
+    fully_processed_jobs = find_jobs_that_completed_processing()
+
+    for job in fully_processed_jobs:
+        job.job_status = JOB_STATUS_FINISHED_ALL_NOTIFICATIONS_CREATED
+        dao_update_job(job)
 
 
 @notify_celery.task(name="check-for-services-with-high-failure-rates-or-sending-to-tv-numbers")
@@ -417,8 +486,16 @@ def check_for_services_with_high_failure_rates_or_sending_to_tv_numbers():
     end_date = datetime.utcnow()
     message = ""
 
-    services_with_failures = dao_find_services_with_high_failure_rates(start_date=start_date, end_date=end_date)
-    services_sending_to_tv_numbers = dao_find_services_sending_to_tv_numbers(start_date=start_date, end_date=end_date)
+    services_with_failures = dao_find_services_with_high_failure_rates(
+        start_date=start_date,
+        end_date=end_date,
+        retry_attempts=2,
+    )
+    services_sending_to_tv_numbers = dao_find_services_sending_to_tv_numbers(
+        start_date=start_date,
+        end_date=end_date,
+        retry_attempts=2,
+    )
 
     if services_with_failures:
         message += (
@@ -426,39 +503,34 @@ def check_for_services_with_high_failure_rates_or_sending_to_tv_numbers():
             f"for sms messages in last 24 hours:\n"
         )
         for service in services_with_failures:
-            service_dashboard = "{}/services/{}".format(
-                current_app.config["ADMIN_BASE_URL"],
-                str(service.service_id),
-            )
+            service_dashboard = f"{current_app.config['ADMIN_BASE_URL']}/services/{service.service_id}"
             message += f"service: {service_dashboard} failure rate: {service.permanent_failure_rate},\n"
 
-        current_app.logger.error(
-            "%s services have had a high permanent-failure rate for text messages in the last 24 hours.",
-            len(services_with_failures),
-            extra={"service_ids": [service.service_id for service in services_with_failures]},
-        )
+            current_app.logger.warning(
+                "Service %s has had a high permanent-failure rate (%.4g) for text messages in the last 24 hours",
+                service.service_id,
+                service.permanent_failure_rate,
+                extra={"service_id": service.service_id, "permanent_failure_rate": service.permanent_failure_rate},
+            )
 
-    elif services_sending_to_tv_numbers:
+    if services_sending_to_tv_numbers:
         message += (
             f"{len(services_sending_to_tv_numbers)} service(s) have sent over 500 sms messages to "
             f"tv numbers in last 24 hours:\n"
         )
         for service in services_sending_to_tv_numbers:
-            service_dashboard = "{}/services/{}".format(
-                current_app.config["ADMIN_BASE_URL"],
-                str(service.service_id),
-            )
+            service_dashboard = f"{current_app.config['ADMIN_BASE_URL']}/services/{service.service_id}"
             message += f"service: {service_dashboard} count of sms to tv numbers: {service.notification_count},\n"
 
-        current_app.logger.error(
-            "%s services have sent over 500 text messages to tv numbers in the last 24 hours.",
-            len(services_sending_to_tv_numbers),
-            extra={
-                "service_ids_and_number_sent": {
-                    service.service_id: service.notification_count for service in services_sending_to_tv_numbers
-                }
-            },
-        )
+            current_app.logger.warning(
+                "Service %s has sent %s text messages to tv numbers in the last 24 hours",
+                service.service_id,
+                service.notification_count,
+                extra={
+                    "service_id": service.service_id,
+                    "notification_count": service.notification_count,
+                },
+            )
 
     if services_with_failures or services_sending_to_tv_numbers:
         if current_app.should_send_zendesk_alerts:
@@ -484,7 +556,13 @@ def delete_old_records_from_events_table():
 
     deleted_count = event_query.delete()
 
-    current_app.logger.info("Deleted %s historical events from before %s.", deleted_count, delete_events_before)
+    extra = {
+        "deleted_record_count": deleted_count,
+        "delete_events_before": delete_events_before,
+    }
+    current_app.logger.info(
+        "Deleting %(deleted_record_count)s historical events from before %(delete_events_before)s.", extra, extra=extra
+    )
 
     db.session.commit()
 
@@ -511,7 +589,13 @@ def zendesk_new_email_branding_report():
         .all()
     )
 
-    current_app.logger.info("%s new email brands to review since %s.", len(new_email_brands), previous_weekday)
+    extra = {
+        "email_brand_count": len(new_email_brands),
+        "review_since": previous_weekday,
+    }
+    current_app.logger.info(
+        "%(email_brand_count)s new email brands to review since %(review_since)s.", extra, extra=extra
+    )
 
     if not new_email_brands:
         return
@@ -548,15 +632,23 @@ def zendesk_new_email_branding_report():
         zendesk_client.send_ticket_to_zendesk(ticket)
 
 
-@notify_celery.task(name="check-for-low-available-inbound-sms-numbers")
+@notify_celery.task(bind=True, name="check-for-low-available-inbound-sms-numbers")
 @cronitor("check-for-low-available-inbound-sms-numbers")
-def check_for_low_available_inbound_sms_numbers():
+def check_for_low_available_inbound_sms_numbers(self):
     if not current_app.should_send_zendesk_alerts:
-        current_app.logger.info("Skipping report run on in %s", current_app.config["NOTIFY_ENVIRONMENT"])
+        current_app.logger.info(
+            "Not running %s - configured not to send zendesk alerts",
+            self.name,
+            extra={"celery_task": self.name},
+        )
         return
 
     num_available_inbound_numbers = len(dao_get_available_inbound_numbers())
-    current_app.logger.info("There are %s available inbound SMS numbers.", num_available_inbound_numbers)
+    current_app.logger.info(
+        "There are %s available inbound SMS numbers.",
+        num_available_inbound_numbers,
+        extra={"inbound_number_count": num_available_inbound_numbers},
+    )
     if num_available_inbound_numbers > current_app.config["LOW_INBOUND_SMS_NUMBER_THRESHOLD"]:
         return
 
@@ -577,12 +669,16 @@ def check_for_low_available_inbound_sms_numbers():
     zendesk_client.send_ticket_to_zendesk(ticket)
 
 
-@notify_celery.task(name="weekly-dwp-report")
-def weekly_dwp_report():
+@notify_celery.task(bind=True, name="weekly-dwp-report")
+def weekly_dwp_report(self):
     report_config = current_app.config["ZENDESK_REPORTING"].get("weekly-dwp-report")
 
     if not current_app.should_send_zendesk_alerts:
-        current_app.logger.info("Skipping DWP report run in %s", current_app.config["NOTIFY_ENVIRONMENT"])
+        current_app.logger.info(
+            "Not running %s - configured not to send zendesk alerts",
+            self.name,
+            extra={"celery_task": self.name},
+        )
         return
 
     if (
@@ -591,12 +687,12 @@ def weekly_dwp_report():
         or not report_config.get("query")
         or not report_config.get("ticket_id")
     ):
-        current_app.logger.info("Skipping DWP report run - invalid configuration.")
+        current_app.logger.warning("Skipping DWP report run - invalid configuration.")
         return
 
     attachments = []
     for csv_name, query in report_config["query"].items():
-        result = db.session.execute(query)
+        result = db.session.execute(text(query))
         headers = result.keys()
         rows = result.fetchall()
 
@@ -622,15 +718,17 @@ def weekly_dwp_report():
     )
 
 
-@notify_celery.task(name="weekly-user-research-email")
-def weekly_user_research_email():
+@notify_celery.task(bind=True, name="weekly-user-research-email")
+def weekly_user_research_email(self):
     """
     Runs every Wednesday and finds all active users who were created the week starting on Monday 16 days ago.
     These users get emailed inviting them to give feedback on how they have found getting started with Notify.
     """
     if not current_app.should_send_weekly_user_research_email:
         current_app.logger.info(
-            "Skipping weekly user research email run in %s", current_app.config["NOTIFY_ENVIRONMENT"]
+            "Not running %s - configured not to send weekly user research email",
+            self.name,
+            extra={"celery_task": self.name},
         )
         return
 
@@ -642,7 +740,10 @@ def weekly_user_research_email():
 
     users = get_users_for_research(start_date=start_date, end_date=end_date)
 
-    current_app.logger.info("Sending weekly user research email to %s users", len(users))
+    extra = {
+        "user_count": len(users),
+    }
+    current_app.logger.info("Sending weekly user research email to %(user_count)s users", extra, extra=extra)
 
     for user in users:
         saved_notification = persist_notification(

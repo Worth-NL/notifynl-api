@@ -4,14 +4,13 @@ import string
 import sys
 import time
 from collections import namedtuple
-from datetime import datetime
+from datetime import UTC, datetime
 from unittest.mock import Mock
 
 import boto3
 import freezegun
 import jwt
 import pytest
-import pytz
 import requests
 import trustme
 from flask import current_app
@@ -172,13 +171,13 @@ def test_jwt_token_calls_authenticate_if_expiry_time_passed(dvla_client, rmock):
     dvla_client._jwt_token = jwt.encode(payload={"exp": prev_token_expiry_time}, key="foo")
     dvla_client._jwt_expires_at = prev_token_expiry_time
 
-    with freezegun.freeze_time(datetime.fromtimestamp(sixty_one_seconds_before_expiry, tz=pytz.utc)):
+    with freezegun.freeze_time(datetime.fromtimestamp(sixty_one_seconds_before_expiry, tz=UTC)):
         assert dvla_client.jwt_token == old_token
 
     endpoint = "https://test-dvla-api.com/thirdparty-access/v1/authenticate"
     mock_authenticate = rmock.request("POST", endpoint, json={"id-token": next_token}, status_code=200)
 
-    with freezegun.freeze_time(datetime.fromtimestamp(fifty_nine_seconds_before_expiry, tz=pytz.utc)):
+    with freezegun.freeze_time(datetime.fromtimestamp(fifty_nine_seconds_before_expiry, tz=UTC)):
         assert dvla_client.jwt_token != old_token
         assert dvla_client._jwt_expires_at == one_hour_later
 
@@ -417,6 +416,7 @@ def test_format_create_print_job_json_builds_json_body_to_create_print_job(dvla_
     formatted_json = dvla_client._format_create_print_job_json(
         notification_id="my_notification_id",
         reference="ABCDEFGHIJKL",
+        client_reference="",
         address=PostalAddress("A. User\nThe road\nCity\nSW1 1AA"),
         postage="second",
         service_id="my_service_id",
@@ -430,6 +430,7 @@ def test_format_create_print_job_json_builds_json_body_to_create_print_job(dvla_
         "standardParams": {
             "jobType": "NOTIFY",
             "templateReference": "NOTIFY",
+            "clientReference": "",
             "businessIdentifier": "ABCDEFGHIJKL",
             "recipientName": "A. User",
             "address": {"unstructuredAddress": {"line1": "The road", "line2": "City", "postcode": "SW1 1AA"}},
@@ -447,6 +448,7 @@ def test_format_create_print_job_json_adds_callback_key_if_url_provided(dvla_cli
     formatted_json = dvla_client._format_create_print_job_json(
         notification_id="my_notification_id",
         reference="ABCDEFGHIJKL",
+        client_reference="",
         address=PostalAddress("A. User\nThe road\nCity\nSW1 1AA"),
         postage="second",
         service_id="my_service_id",
@@ -527,6 +529,7 @@ def test_format_create_print_job_json_formats_international_address_lines(dvla_c
     formatted_json = dvla_client._format_create_print_job_json(
         notification_id="my_notification_id",
         reference="ABCDEFGHIJKL",
+        client_reference="",
         address=address,
         postage="europe",
         service_id="my_service_id",
@@ -549,6 +552,7 @@ def test_send_domestic_letter(dvla_client, dvla_authenticate, rmock):
     response = dvla_client.send_letter(
         notification_id="noti_id",
         reference="ABCDEFGHIJKL",
+        client_reference="",
         address=PostalAddress("recipient\ncity\npostcode"),
         postage="second",
         service_id="service_id",
@@ -565,6 +569,7 @@ def test_send_domestic_letter(dvla_client, dvla_authenticate, rmock):
             "jobType": "NOTIFY",
             "templateReference": "NOTIFY",
             "businessIdentifier": "ABCDEFGHIJKL",
+            "clientReference": "",
             "recipientName": "recipient",
             "address": {"unstructuredAddress": {"line1": "city", "postcode": "postcode"}},
         },
@@ -600,6 +605,7 @@ def test_send_international_letter(dvla_client, dvla_authenticate, postage, desp
     response = dvla_client.send_letter(
         notification_id="noti_id",
         reference="ABCDEFGHIJKL",
+        client_reference="",
         address=PostalAddress("recipient\nline1\nline2\ncountry"),
         postage=postage,
         service_id="service_id",
@@ -616,6 +622,7 @@ def test_send_international_letter(dvla_client, dvla_authenticate, postage, desp
             "jobType": "NOTIFY",
             "templateReference": "NOTIFY",
             "businessIdentifier": "ABCDEFGHIJKL",
+            "clientReference": "",
             "recipientName": "recipient",
             "address": {"internationalAddress": {"line1": "line1", "line2": "line2", "country": "country"}},
             "despatchMethod": despatch_method,
@@ -694,6 +701,7 @@ def test_send_letter_when_bad_request_error_is_raised(dvla_authenticate, dvla_cl
         dvla_client.send_letter(
             notification_id="1",
             reference="ABCDEFGHIJKL",
+            client_reference="",
             address=PostalAddress("line\nline2\npostcode"),
             postage="second",
             service_id="s_id",
@@ -726,6 +734,7 @@ def test_send_letter_when_auth_error_is_raised(dvla_authenticate, dvla_client, r
         dvla_client.send_letter(
             notification_id="noti_id",
             reference="ABCDEFGHIJKL",
+            client_reference="",
             address=PostalAddress("line\nline2\npostcode"),
             postage="second",
             service_id="s_id",
@@ -762,6 +771,7 @@ def test_send_letter_when_conflict_error_is_raised(dvla_authenticate, dvla_clien
         dvla_client.send_letter(
             notification_id="1",
             reference="ABCDEFGHIJKL",
+            client_reference="",
             address=PostalAddress("line\nline2\npostcode"),
             postage="second",
             service_id="s_id",
@@ -792,6 +802,7 @@ def test_send_letter_when_throttling_error_is_raised(dvla_authenticate, dvla_cli
         dvla_client.send_letter(
             notification_id="1",
             reference="ABCDEFGHIJKL",
+            client_reference="",
             address=PostalAddress("line\nline2\npostcode"),
             postage="second",
             service_id="s_id",
@@ -809,6 +820,7 @@ def test_send_letter_when_5xx_status_code_is_returned(dvla_authenticate, dvla_cl
         dvla_client.send_letter(
             notification_id="1",
             reference="ABCDEFGHIJKL",
+            client_reference="",
             address=PostalAddress("line\nline2\npostcode"),
             postage="second",
             service_id="s_id",
@@ -829,6 +841,7 @@ def test_send_letter_when_connection_error_is_returned(dvla_authenticate, dvla_c
         dvla_client.send_letter(
             notification_id="1",
             reference="ABCDEFGHIJKL",
+            client_reference="",
             address=PostalAddress("line\nline2\npostcode"),
             postage="second",
             service_id="s_id",
@@ -848,6 +861,7 @@ def test_send_letter_when_unknown_exception_is_raised(dvla_authenticate, dvla_cl
         dvla_client.send_letter(
             notification_id="1",
             reference="ABCDEFGHIJKL",
+            client_reference="",
             address=PostalAddress("line\nline2\npostcode"),
             postage="second",
             service_id="s_id",

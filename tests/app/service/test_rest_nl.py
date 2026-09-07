@@ -6,6 +6,40 @@ from flask import url_for
 from tests import create_admin_authorization_header
 
 
+def test_service_letter_address_placement_defaults_to_60mm(sample_service):
+    assert sample_service.letter_address_placement == "60mm"
+
+
+@pytest.mark.parametrize("letter_address_placement", ["50mm", "60mm"])
+def test_update_service_letter_address_placement(client, sample_service, letter_address_placement):
+    data = {"letter_address_placement": letter_address_placement}
+
+    auth_header = create_admin_authorization_header()
+
+    resp = client.post(
+        f"/service/{sample_service.id}",
+        data=json.dumps(data),
+        headers=[("Content-Type", "application/json"), auth_header],
+    )
+    result = resp.json
+    assert resp.status_code == 200
+    assert result["data"]["letter_address_placement"] == letter_address_placement
+
+
+def test_cant_update_service_letter_address_placement_to_invalid_value(client, sample_service):
+    data = {"letter_address_placement": "70mm"}
+
+    auth_header = create_admin_authorization_header()
+
+    resp = client.post(
+        f"/service/{sample_service.id}",
+        data=json.dumps(data),
+        headers=[("Content-Type", "application/json"), auth_header],
+    )
+    assert resp.status_code == 400
+    assert resp.json["message"] == {"letter_address_placement": ["letter_address_placement must be '50mm' or '60mm'"]}
+
+
 def test_create_pdf_letter(mocker, sample_service_full_permissions, client, fake_uuid, notify_user):
     mocker.patch("app.service.send_notification.utils_s3download")
     mocker.patch("app.service.send_notification.get_page_count", return_value=1)

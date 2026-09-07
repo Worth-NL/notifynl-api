@@ -1,28 +1,33 @@
 import base64
 import functools
+import re
 import uuid
 from datetime import datetime
 
 from flask import abort, current_app, jsonify, request
 from gds_metrics import Histogram
+from notifications_utils.formatters import url
+from notifications_utils.insensitive_dict import InsensitiveSet
 
 from app import (
     api_user,
     authenticated_service,
+    db,
     document_download_client,
     notify_celery,
 )
 from app.celery.letters_pdf_tasks import (
     get_pdf_for_templated_letter,
+    process_virus_scan_success_letter_attachments,
     sanitise_letter,
+    sanitise_letter_parts,
 )
 from app.celery.research_mode_tasks import create_fake_letter_callback
-from app.config import QueueNames, TaskNames
+from app.config import QueueNames, TaskNames, TaskNamesNL
 from app.constants import (
     DEFAULT_DOCUMENT_DOWNLOAD_RETENTION_PERIOD,
     EMAIL_TYPE,
-    KEY_TYPE_TEAM,
-    KEY_TYPE_TEST,
+    KEY_TYPE_NORMAL,
     LETTER_TYPE,
     NOTIFICATION_CREATED,
     NOTIFICATION_DELIVERED,
@@ -30,9 +35,8 @@ from app.constants import (
     NOTIFICATION_SENDING,
     SMS_TYPE,
 )
-from app.dao.dao_utils import transaction
 from app.dao.templates_dao import get_precompiled_letter_template
-from app.letters.utils import upload_letter_pdf
+from app.letters.utils import upload_letter_attachments, upload_letter_pdf, upload_letter_pdf_parts
 from app.notifications.process_letter_notifications import (
     create_letter_notification,
 )
@@ -44,6 +48,7 @@ from app.notifications.process_notifications import (
 from app.notifications.validators import (
     check_if_service_can_send_files_by_email,
     check_is_message_too_long,
+    check_letter_attachments_within_size_limit,
     check_rate_limiting,
     check_service_email_reply_to_id,
     check_service_has_permission,
@@ -81,7 +86,7 @@ def post_precompiled_letter_notification():
     check_rate_limiting(authenticated_service, api_user, notification_type=LETTER_TYPE)
 
     request_json = get_valid_json()
-    if "content" not in (request_json or {}):
+    if "content" not in (request_json or {}) and "contents" not in (request_json or {}):
         return post_notification(LETTER_TYPE)
 
     form = validate(request_json, post_precompiled_letter_request)
@@ -125,12 +130,26 @@ def post_notification(notification_type):
 
     check_service_has_permission(authenticated_service, notification_type)
 
+    unsanitised_personalisation = form.get("personalisation", {})
+    personalisation = (
+        _prepare_personalisation_for_post_notification(
+            personalisation=unsanitised_personalisation, sanitise_content_for=form.get("sanitise_content_for", [])
+        )
+        if notification_type == "email"
+        else unsanitised_personalisation
+    )
+
+    sanitised_content = (
+        _get_sanitised_content(unsanitised_personalisation, personalisation) if notification_type == "email" else {}
+    )
+
     template, template_with_content = validate_template(
-        form["template_id"],
-        form.get("personalisation", {}),
-        authenticated_service,
-        notification_type,
+        template_id=form["template_id"],
+        personalisation=personalisation,
+        service=authenticated_service,
+        notification_type=notification_type,
         check_char_count=False,
+        recipient=form.get("email_address"),
     )
 
     reply_to = get_reply_to_text(notification_type, form, template)
@@ -151,11 +170,56 @@ def post_notification(notification_type):
             template=template,
             template_with_content=template_with_content,
             service=authenticated_service,
+            personalisation=personalisation,
             reply_to_text=reply_to,
             unsubscribe_link=form.get("one_click_unsubscribe_url", None),
         )
 
-    return jsonify(notification), 201
+    return jsonify(notification | sanitised_content), 201
+
+
+def _prepare_personalisation_for_post_notification(personalisation, sanitise_content_for):
+    return {
+        key: sanitise_personalisation_item(value) if key in InsensitiveSet(sanitise_content_for) else value
+        for key, value in personalisation.items()
+    }
+
+
+def sanitise_personalisation_item(value):
+    value = _find_and_sanitise_urls(value)
+    sanitised_value = _escape_markdown_characters(value)
+
+    return sanitised_value
+
+
+def _escape_markdown_characters(value):
+    return re.sub(r"([`*_()\\{}\[\]<>#+\-.!|])", r"\\\1", value, flags=re.M)
+
+
+def _find_and_sanitise_urls(value):
+    return re.sub(url, lambda m: _sanitise_url(m.group()), value)
+
+
+def _sanitise_url(url):
+    return _break_up_link(url) if _could_be_accidental_link(url) else ""
+
+
+def _could_be_accidental_link(link):
+    return re.fullmatch(r"[a-zA-Z0-9\.\-]+", link)
+
+
+def _break_up_link(link):
+    return re.sub(r"\.", ". ", link)
+
+
+def _get_sanitised_content(unsanitised_personalisation, personalisation):
+    return {
+        "sanitised_content": {
+            key: {"unsanitised": unsanitised_personalisation[key], "sanitised": personalisation[key]}
+            for key, value in personalisation.items()
+            if personalisation[key] != unsanitised_personalisation[key]
+        }
+    }
 
 
 def process_sms_or_email_notification(
@@ -165,6 +229,7 @@ def process_sms_or_email_notification(
     template,
     template_with_content,
     service,
+    personalisation,
     reply_to_text=None,
     unsubscribe_link=None,
 ):
@@ -181,7 +246,7 @@ def process_sms_or_email_notification(
     simulated = simulated_recipient(send_to, notification_type)
 
     personalisation, document_download_count = process_document_uploads(
-        form.get("personalisation"),
+        personalisation,
         service,
         send_to=send_to,
         simulated=simulated,
@@ -227,9 +292,14 @@ def process_sms_or_email_notification(
             key_type=api_user.key_type,
             notification_type=notification_type,
             notification_id=notification_id,
+            message_group_id=str(service.id),
         )
     else:
-        current_app.logger.debug("POST simulated notification for id: %s", notification_id)
+        current_app.logger.info(
+            "POST simulated notification for notification %s",
+            notification_id,
+            extra={"notification_id": notification_id},
+        )
 
     return response
 
@@ -253,13 +323,14 @@ def process_document_uploads(personalisation_data, service, send_to: str, simula
     personalisation_data = personalisation_data.copy()
 
     check_if_service_can_send_files_by_email(
-        service_contact_link=authenticated_service.contact_link, service_id=authenticated_service.id
+        service_contact_link=authenticated_service.contact_link,  # type: ignore[attr-defined]
+        service_id=authenticated_service.id,  # type: ignore[attr-defined]
     )
 
     for key in file_keys:
         if simulated:
             personalisation_data[key] = (
-                document_download_client.get_upload_url_for_simulated_email(service.id) + "/test-document"
+                document_download_client.get_upload_url_for_simulated_email(service.id) + "/test-document"  # type: ignore[attr-defined]
             )
         else:
             confirm_email = personalisation_data[key].get("confirm_email_before_download", True)
@@ -270,7 +341,7 @@ def process_document_uploads(personalisation_data, service, send_to: str, simula
 
             filename = personalisation_data[key].get("filename")
 
-            personalisation_data[key] = document_download_client.upload_document(
+            personalisation_data[key] = document_download_client.upload_document(  # type: ignore[attr-defined]
                 service.id,
                 personalisation_data[key]["file"],
                 personalisation_data[key].get("is_csv"),
@@ -282,23 +353,96 @@ def process_document_uploads(personalisation_data, service, send_to: str, simula
     return personalisation_data, len(file_keys)
 
 
+def _decode_letter_attachments(attachments):
+    check_letter_attachments_within_size_limit(attachments)
+    try:
+        return [base64.b64decode(attachment) for attachment in attachments]
+    except ValueError as e:
+        raise BadRequestError(
+            message="Cannot decode letter attachment (invalid base64 encoding)", status_code=400
+        ) from e
+
+
+def _create_templated_letter_notification_with_attachments(
+    *, letter_data, service, template, api_key, status, reply_to_text, updated_at, postage, decoded_attachments
+):
+    try:
+        notification = create_letter_notification(
+            letter_data=letter_data,
+            service=service,
+            template=template,
+            api_key=api_key,
+            status=status,
+            reply_to_text=reply_to_text,
+            updated_at=updated_at,
+            postage=postage,
+            _autocommit=False,
+        )
+        if decoded_attachments:
+            upload_letter_attachments(notification, decoded_attachments)
+        db.session.commit()
+    except Exception:
+        db.session.rollback()
+        raise
+    return notification
+
+
+def _dispatch_templated_letter_pdf(notification, *, test_key, attachments, queue):
+    if test_key or not attachments:
+        get_pdf_for_templated_letter.apply_async(
+            [str(notification.id)], queue=queue, MessageGroupId=str(notification.service_id)
+        )
+    elif current_app.config["ANTIVIRUS_ENABLED"]:
+        notify_celery.send_task(
+            name=TaskNamesNL.SCAN_LETTER_ATTACHMENTS,
+            kwargs={"notification_id": str(notification.id)},
+            queue=QueueNames.ANTIVIRUS,
+            MessageGroupId=str(notification.service_id),
+        )
+    else:
+        # stub out antivirus in dev
+        process_virus_scan_success_letter_attachments.apply_async(
+            [str(notification.id)], queue=QueueNames.LETTERS, MessageGroupId=str(notification.service_id)
+        )
+
+
 def process_letter_notification(
     *, letter_data, api_key, service, template, template_with_content, reply_to_text, precompiled=False
 ):
-    if api_key.key_type == KEY_TYPE_TEAM:
-        raise BadRequestError(message="Cannot send letters with a team api key", status_code=403)
-
-    if service.restricted and api_key.key_type != KEY_TYPE_TEST:
+    # [NOTIFYNL] Team keys have no concept of a "team member" letter recipient (a postal
+    # address isn't tied to a user), so team keys simulate letters exactly like test keys
+    # instead of being rejected - this lets a single team key be used to both send real
+    # (team-restricted) email/SMS and simulated letters. See create_letter_notification,
+    # which is what actually persists this as key_type=test on the Notification row.
+    if service.restricted and api_key.key_type == KEY_TYPE_NORMAL:
         raise BadRequestError(message="Cannot send letters when service is in trial mode", status_code=403)
 
     if precompiled:
+        # [NOTIFYNL] `contents` (multi-part precompiled letters, merged before delivery) gets its
+        # own dedicated processing/task flow, entirely separate from the single-PDF `content` path.
+        if "contents" in letter_data:
+            return process_multi_part_precompiled_letter_notifications(
+                letter_data=letter_data,
+                api_key=api_key,
+                service=service,
+                template=template,
+                reply_to_text=reply_to_text,
+            )
         return process_precompiled_letter_notifications(
             letter_data=letter_data, api_key=api_key, service=service, template=template, reply_to_text=reply_to_text
         )
 
     postage = validate_address(service, letter_data["personalisation"])
 
-    test_key = api_key.key_type == KEY_TYPE_TEST
+    test_key = api_key.key_type != KEY_TYPE_NORMAL
+
+    # [NOTIFYNL] ad-hoc PDF(s) submitted alongside a templated-letter send, merged into the
+    # generated letter after the template's fixed letter_attachment (if any) - see
+    # app.celery.letters_pdf_tasks.get_pdf_for_templated_letter. This is a request-shape
+    # guard, not a security scan, so it runs unconditionally, unlike the AV/sanitisation
+    # skip below which only applies to test-key sends.
+    attachments = letter_data.get("attachments")
+    decoded_attachments = _decode_letter_attachments(attachments) if attachments else None
 
     status = NOTIFICATION_CREATED
     updated_at = None
@@ -310,10 +454,15 @@ def process_letter_notification(
         else:
             status = NOTIFICATION_DELIVERED
             updated_at = datetime.utcnow()
+    elif attachments:
+        # test-key sends skip AV/sanitisation for ad-hoc attachments entirely (mirroring how
+        # the template's fixed letter_attachment is never re-validated at send time either),
+        # so only a real key with attachments needs the virus-check hold.
+        status = NOTIFICATION_PENDING_VIRUS_CHECK
 
     queue = QueueNames.CREATE_LETTERS_PDF if not test_key else QueueNames.RESEARCH_MODE
 
-    notification = create_letter_notification(
+    notification = _create_templated_letter_notification_with_attachments(
         letter_data=letter_data,
         service=service,
         template=template,
@@ -322,14 +471,16 @@ def process_letter_notification(
         reply_to_text=reply_to_text,
         updated_at=updated_at,
         postage=postage,
+        decoded_attachments=decoded_attachments if attachments else None,
     )
 
-    get_pdf_for_templated_letter.apply_async([str(notification.id)], queue=queue)
+    _dispatch_templated_letter_pdf(notification, test_key=test_key, attachments=attachments, queue=queue)
 
     if test_key and current_app.config["TEST_LETTERS_FAKE_DELIVERY"]:
         create_fake_letter_callback.apply_async(
             [notification.id, notification.billable_units, notification.postage],
             queue=queue,
+            MessageGroupId=str(service.id),
         )
 
     resp = create_response_for_post_notification(
@@ -352,7 +503,7 @@ def process_precompiled_letter_notifications(*, letter_data, api_key, service, t
     except ValueError as e:
         raise BadRequestError(message="Cannot decode letter content (invalid base64 encoding)", status_code=400) from e
 
-    with transaction():
+    try:
         notification = create_letter_notification(
             letter_data=letter_data,
             service=service,
@@ -360,22 +511,81 @@ def process_precompiled_letter_notifications(*, letter_data, api_key, service, t
             api_key=api_key,
             status=status,
             reply_to_text=reply_to_text,
+            _autocommit=False,
         )
         filename = upload_letter_pdf(notification, letter_content, precompiled=True)
+        db.session.commit()
+    except Exception:
+        db.session.rollback()
+        raise
 
     resp = {"id": notification.id, "reference": notification.client_reference, "postage": notification.postage}
 
     # call task to add the filename to anti virus queue
     if current_app.config["ANTIVIRUS_ENABLED"]:
-        current_app.logger.info("Calling task scan-file for %s", filename)
+        current_app.logger.info(
+            "Calling task scan-file for %s", filename, extra={"file_name": filename, "notification_id": notification.id}
+        )
         notify_celery.send_task(
             name=TaskNames.SCAN_FILE,
             kwargs={"filename": filename},
             queue=QueueNames.ANTIVIRUS,
+            MessageGroupId=str(service.id),
         )
     else:
         # stub out antivirus in dev
-        sanitise_letter.apply_async([filename], queue=QueueNames.LETTERS)
+        sanitise_letter.apply_async(
+            [filename],
+            queue=QueueNames.LETTERS,
+            MessageGroupId=str(service.id),
+        )
+
+    return resp
+
+
+def process_multi_part_precompiled_letter_notifications(*, letter_data, api_key, service, template, reply_to_text):
+    """
+    [NOTIFYNL] Precompiled letters submitted as multiple PDFs (`contents`, up to 3), to be merged
+    (in submission order) into a single letter before delivery. This mirrors
+    process_precompiled_letter_notifications above, but runs through its own dedicated antivirus/
+    sanitisation task flow (scan-letter-parts / sanitise-letter-parts / sanitise-and-merge-letter-
+    parts) rather than branching the single-PDF flow - see [[Multi-PDF precompiled letter merge]].
+    """
+    try:
+        status = NOTIFICATION_PENDING_VIRUS_CHECK
+        letter_contents = [base64.b64decode(content) for content in letter_data["contents"]]
+    except ValueError as e:
+        raise BadRequestError(message="Cannot decode letter content (invalid base64 encoding)", status_code=400) from e
+
+    try:
+        notification = create_letter_notification(
+            letter_data=letter_data,
+            service=service,
+            template=template,
+            api_key=api_key,
+            status=status,
+            reply_to_text=reply_to_text,
+            _autocommit=False,
+        )
+        filenames = upload_letter_pdf_parts(notification, letter_contents, precompiled=True)
+        db.session.commit()
+    except Exception:
+        db.session.rollback()
+        raise
+
+    resp = {"id": notification.id, "reference": notification.client_reference, "postage": notification.postage}
+
+    # call task to add the filenames to the anti virus queue
+    if current_app.config["ANTIVIRUS_ENABLED"]:
+        current_app.logger.info("Calling task scan-letter-parts for %s", filenames)
+        notify_celery.send_task(
+            name=TaskNamesNL.SCAN_LETTER_PARTS,
+            kwargs={"filenames": filenames},
+            queue=QueueNames.ANTIVIRUS,
+        )
+    else:
+        # stub out antivirus in dev
+        sanitise_letter_parts.apply_async([filenames], queue=QueueNames.LETTERS)
 
     return resp
 

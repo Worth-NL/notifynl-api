@@ -22,7 +22,10 @@ from notifications_utils.recipient_validation.notifynl.phone_number import (
 
 import app.constants
 from app import db, ma, models
+from app.clients.messagebox.ebms_adapter import get_messagebox_failure_reason
 from app.dao.permissions_dao import permission_dao
+from app.dao.template_email_files_dao import dao_get_template_email_files_by_template_id
+from app.letters.utils import get_letter_failure_reason
 from app.models import ServicePermission
 from app.utils import DATETIME_FORMAT, DATETIME_FORMAT_NO_TIMEZONE, parse_and_format_phone_number
 
@@ -150,19 +153,19 @@ class UserSchema(BaseSchema):
         )
 
     @validates("name")
-    def validate_name(self, value):
+    def validate_name(self, value, data_key):
         if not value:
             raise ValidationError("Invalid name")
 
     @validates("email_address")
-    def validate_email_address(self, value):
+    def validate_email_address(self, value, data_key):
         try:
             validate_email_address(value)
         except InvalidEmailError as e:
             raise ValidationError(str(e)) from e
 
     @validates("mobile_number")
-    def validate_mobile_number(self, value):
+    def validate_mobile_number(self, value, data_key):
         try:
             if value is not None:
                 number = PhoneNumber(value)
@@ -190,19 +193,19 @@ class UserUpdateAttributeSchema(BaseSchema):
         )
 
     @validates("name")
-    def validate_name(self, value):
+    def validate_name(self, value, data_key):
         if not value:
             raise ValidationError("Invalid name")
 
     @validates("email_address")
-    def validate_email_address(self, value):
+    def validate_email_address(self, value, data_key):
         try:
             validate_email_address(value)
         except InvalidEmailError as e:
             raise ValidationError(str(e)) from e
 
     @validates("mobile_number")
-    def validate_mobile_number(self, value):
+    def validate_mobile_number(self, value, data_key):
         try:
             if value is not None:
                 number = PhoneNumber(value)
@@ -211,7 +214,7 @@ class UserUpdateAttributeSchema(BaseSchema):
             raise ValidationError(f"Invalid phone number: {error.get_legacy_v2_api_error_message()}") from error
 
     @validates("platform_admin")
-    def validate_platform_admin(self, value):
+    def validate_platform_admin(self, value, data_key):
         if value is not False:
             raise ValidationError(f"Cannot set platform_admin to {value}")
 
@@ -327,8 +330,13 @@ class ServiceSchema(BaseSchema, UUIDsAsStringsMixin):
             "_email_sender_local_part",
         )
 
+    @validates("letter_address_placement")
+    def validate_letter_address_placement(self, value, data_key):
+        if value is not None and value not in {"50mm", "60mm"}:
+            raise ValidationError("letter_address_placement must be '50mm' or '60mm'")
+
     @validates("permissions")
-    def validate_permissions(self, value):
+    def validate_permissions(self, value, data_key):
         permissions = [v.permission for v in value]
         for p in permissions:
             if p not in app.constants.SERVICE_PERMISSION_TYPES:
@@ -337,6 +345,11 @@ class ServiceSchema(BaseSchema, UUIDsAsStringsMixin):
         if len(set(permissions)) != len(permissions):
             duplicates = list({x for x in permissions if permissions.count(x) > 1})
             raise ValidationError(f"Duplicate Service Permission: {duplicates}")
+
+    @validates("oin")
+    def validate_oin(self, value, data_key):
+        if value and not (len(value) == 20 and value.isdigit()):
+            raise ValidationError("OIN must be exactly 20 digits")
 
     @pre_load()
     def format_for_data_model(self, in_data, **kwargs):
@@ -427,6 +440,7 @@ class BaseTemplateSchema(BaseSchema):
     is_precompiled_letter = fields.Method("get_is_precompiled_letter")
     created_at = FlexibleDateTime()
     updated_at = FlexibleDateTime()
+    email_files = fields.Method("get_template_email_files", allow_none=True)
 
     def get_is_precompiled_letter(self, template):
         return template.is_precompiled_letter
@@ -446,9 +460,16 @@ class BaseTemplateSchema(BaseSchema):
     def load_letter_languages(self, value):
         return app.constants.LetterLanguageOptions(value) if value else None
 
+    def get_template_email_files(self, template):
+        if template.template_type != app.constants.EMAIL_TYPE:
+            return []
+        files = dao_get_template_email_files_by_template_id(template.id, template.version)
+
+        return [file.serialize() for file in files]
+
     class Meta(BaseSchema.Meta):
         model = models.Template
-        exclude = ("service_id", "jobs", "service_letter_contact_id", "unsubscribe_requests")
+        exclude = ("jobs", "service_letter_contact_id", "unsubscribe_requests")
 
 
 class TemplateSchema(BaseTemplateSchema, UUIDsAsStringsMixin):
@@ -475,7 +496,7 @@ class TemplateSchemaNoDetail(TemplateSchema):
             "name",
             "template_type",
         ]
-        exclude = []
+        exclude: list[str] = []
 
 
 class TemplateHistorySchema(BaseTemplateSchema, UUIDsAsStringsMixin):
@@ -484,6 +505,22 @@ class TemplateHistorySchema(BaseTemplateSchema, UUIDsAsStringsMixin):
     class Meta(BaseSchema.Meta):
         model = models.TemplateHistory
         exclude = tuple(set(BaseTemplateSchema.Meta.exclude) - {"jobs"})
+
+
+class TemplateEmailFilesSchema(BaseSchema):
+    filename = field_for(models.TemplateEmailFile, "filename", required=True)
+    link_text = field_for(models.TemplateEmailFile, "link_text", required=False)
+    retention_period = field_for(models.TemplateEmailFile, "retention_period", required=True)
+    validate_users_email = field_for(models.TemplateEmailFile, "validate_users_email", required=True)
+    created_at = FlexibleDateTime()
+    updated_at = FlexibleDateTime()
+    archived_at = FlexibleDateTime()
+    template_id = field_for(models.TemplateEmailFile, "template_id", required=True)
+    template_version = field_for(models.TemplateEmailFile, "template_version", required=True)
+    created_by_id = fields.UUID()
+
+    class Meta(BaseSchema.Meta):
+        model = models.TemplateEmailFile
 
 
 class ApiKeySchema(BaseSchema):
@@ -526,7 +563,7 @@ class JobSchema(BaseSchema):
         return job.template.template_type
 
     @validates("scheduled_for")
-    def validate_scheduled_for(self, value):
+    def validate_scheduled_for(self, value, data_key):
         if value < datetime.utcnow():
             raise ValidationError("Date cannot be in the past")
 
@@ -555,7 +592,7 @@ class SmsNotificationSchema(NotificationSchema):
     to = fields.Str(required=True)
 
     @validates("to")
-    def validate_to(self, value):
+    def validate_to(self, value, data_key):
         try:
             number = PhoneNumber(value)
             number.validate(allow_international_number=True)
@@ -612,6 +649,46 @@ class NotificationWithTemplateSchema(BaseSchema):
             in_data.key_name = None
         return in_data
 
+    @post_dump
+    def mask_messagebox_recipient(self, data, **kwargs):
+        # `to` holds the BSN for messagebox notifications -- never surface it
+        # (encrypted or not) to API consumers/the admin UI; the notification id
+        # is a safe, sufficient identifier for display/lookup purposes instead.
+        if data.get("notification_type") == app.constants.MESSAGEBOX_TYPE:
+            data["to"] = data["id"]
+        return data
+
+    @post_dump
+    def add_messagebox_failure_reason(self, data, **kwargs):
+        # Decodes Logius's raw VerwerkingsCode (detailed_status_code) into a
+        # human-readable reason for messagebox notifications, so consumers
+        # (the admin UI) don't need their own copy of the reason-code
+        # mapping. Always present as a key (None when not applicable) so
+        # notifynl-admin's JSONModel -- which only exposes annotated fields
+        # present in the underlying dict -- can rely on it unconditionally.
+        data["messagebox_failure_reason"] = (
+            get_messagebox_failure_reason(data.get("detailed_status_code"))
+            if data.get("notification_type") == app.constants.MESSAGEBOX_TYPE
+            else None
+        )
+        return data
+
+    @post_dump
+    def add_letter_failure_reason(self, data, **kwargs):
+        # Decodes a letter's raw detailed_status_code (set when validation-failed or
+        # virus-scan-failed) into a human-readable reason, mirroring
+        # add_messagebox_failure_reason above. Always present as a key (None when not
+        # applicable) for the same reason: notifynl-admin's JSONModel only exposes
+        # annotated fields present in the underlying dict.
+        data["letter_failure_reason"] = (
+            get_letter_failure_reason(data.get("detailed_status_code"))
+            if data.get("notification_type") == app.constants.LETTER_TYPE
+            and data.get("status")
+            in (app.constants.NOTIFICATION_VALIDATION_FAILED, app.constants.NOTIFICATION_VIRUS_SCAN_FAILED)
+            else None
+        )
+        return data
+
 
 class InvitedUserSchema(BaseSchema):
     auth_type = field_for(models.InvitedUser, "auth_type")
@@ -621,7 +698,7 @@ class InvitedUserSchema(BaseSchema):
         model = models.InvitedUser
 
     @validates("email_address")
-    def validate_to(self, value):
+    def validate_to(self, value, data_key):
         try:
             validate_email_address(value)
         except InvalidEmailError as e:
@@ -641,7 +718,7 @@ class EmailDataSchema(ma.Schema):
         self.partial_email = partial_email
 
     @validates("email")
-    def validate_email(self, value):
+    def validate_email(self, value, data_key):
         if self.partial_email:
             return
         try:
@@ -688,11 +765,11 @@ class NotificationsFilterSchema(ma.Schema):
         return in_data
 
     @validates("page")
-    def validate_page(self, value):
+    def validate_page(self, value, data_key):
         _validate_positive_number(value)
 
     @validates("page_size")
-    def validate_page_size(self, value):
+    def validate_page_size(self, value, data_key):
         _validate_positive_number(value)
 
 
@@ -753,6 +830,7 @@ service_schema = ServiceSchema()
 detailed_service_schema = DetailedServiceSchema()
 template_schema = TemplateSchema()
 template_schema_no_detail = TemplateSchemaNoDetail()
+template_email_files_schema = TemplateEmailFilesSchema()
 api_key_schema = ApiKeySchema()
 job_schema = JobSchema()
 notification_schema = NotificationModelSchema()
