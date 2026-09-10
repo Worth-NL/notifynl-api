@@ -491,6 +491,7 @@ class Organisation(db.Model):
     billing_contact_names = db.Column(db.Text, nullable=True)
     billing_contact_email_addresses = db.Column(db.Text, nullable=True)
     billing_reference = db.Column(db.String(255), nullable=True)
+    area_boundary = db.Column(JSONB, nullable=True)
 
     @property
     def live_services(self):
@@ -528,6 +529,7 @@ class Organisation(db.Model):
             billing_contact_names=self.billing_contact_names,
             billing_contact_email_addresses=self.billing_contact_email_addresses,
             billing_reference=self.billing_reference,
+            area_boundary=self.area_boundary,
             can_approve_own_go_live_requests=self.can_approve_own_go_live_requests,
             permissions=[x.permission for x in self.permissions],
         )
