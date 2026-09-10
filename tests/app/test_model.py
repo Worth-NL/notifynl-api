@@ -886,6 +886,7 @@ def test_organisation_serializes_with_all_fields(notify_db_session):
         "billing_contact_names": "Contact Name",
         "billing_contact_email_addresses": "billing@example.com",
         "billing_reference": "REF123",
+        "area_boundary": None,
         "can_approve_own_go_live_requests": True,
         "permissions": [],
     }
@@ -925,6 +926,7 @@ def test_organisation_serializes_with_minimal_fields(notify_db_session):
         "billing_contact_names": None,
         "billing_contact_email_addresses": None,
         "billing_reference": None,
+        "area_boundary": None,
         "can_approve_own_go_live_requests": False,
         "permissions": [],
     }
