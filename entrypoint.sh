@@ -83,6 +83,9 @@ case "$1" in
   api-worker-messagebox)
     exec $COMMON_CMD messagebox-tasks
     ;;
+  sync-org-boundaries-geojson)
+    exec flask command sync-org-boundaries-geojson
+    ;;
   # ============
   celery-beat)
     exec celery --quiet -A run_celery.notify_celery beat

@@ -13,6 +13,7 @@ from unittest import mock
 
 import click
 import flask
+import requests
 from click_datetime import Datetime as click_dt
 from dateutil import rrule
 from flask import current_app, json
@@ -677,6 +678,52 @@ def associate_services_to_organisations():
             dao_add_service_to_organisation(service=service, organisation_id=organisation.id)
 
     print("finished associating services to organisations")
+
+
+@notify_command(name="sync-org-boundaries-geojson")
+def sync_org_boundaries_geojson():
+    """Refresh the notifynl-org-boundaries ConfigMap that Grafana reads for the
+    Notifications Volume dashboard's map, from organisation.area_boundary.
+    Run periodically by a CronJob (notifynl-charts-private/notifynl-full) --
+    this is what replaces the old hand-maintained gazetteer file now that
+    the boundary is platform-admin-editable.
+    """
+    organisations = Organisation.query.filter(
+        Organisation.area_boundary.isnot(None),
+        Organisation.active.is_(True),
+    ).all()
+
+    feature_collection = {
+        "type": "FeatureCollection",
+        "features": [
+            {
+                "type": "Feature",
+                "properties": {"organisation_name": organisation.name},
+                "geometry": organisation.area_boundary,
+            }
+            for organisation in organisations
+        ],
+    }
+
+    with open("/var/run/secrets/kubernetes.io/serviceaccount/token") as f:
+        token = f.read().strip()
+    with open("/var/run/secrets/kubernetes.io/serviceaccount/namespace") as f:
+        namespace = f.read().strip()
+
+    api_server = f"https://{os.environ['KUBERNETES_SERVICE_HOST']}:{os.environ['KUBERNETES_SERVICE_PORT']}"
+    response = requests.patch(
+        f"{api_server}/api/v1/namespaces/{namespace}/configmaps/notifynl-org-boundaries",
+        data=json.dumps({"data": {"notifynl-org-boundaries.json": json.dumps(feature_collection)}}),
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/merge-patch+json",
+        },
+        verify="/var/run/secrets/kubernetes.io/serviceaccount/ca.crt",
+        timeout=10,
+    )
+    response.raise_for_status()
+
+    print(f"Synced {len(feature_collection['features'])} organisation boundaries to notifynl-org-boundaries ConfigMap")
 
 
 @notify_command(name="populate-service-volume-intentions")
