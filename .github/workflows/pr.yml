@@ -151,7 +151,7 @@ jobs:
 
       - uses: docker/build-push-action@v6
         with:
-          file: docker/Dockerfile
+          file: docker/Dockerfile_nl
           load: true
           tags: ${{ env.IMAGE }}:test-${{ matrix.dockerfile-target }}
           platforms: linux/amd64
@@ -187,7 +187,7 @@ jobs:
 
       - uses: docker/build-push-action@v6
         with:
-          file: docker/Dockerfile
+          file: docker/Dockerfile_nl
           push: true
           tags: ${{ env.IMAGE }}:${{ steps.set-tag.outputs.tag }}
           platforms: linux/amd64
