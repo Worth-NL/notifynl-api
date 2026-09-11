@@ -230,6 +230,7 @@ jobs:
         --set apps.apiWorkerReportRequestsNotificationsTasks.image.tag=${{ needs.build.outputs.tag }}
         --set apps.celeryBeat.image.tag=${{ needs.build.outputs.tag }}
         --set migrations.apiUpgrade.image.tag=${{ needs.build.outputs.tag }}
+        --set orgBoundariesSync.image.tag=${{ needs.build.outputs.tag }}
 
     steps:
       # Order matters: actions/checkout defaults to `clean: true`, which runs
