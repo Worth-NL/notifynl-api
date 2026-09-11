@@ -10,7 +10,12 @@ from app.dao.organisation_dao import (
     dao_remove_user_from_organisation,
 )
 from app.dao.permissions_dao import permission_dao
-from app.dao.services_dao import dao_add_user_to_service
+from app.dao.services_dao import (
+    dao_add_user_to_service,
+    dao_fetch_all_services_created_by_user,
+    delete_service_and_all_associated_db_objects,
+)
+from app.dao.users_dao import delete_user_and_all_associated_db_objects, delete_user_verify_codes
 from app.errors import register_errors
 from app.functional_tests.testing_schemas import create_functional_test_users_schema
 from app.models import Permission, Service, User
@@ -67,3 +72,37 @@ def create_functional_test_users():
         db.session.commit()
 
     return "ok", 201
+
+
+@test_blueprint.route("/users/<string:email_address>", methods=["DELETE"])
+def delete_functional_test_user(email_address):
+    """
+    Deletes a user created for testing (e.g. via a smoke-test's self-registration
+    flow), along with any service *they created themselves*, so a test suite
+    driving this blueprint (local dev, or a future PR-preview environment with
+    REGISTER_FUNCTIONAL_TESTING_BLUEPRINT on) can clean up after itself without
+    shell access.
+
+    Deliberately narrower than app/commands.py's purge_functional_test_data: this
+    only deletes services the user *created* (dao_fetch_all_services_created_by_user),
+    never every service they merely belong to. A user can join an existing,
+    persistent, shared service (e.g. accepting a team-member invite) without having
+    created it -- deleting that would take the shared service down with them.
+    delete_user_and_all_associated_db_objects already safely removes the user's
+    *membership* from any such service without touching the service itself.
+    Confirmed live: an earlier version of this endpoint using
+    dao_fetch_all_services_by_user attempted to delete this meta-repo's own shared
+    smoke-test service for an invited-and-accepted user, and only a foreign-key
+    violation (a template history row) stopped it from completing.
+    """
+    user = User.query.filter_by(email_address=email_address).one_or_none()
+    if not user:
+        return "", 204
+
+    for service in dao_fetch_all_services_created_by_user(user.id):
+        delete_service_and_all_associated_db_objects(service)
+
+    delete_user_verify_codes(user)
+    delete_user_and_all_associated_db_objects(user)
+
+    return "", 204
