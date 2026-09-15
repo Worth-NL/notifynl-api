@@ -4,6 +4,7 @@ import os
 
 import notifications_utils.logging.celery as celery_logging
 from celery.signals import worker_process_init
+from notifications_utils.profiling import set_up_profiling_for_celery
 from notifications_utils.semconv import set_service_instance_id
 from opentelemetry.instrumentation import auto_instrumentation
 
@@ -33,6 +34,7 @@ from app.notify_api_flask_app import NotifyApiFlaskApp  # noqa
 application = NotifyApiFlaskApp("delivery")
 create_app(application)
 celery_logging.set_up_logging(application.config)
+set_up_profiling_for_celery()
 
 
 @worker_process_init.connect
