@@ -1,7 +1,7 @@
 import datetime
 import uuid
 
-from flask import Blueprint, request
+from flask import Blueprint, jsonify, request
 
 from app import db
 from app.dao.organisation_dao import (
@@ -16,13 +16,60 @@ from app.dao.services_dao import (
     delete_service_and_all_associated_db_objects,
 )
 from app.dao.users_dao import delete_user_and_all_associated_db_objects, delete_user_verify_codes
-from app.errors import register_errors
-from app.functional_tests.testing_schemas import create_functional_test_users_schema
+from app.errors import InvalidRequest, register_errors
+from app.functional_tests.fixtures import (
+    create_fixture,
+    delete_fixture,
+    stale_fixture_service_ids,
+)
+from app.functional_tests.testing_schemas import (
+    create_fixture_schema,
+    create_functional_test_users_schema,
+)
 from app.models import Permission, Service, User
 from app.schema_validation import validate
 
 test_blueprint = Blueprint("functional_tests", __name__, url_prefix="/__testing/functional")
 register_errors(test_blueprint)
+
+
+@test_blueprint.route("/fixtures", methods=["POST"])
+def create_functional_test_fixture():
+    """
+    Creates one ephemeral org + service + admin user + API keys + templates
+    for a single CI run, identified by `runId` (e.g. `<github.run_id>-<attempt>`).
+    See app/functional_tests/fixtures.py for the full shape and why this is
+    kept separate from the long-lived functional/performance-test fixtures
+    in app/functional_tests_fixtures.
+    """
+    body = request.get_json() or {}
+    validate(body, create_fixture_schema)
+
+    fixture = create_fixture(body["runId"])
+    return jsonify(fixture), 201
+
+
+@test_blueprint.route("/fixtures/<string:service_id>", methods=["DELETE"])
+def delete_functional_test_fixture(service_id):
+    delete_fixture(service_id)
+    return "", 204
+
+
+@test_blueprint.route("/fixtures", methods=["GET"])
+def list_stale_functional_test_fixtures():
+    older_than_minutes_raw = request.args.get("olderThanMinutes")
+    if older_than_minutes_raw is None:
+        raise InvalidRequest("olderThanMinutes query parameter is required", 400)
+
+    try:
+        older_than_minutes = int(older_than_minutes_raw)
+    except ValueError:
+        raise InvalidRequest("olderThanMinutes must be an integer", 400) from None
+
+    if older_than_minutes < 0:
+        raise InvalidRequest("olderThanMinutes must be non-negative", 400)
+
+    return jsonify({"serviceIds": stale_fixture_service_ids(older_than_minutes)}), 200
 
 
 @test_blueprint.route("/users", methods=["PUT"])

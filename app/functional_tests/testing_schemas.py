@@ -1,3 +1,13 @@
+create_fixture_schema = {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "description": "schema for creating an ephemeral smoke-test fixture",
+    "type": "object",
+    "properties": {
+        "runId": {"type": "string", "minLength": 1},
+    },
+    "required": ["runId"],
+}
+
 create_functional_test_users_schema = {
     "$schema": "http://json-schema.org/draft-07/schema#",
     "description": "schema for creating functional test users",
