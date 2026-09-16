@@ -1323,6 +1323,37 @@ def functional_tests_request(client):
             assert resp.status_code == _expected_status
             return json_resp
 
+        @staticmethod
+        def post(endpoint, _data=None, _expected_status=200, **endpoint_kwargs):
+            resp = client.post(
+                url_for(endpoint, **(endpoint_kwargs or {})),
+                data=json.dumps(_data),
+                headers=[("Content-Type", "application/json"), create_functional_tests_authorization_header()],
+            )
+            json_resp = resp.json if resp.get_data() else None
+            assert resp.status_code == _expected_status
+            return json_resp
+
+        @staticmethod
+        def get(endpoint, _expected_status=200, **endpoint_kwargs):
+            resp = client.get(
+                url_for(endpoint, **(endpoint_kwargs or {})),
+                headers=[create_functional_tests_authorization_header()],
+            )
+            json_resp = resp.json if resp.get_data() else None
+            assert resp.status_code == _expected_status
+            return json_resp
+
+        @staticmethod
+        def delete(endpoint, _expected_status=204, **endpoint_kwargs):
+            resp = client.delete(
+                url_for(endpoint, **(endpoint_kwargs or {})),
+                headers=[create_functional_tests_authorization_header()],
+            )
+            json_resp = resp.json if resp.get_data() else None
+            assert resp.status_code == _expected_status
+            return json_resp
+
     return FunctionalTestsRequest
 
 
