@@ -177,6 +177,27 @@ def delete_fixture(service_id: str) -> bool:
     return True
 
 
+def delete_fixture_by_run_id(run_id: str) -> bool:
+    """
+    Same idempotent contract as delete_fixture, but looked up by `runId`
+    instead of `serviceId` -- needed by the Argo Workflow's `cleanup`
+    (onExit) container, which runs in a separate pod from `create-fixture`
+    and so can't read the /data/fixture.json EmptyDir that contains
+    serviceId (see the ephemeral-test-fixtures plan §6). `resourceId` (and
+    therefore the fixture email) is deterministic from `runId` alone, so no
+    lookup file is needed either.
+    """
+    resource_id = resource_id_for_run(run_id)
+    email_address = fixture_email_for_resource(resource_id)
+
+    user = User.query.filter_by(email_address=email_address).one_or_none()
+    if user is None:
+        return False
+
+    _delete_by_email(email_address)
+    return True
+
+
 def stale_fixture_service_ids(older_than_minutes: int) -> list[str]:
     cutoff = datetime.utcnow() - timedelta(minutes=older_than_minutes)
     stale_fixture_users = User.query.filter(

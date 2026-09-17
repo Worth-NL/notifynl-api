@@ -20,6 +20,7 @@ from app.errors import InvalidRequest, register_errors
 from app.functional_tests.fixtures import (
     create_fixture,
     delete_fixture,
+    delete_fixture_by_run_id,
     stale_fixture_service_ids,
 )
 from app.functional_tests.testing_schemas import (
@@ -52,6 +53,19 @@ def create_functional_test_fixture():
 @test_blueprint.route("/fixtures/<string:service_id>", methods=["DELETE"])
 def delete_functional_test_fixture(service_id):
     delete_fixture(service_id)
+    return "", 204
+
+
+@test_blueprint.route("/fixtures/by-run/<string:run_id>", methods=["DELETE"])
+def delete_functional_test_fixture_by_run_id(run_id):
+    """
+    Same as delete_functional_test_fixture, but for callers that only know
+    `runId` -- notably the Argo Workflow's cleanup (onExit) container, which
+    runs in a separate pod from create-fixture and can't read the
+    /data/fixture.json it wrote (see fixtures.py's
+    delete_fixture_by_run_id docstring).
+    """
+    delete_fixture_by_run_id(run_id)
     return "", 204
 
 
