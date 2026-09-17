@@ -208,6 +208,56 @@ class TestDeleteFixture:
         assert User.query.filter_by(email_address="not-a-fixture-user@example.com").one_or_none() is not None
 
 
+class TestDeleteFixtureByRunId:
+    def test_auth_required(self, client):
+        response = client.delete(url_for("functional_tests.delete_functional_test_fixture_by_run_id", run_id="run-1"))
+        assert response.status_code == 401
+
+    def test_deletes_service_and_admin_user(self, functional_tests_request):
+        created = functional_tests_request.post(
+            "functional_tests.create_functional_test_fixture",
+            _data={"runId": "run-to-delete-by-run-id"},
+            _expected_status=201,
+        )
+
+        functional_tests_request.delete(
+            "functional_tests.delete_functional_test_fixture_by_run_id",
+            run_id="run-to-delete-by-run-id",
+            _expected_status=204,
+        )
+
+        assert Service.query.filter_by(id=created["serviceId"]).one_or_none() is None
+        assert (
+            User.query.filter_by(email_address=fixture_email_for_resource("run-to-delete-by-run-id")).one_or_none()
+            is None
+        )
+
+    def test_idempotent_when_already_deleted(self, functional_tests_request):
+        functional_tests_request.post(
+            "functional_tests.create_functional_test_fixture",
+            _data={"runId": "run-delete-by-run-id-twice"},
+            _expected_status=201,
+        )
+
+        functional_tests_request.delete(
+            "functional_tests.delete_functional_test_fixture_by_run_id",
+            run_id="run-delete-by-run-id-twice",
+            _expected_status=204,
+        )
+        functional_tests_request.delete(
+            "functional_tests.delete_functional_test_fixture_by_run_id",
+            run_id="run-delete-by-run-id-twice",
+            _expected_status=204,
+        )
+
+    def test_unknown_run_id_is_204(self, functional_tests_request):
+        functional_tests_request.delete(
+            "functional_tests.delete_functional_test_fixture_by_run_id",
+            run_id="never-created",
+            _expected_status=204,
+        )
+
+
 class TestListStaleFixtures:
     def test_auth_required(self, client):
         response = client.get(url_for("functional_tests.list_stale_functional_test_fixtures", olderThanMinutes=60))
