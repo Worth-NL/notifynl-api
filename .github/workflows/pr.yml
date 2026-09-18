@@ -369,7 +369,7 @@ jobs:
               issue_number: context.issue.number,
               body
             })
-
+  #smoke tests
   smoke-test:
     needs: deploy
     if: github.event.pull_request.draft == false
