@@ -79,6 +79,7 @@ class SerializedOrganisation(TypedDict):
     billing_contact_names: str | None
     billing_contact_email_addresses: str | None
     billing_reference: str | None
+    area_boundary: dict | None
     can_approve_own_go_live_requests: bool
     permissions: list[str]
 
