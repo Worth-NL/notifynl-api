@@ -2,6 +2,7 @@ import pytest
 
 from tests.app.db import (
     create_notification,
+    create_organisation,
 )
 
 
@@ -31,3 +32,21 @@ def test_notification_serialize_with_with_cost_data_for_letter_that_wasnt_sent(
     assert response["is_cost_data_ready"] is True
     assert response["cost_details"] == {"billable_sheets_of_paper": 0, "postage": "netherlands"}
     assert response["cost_in_pounds"] == 0.00
+
+
+def test_organisation_serialize_includes_area_boundary(notify_db_session):
+    organisation = create_organisation(name="Gemeente Den Haag")
+    organisation.area_boundary = {
+        "type": "Polygon",
+        "coordinates": [[[4.30, 52.07], [4.32, 52.07], [4.32, 52.09], [4.30, 52.09], [4.30, 52.07]]],
+    }
+
+    serialized = organisation.serialize()
+
+    assert serialized["area_boundary"] == organisation.area_boundary
+
+
+def test_organisation_serialize_area_boundary_defaults_to_none(notify_db_session):
+    organisation = create_organisation(name="Gemeente Rotterdam")
+
+    assert organisation.serialize()["area_boundary"] is None
