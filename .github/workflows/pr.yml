@@ -373,7 +373,17 @@ jobs:
   smoke-test:
     needs: deploy
     if: github.event.pull_request.draft == false
-    uses: Worth-NL/notifynl-smoke-tests/.github/workflows/run-smoke-tests.yml@main
+
+    # Must match what the called workflow's job requests -- a reusable
+    # workflow can only maintain or reduce the caller's permissions, never
+    # elevate them, and this workflow's top-level block grants contents: read
+    # alone.
+    permissions:
+      contents: read
+      checks: write
+      pull-requests: write
+
+    uses: Worth-NL/ci-workflows/.github/workflows/run-smoke-tests.yml@main
     with:
       project: api
     secrets: inherit
