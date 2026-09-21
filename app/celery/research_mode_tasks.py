@@ -33,6 +33,15 @@ temp_fail_email = "temp-fail@simulator.notify"
 
 
 def send_sms_response(provider, reference, to):
+    if provider == "spryng":
+        # Spryng-specific: see app/celery/research_mode_tasks_nl.py -- its
+        # real callback is a GET with query params, unlike mmg/firetext's
+        # POST body below, so it isn't a fit for the shared make_request()
+        # call this function ends with.
+        from app.celery.research_mode_tasks_nl import send_spryng_response
+
+        return send_spryng_response(reference, to)
+
     if provider == "mmg":
         body = mmg_callback(reference, to)
         headers = {"Content-type": "application/json"}
