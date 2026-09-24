@@ -27,6 +27,7 @@ from app.functional_tests.testing_schemas import (
     create_fixture_schema,
     create_functional_test_users_schema,
 )
+from app.functional_tests.two_factor import create_functional_test_2fa_link
 from app.models import Permission, Service, User
 from app.schema_validation import validate
 
@@ -133,6 +134,18 @@ def create_functional_test_users():
         db.session.commit()
 
     return "ok", 201
+
+
+@test_blueprint.route("/users/<uuid:user_id>/2fa-link", methods=["POST"])
+def create_functional_test_2fa_link_route(user_id):
+    """
+    Mints a fresh, valid email-auth magic-link for user_id and returns it,
+    so a TEST-env smoke test can complete 2FA login without reading a real
+    inbox (see two_factor.py's create_functional_test_2fa_link docstring
+    for why this can't just look up the code a real sign-in already sent).
+    """
+    url = create_functional_test_2fa_link(str(user_id))
+    return jsonify({"url": url}), 201
 
 
 @test_blueprint.route("/users/<string:email_address>", methods=["DELETE"])
