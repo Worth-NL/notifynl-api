@@ -1,0 +1,11 @@
+scan:
+  scanners:
+    - vuln
+    - misconfig
+    - secret
+  file-patterns:
+    - "pip:requirements_nl\\.txt"
+    - "dockerfile:Dockerfile_nl"
+  skip-files:
+    - "requirements.txt"
+    - "docker/Dockerfile"

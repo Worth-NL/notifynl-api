@@ -1151,9 +1151,9 @@ marshmallow-sqlalchemy==1.5.0 \
     --hash=sha256:3865232672f3dd38c4d5e4e85fdedce76904200742c3594948a2d11d0af93258 \
     --hash=sha256:e51192c204770645a2fab0d72f44f8789272eef75951f84b1608d6b4b0bfe0e6
     # via -r requirements_nl.txt
-mistune==0.8.4 \
-    --hash=sha256:59a3429db53c50b5c6bcc8a07f8848cb00d7dc8bdb431a4ab41920d201d4756e \
-    --hash=sha256:88a1051873018da288eee8538d476dffe1262495144b33ecb586c4ab266bb8d4
+mistune==3.3.3 \
+    --hash=sha256:99de1585e42dcbd826faa9e11a202727a5e202e4e4722a4c69ac1ff615793dd7 \
+    --hash=sha256:c4c6c0c840b8637a2e9b8b6d607eb7c8f00888bf14c754409bcd339e848c2477
     # via
     #   -r requirements_nl.txt
     #   notifications-utils
@@ -1215,7 +1215,7 @@ mypy-extensions==1.1.0 \
 notifications-python-client==10.0.0 \
     --hash=sha256:0f152a4d23b7f7b827dae6b45ac63568a2bc56044b1aa57b66bc68b137c40e57
     # via -r requirements_nl.txt
-notifications-utils @ git+https://github.com/Worth-NL/notifynl-utils.git@40e6af24df0a7e672098ff406d8dae0a0da7f621
+notifications-utils @ git+https://github.com/Worth-NL/notifynl-utils.git@cb66ced9f10e1e852d86a340a3cf0a8d7f5a95f8
     # via -r requirements_nl.txt
 opentelemetry-api==1.44.0 \
     --hash=sha256:67647e5e9566edcf421166fdf022b3537f818635daa852b289e34604dc6fb33a \
@@ -1695,9 +1695,9 @@ pyorc==0.11.0 \
     --hash=sha256:ebff645264df447439079f813f89a9bbba799d3fed7e0d6360fbd43d14883ebf \
     --hash=sha256:ed22371cf28fc19962b66acab760aca21b936b5cc204ec16dd4450f7e2e5400f
     # via -r requirements_nl.txt
-pypdf==6.15.0 \
-    --hash=sha256:14e001d6504822cb1ca9c7ed9a69bccb320f59b320730f55af804361abe4d5ee \
-    --hash=sha256:d39c4d955a76409284a905e2d65b40076d77ab76129e0faaeeb6612403ecfc79
+pypdf==6.18.0 \
+    --hash=sha256:05b762b77bcb9dcb4a7c91fcf5dded585b25bee7269ab3d3001d7c55fa1b324b \
+    --hash=sha256:ae58b7d93c22c169ffb02c3b06321c45c4f223b4916536568adb57d789d95d01
     # via
     #   -r requirements_nl.txt
     #   notifications-utils
