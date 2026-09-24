@@ -13,8 +13,31 @@ import uuid
 
 from flask import current_app
 
-from app.dao.users_dao import get_user_by_id
+from app.dao.users_dao import create_secret_code, get_user_by_email, get_user_by_id
 from app.user.rest import _create_2fa_url, create_2fa_code
+
+
+def create_functional_test_sms_code(email_address: str) -> str:
+    """
+    Same idea as create_functional_test_2fa_link, but for sms_auth: mints a
+    fresh VerifyCode and returns the plaintext code directly (there's no URL
+    to build for SMS -- the user just types the code into a form field).
+    Needed by self-registration.spec.ts, whose RegisterUserForm always
+    forces auth_type=sms_auth server-side regardless of service settings.
+    Looked up by email, not id, like create_functional_test_verification_link
+    -- self-registration only knows the email it just registered with, not
+    the id the real registration flow assigned server-side.
+    """
+    user = get_user_by_email(email_address)
+    secret_code = create_secret_code()
+    create_2fa_code(
+        current_app.config["SMS_CODE_TEMPLATE_ID"],
+        user,
+        secret_code,
+        user.mobile_number,
+        {"verify_code": secret_code},
+    )
+    return secret_code
 
 
 def create_functional_test_2fa_link(user_id: str) -> str:
