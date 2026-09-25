@@ -23,11 +23,18 @@ from app.functional_tests.fixtures import (
     delete_fixture_by_run_id,
     stale_fixture_service_ids,
 )
+from app.functional_tests.registration_links import (
+    create_functional_test_invite_link,
+    create_functional_test_verification_link,
+)
 from app.functional_tests.testing_schemas import (
     create_fixture_schema,
     create_functional_test_users_schema,
 )
-from app.functional_tests.two_factor import create_functional_test_2fa_link
+from app.functional_tests.two_factor import (
+    create_functional_test_2fa_link,
+    create_functional_test_sms_code,
+)
 from app.models import Permission, Service, User
 from app.schema_validation import validate
 
@@ -145,6 +152,46 @@ def create_functional_test_2fa_link_route(user_id):
     for why this can't just look up the code a real sign-in already sent).
     """
     url = create_functional_test_2fa_link(str(user_id))
+    return jsonify({"url": url}), 201
+
+
+@test_blueprint.route("/users/by-email/<string:email_address>/sms-code", methods=["POST"])
+def create_functional_test_sms_code_route(email_address):
+    """
+    Mints a fresh, valid sms_auth verify code for the user with this email
+    and returns it directly, so a TEST-env smoke test can complete SMS 2FA
+    (e.g. self-registration, whose RegisterUserForm always forces
+    auth_type=sms_auth) without reading a real SMS. Looked up by email, like
+    the verification-link route above -- self-registration only knows the
+    email it just registered with at this point in the flow.
+    """
+    code = create_functional_test_sms_code(email_address)
+    return jsonify({"code": code}), 201
+
+
+@test_blueprint.route("/users/by-email/<string:email_address>/verification-link", methods=["POST"])
+def create_functional_test_verification_link_route(email_address):
+    """
+    Mints the same signed email-verification link a real
+    POST /user/<id>/email-verification call would have emailed, so
+    self-registration.spec.ts can verify a brand-new user's email without
+    reading a real inbox. Looked up by email (not id) since the caller
+    doesn't know the user's id ahead of a real self-registration submission.
+    """
+    url = create_functional_test_verification_link(email_address)
+    return jsonify({"url": url}), 201
+
+
+@test_blueprint.route("/invited-users/by-email/<string:email_address>/invite-link", methods=["POST"])
+def create_functional_test_invite_link_route(email_address):
+    """
+    Returns the same signed invite-acceptance link a real team-member
+    invite would have emailed, so invite-team-member.spec.ts can accept an
+    invite without reading a real inbox. Looked up by the invited email
+    (most recent invite for it), since invited_user_id isn't known to the
+    caller either.
+    """
+    url = create_functional_test_invite_link(email_address)
     return jsonify({"url": url}), 201
 
 

@@ -62,3 +62,40 @@ class TestCreateFunctionalTest2faLink:
             user_id=uuid.uuid4(),
             _expected_status=404,
         )
+
+
+class TestCreateFunctionalTestSmsCode:
+    def test_auth_required(self, client, sample_user):
+        response = client.post(
+            url_for("functional_tests.create_functional_test_sms_code_route", email_address=sample_user.email_address),
+        )
+        assert response.status_code == 401
+
+    def test_creates_usable_code(self, functional_tests_request, mocker, sample_user, sms_code_template):
+        deliver_sms = mocker.patch("app.celery.provider_tasks.deliver_sms.apply_async")
+
+        result = functional_tests_request.post(
+            "functional_tests.create_functional_test_sms_code_route",
+            email_address=sample_user.email_address,
+            _expected_status=201,
+        )
+
+        assert result["code"].isdigit()
+        assert len(result["code"]) == 5
+
+        noti = Notification.query.one()
+        assert noti.to == sample_user.mobile_number
+        assert str(noti.template_id) == str(sms_code_template.id)
+        assert noti.personalisation["verify_code"] == result["code"]
+        deliver_sms.assert_called_once()
+
+        code = get_user_code(sample_user, result["code"], "sms")
+        assert code is not None
+        assert not code.code_used
+
+    def test_returns_404_for_unknown_email(self, functional_tests_request):
+        functional_tests_request.post(
+            "functional_tests.create_functional_test_sms_code_route",
+            email_address="no-such-user@notifynl.invalid",
+            _expected_status=404,
+        )
