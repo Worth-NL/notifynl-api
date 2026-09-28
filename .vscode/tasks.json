@@ -273,6 +273,16 @@
                 "showReuseMessage": false,
                 "close": true
             }
+        },
+        {
+            "label": "Vulnerability scan",
+            "type": "shell",
+            "command": "./scripts/vulnerability-scan.sh",
+            "problemMatcher": [],
+            "presentation": {
+                "reveal": "always",
+                "panel": "dedicated"
+            }
         }
     ],
     "inputs": [
