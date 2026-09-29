@@ -41,6 +41,8 @@ from app.clients.document_download import DocumentDownloadClient
 from app.clients.email.aws_ses import AwsSesClient
 from app.clients.email.aws_ses_stub import AwsSesStubClient
 from app.clients.letter.dvla import DVLAClient
+from app.clients.letter.pingen import PingenClient
+from app.clients.letter.rest_endpoint import RestEndpointLetterClient
 from app.clients.messagebox.ebms_adapter import EbmsAdapterClient
 from app.clients.sms.firetext import FiretextClient
 from app.clients.sms.mmg import MMGClient
@@ -134,6 +136,26 @@ get_ebms_adapter_client: LazyLocalGetter[EbmsAdapterClient] = LazyLocalGetter(
 memo_resetters.append(lambda: get_ebms_adapter_client.clear())
 ebms_adapter_client = LocalProxy(get_ebms_adapter_client)
 
+### [NotifyNL] letter providers ########################################################################################
+_pingen_client_context_var: ContextVar[PingenClient] = ContextVar("pingen_client")
+get_pingen_client: LazyLocalGetter[PingenClient] = LazyLocalGetter(
+    _pingen_client_context_var,
+    lambda: PingenClient(current_app, statsd_client=statsd_client),
+    expected_type=PingenClient,
+)
+memo_resetters.append(lambda: get_pingen_client.clear())
+
+_rest_endpoint_letter_client_context_var: ContextVar[RestEndpointLetterClient] = ContextVar(
+    "rest_endpoint_letter_client"
+)
+get_rest_endpoint_letter_client: LazyLocalGetter[RestEndpointLetterClient] = LazyLocalGetter(
+    _rest_endpoint_letter_client_context_var,
+    lambda: RestEndpointLetterClient(current_app, statsd_client=statsd_client),
+    expected_type=RestEndpointLetterClient,
+)
+memo_resetters.append(lambda: get_rest_endpoint_letter_client.clear())
+########################################################################################################################
+
 _notification_provider_clients_context_var: ContextVar[NotificationProviderClients] = ContextVar(
     "notification_provider_clients"
 )
@@ -149,6 +171,11 @@ get_notification_provider_clients: LazyLocalGetter[NotificationProviderClients] 
             # If a stub url is provided for SES, then use the stub client rather
             # than the real SES boto client
             for getter in ((get_aws_ses_stub_client,) if current_app.config["SES_STUB_URL"] else (get_aws_ses_client,))
+        },
+        # [NotifyNL]
+        letter_clients={
+            getter.expected_type.name: LocalProxy(getter)
+            for getter in (get_pingen_client, get_rest_endpoint_letter_client)
         },
     ),
 )

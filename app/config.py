@@ -856,6 +856,18 @@ class ConfigNL(Config):
     # private hosts, for the local letter endpoint stub.
     LETTER_ENDPOINT_ALLOW_INSECURE = False
 
+    # Pingen, the default letter provider (app/clients/letter/pingen.py). Staging unless configured otherwise: letters
+    # sent to Pingen's staging environment are never printed.
+    PINGEN_API_URL = os.getenv("PINGEN_API_URL", "https://api-staging.pingen.com")
+    PINGEN_IDENTITY_URL = os.getenv("PINGEN_IDENTITY_URL", "https://identity-staging.pingen.com")
+    PINGEN_CLIENT_ID = os.getenv("PINGEN_CLIENT_ID")
+    PINGEN_CLIENT_SECRET = os.getenv("PINGEN_CLIENT_SECRET")
+    PINGEN_ORGANISATION_ID = os.getenv("PINGEN_ORGANISATION_ID")
+    PINGEN_WEBHOOK_SIGNING_KEY = os.getenv("PINGEN_WEBHOOK_SIGNING_KEY")
+    PINGEN_DELIVERY_PRODUCT = os.getenv("PINGEN_DELIVERY_PRODUCT", "cheap")
+    PINGEN_PRINT_MODE = os.getenv("PINGEN_PRINT_MODE", "simplex")
+    PINGEN_PRINT_SPECTRUM = os.getenv("PINGEN_PRINT_SPECTRUM", "color")
+
     # Client-side SSL setup
     # NOTE: For mTLS setup, trusted certificates should be added to the system certificates.
     # For a custom bundle to be used, override the CURL_CA_BUNDLE environment variable.
@@ -1048,6 +1060,9 @@ class AccNL(ConfigNL):
 
 class ProdNL(ConfigNL):
     DEBUG = False
+
+    PINGEN_API_URL = os.getenv("PINGEN_API_URL", "https://api.pingen.com")
+    PINGEN_IDENTITY_URL = os.getenv("PINGEN_IDENTITY_URL", "https://identity.pingen.com")
 
     NOTIFY_EMAIL_DOMAIN = "notifynl.nl"
     FROM_NUMBER = "NOTIFYNL"

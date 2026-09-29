@@ -24,9 +24,11 @@ STATISTICS_FAILURE = "failure"
 
 
 class NotificationProviderClients:
-    def __init__(self, sms_clients, email_clients):
+    def __init__(self, sms_clients, email_clients, letter_clients=None):
         self.sms_clients = {**sms_clients}
         self.email_clients = {**email_clients}
+        # [NotifyNL] letter (print provider) clients, chosen per organisation
+        self.letter_clients = {**(letter_clients or {})}
 
     def get_sms_client(self, name):
         return self.sms_clients.get(name)
@@ -34,8 +36,14 @@ class NotificationProviderClients:
     def get_email_client(self, name):
         return self.email_clients.get(name)
 
+    def get_letter_client(self, name):
+        return self.letter_clients.get(name)
+
     def get_client_by_name_and_type(self, name, notification_type):
-        assert notification_type in ["email", "sms"]
+        assert notification_type in ["email", "sms", "letter"]
+
+        if notification_type == "letter":
+            return self.get_letter_client(name)
 
         if notification_type == "email":
             return self.get_email_client(name)
