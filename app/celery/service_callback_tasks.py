@@ -213,7 +213,10 @@ def create_delivery_status_callback_data(notification, service_callback_api):
         # URL, encrypted or not: it's meaningless ciphertext to the receiving
         # service, and decrypting it just to re-send over HTTP would reintroduce
         # exposure this change is meant to close.
-        "notification_to": None if notification.notification_type == MESSAGEBOX_TYPE else notification.to,
+        # [NotifyNL] NotificationHistory has no `to` column; a provider can report back after the move to history.
+        "notification_to": (
+            None if notification.notification_type == MESSAGEBOX_TYPE else getattr(notification, "to", None)
+        ),
         "notification_status": notification.status,
         "notification_detailed_status_code": notification.detailed_status_code,
         "notification_created_at": notification.created_at.strftime(DATETIME_FORMAT),
