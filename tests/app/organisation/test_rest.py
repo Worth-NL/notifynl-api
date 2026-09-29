@@ -93,6 +93,7 @@ def test_get_organisation_by_id(admin_request, notify_db_session):
         "billing_reference",
         "purchase_order_number",
         "area_boundary",
+        "letter_provider",
         "can_approve_own_go_live_requests",
         "permissions",
     }
