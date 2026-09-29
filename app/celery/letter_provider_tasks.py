@@ -3,6 +3,7 @@ from datetime import datetime, timedelta
 from botocore.exceptions import ClientError as BotoClientError
 from flask import current_app
 from notifications_utils.clients.zendesk.zendesk_client import NotifySupportTicket, NotifyTicketType
+from notifications_utils.timezones import convert_utc_to_bst
 
 from app import notify_celery, redis_store, signing, zendesk_client
 from app.clients.letter import (
@@ -14,7 +15,11 @@ from app.config import QueueNames, TaskNamesNL
 from app.constants import (
     KEY_TYPE_NORMAL,
     LETTER_TYPE,
+    NOTIFICATION_DELIVERED,
+    NOTIFICATION_PERMANENT_FAILURE,
+    NOTIFICATION_RETURNED_LETTER,
     NOTIFICATION_SENDING,
+    NOTIFICATION_SENT,
     NOTIFICATION_TECHNICAL_FAILURE,
 )
 from app.dao.letter_provider_reference_dao import (
@@ -25,14 +30,18 @@ from app.dao.notifications_dao import (
     dao_claim_letter_for_sending,
     dao_get_letters_ready_to_send_since,
     dao_get_letters_stuck_sending,
+    dao_get_notification_or_history_by_id,
     dao_mark_letter_sent,
+    dao_record_letter_despatched_on_by_id,
     dao_touch_notification,
+    dao_update_notification,
     get_notification_by_id,
     update_notification_status_by_id,
 )
 from app.letters.utils import LetterPDFNotFound, find_letter_pdf_in_s3
 from app.letters_nl.constants import LETTER_PROVIDER_CALLBACK_PATH
 from app.letters_nl.provider import resolve_letter_provider
+from app.models import LetterCostThreshold
 from app.notifications.notifications_ses_callback import check_and_queue_callback_task
 from app.otel_metrics.notification import record_send_duration
 
@@ -250,3 +259,61 @@ def check_letters_stuck_sending():
                 notify_task_type="notify_task_letters_stuck_sending",
             )
         )
+
+
+# the statuses a print provider's report may move a letter from: never backwards, and never twice
+PROVIDER_STATUS_TRANSITIONS = {
+    NOTIFICATION_DELIVERED: {NOTIFICATION_SENDING, NOTIFICATION_SENT},
+    NOTIFICATION_PERMANENT_FAILURE: {NOTIFICATION_SENDING, NOTIFICATION_SENT},
+    NOTIFICATION_TECHNICAL_FAILURE: {NOTIFICATION_SENDING, NOTIFICATION_SENT},
+    # a letter can come back after it was handed to the postal service
+    NOTIFICATION_RETURNED_LETTER: {NOTIFICATION_SENDING, NOTIFICATION_SENT, NOTIFICATION_DELIVERED},
+}
+PROVIDER_DETAILED_STATUS_CODES = {
+    NOTIFICATION_PERMANENT_FAILURE: "print-provider-rejected",
+    NOTIFICATION_TECHNICAL_FAILURE: "print-provider-issue",
+}
+
+
+@notify_celery.task(name=TaskNamesNL.PROCESS_LETTER_PROVIDER_STATUS)
+def process_letter_provider_status(notification_id, provider, status, reason=None):
+    """A print provider reported back on a letter it accepted (REST endpoint callback or Pingen webhook)."""
+    # providers can report back after the letter moved to notification_history
+    notification = dao_get_notification_or_history_by_id(notification_id)
+    extra = {
+        "notification_id": notification_id,
+        "provider_name": provider,
+        "notification_status": notification.status,
+        "notification_status_new": status,
+        "reason": reason,
+    }
+    if notification.status not in PROVIDER_STATUS_TRANSITIONS[status]:
+        current_app.logger.info(
+            "Ignoring %s status %s for letter %s, which is %s",
+            provider,
+            status,
+            notification_id,
+            notification.status,
+            extra=extra,
+        )
+        return
+
+    current_app.logger.info("Letter %s is %s according to %s", notification_id, status, provider, extra=extra)
+
+    if status == NOTIFICATION_RETURNED_LETTER:
+        from app.celery.tasks import process_returned_letters_list
+
+        # also records the returned letter for the service's report and sends the returned letter callback
+        process_returned_letters_list([notification.reference])
+        return
+
+    notification.status = status
+    if status in PROVIDER_DETAILED_STATUS_CODES:
+        notification.detailed_status_code = PROVIDER_DETAILED_STATUS_CODES[status]
+    dao_update_notification(notification)
+
+    if status == NOTIFICATION_DELIVERED:
+        dao_record_letter_despatched_on_by_id(
+            notification.id, convert_utc_to_bst(datetime.utcnow()).date(), LetterCostThreshold.unsorted
+        )
+    check_and_queue_callback_task(notification)

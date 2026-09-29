@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import date, datetime
 from unittest import mock
 
 import pytest
@@ -10,6 +10,7 @@ from app.celery.letter_provider_tasks import (
     check_letters_stuck_sending,
     deliver_letter_via_provider,
     dispatch_stranded_letters,
+    process_letter_provider_status,
     queue_letter_for_delivery,
 )
 from app.clients.letter import (
@@ -21,8 +22,14 @@ from app.clients.letter.pingen import PingenClient
 from app.clients.letter.rest_endpoint import RestEndpointLetterClient
 from app.dao.letter_provider_reference_dao import dao_get_letter_provider_reference
 from app.letters.utils import LetterPDFNotFound
-from app.models import Notification
-from tests.app.db import create_notification, create_organisation, create_service, create_template
+from app.models import LetterCostThreshold, Notification, NotificationHistory, NotificationLetterDespatch
+from tests.app.db import (
+    create_notification,
+    create_notification_history,
+    create_organisation,
+    create_service,
+    create_template,
+)
 from tests.app.db_nl import create_letter_provider_reference, create_organisation_letter_provider
 from tests.conftest import set_config, set_config_values
 
@@ -401,3 +408,75 @@ def test_check_letters_stuck_sending_without_stuck_letters(notify_api, letter_te
     check_letters_stuck_sending()
 
     assert not send_ticket.called
+
+
+@freeze_time("2026-09-29 12:00")
+@pytest.mark.parametrize("from_status", ["sending", "sent"])
+def test_process_letter_provider_status_delivered(letter_template, mock_callback, from_status):
+    notification = create_notification(template=letter_template, status=from_status)
+
+    process_letter_provider_status(str(notification.id), "pingen", "delivered")
+
+    notification = Notification.query.get(notification.id)
+    assert notification.status == "delivered"
+    despatch = NotificationLetterDespatch.query.get(notification.id)
+    assert (despatch.despatched_on, despatch.cost_threshold) == (date(2026, 9, 29), LetterCostThreshold.unsorted)
+    mock_callback.assert_called_once_with(notification)
+
+
+@pytest.mark.parametrize(
+    "status, detailed_status_code",
+    [("technical-failure", "print-provider-issue"), ("permanent-failure", "print-provider-rejected")],
+)
+def test_process_letter_provider_status_failure(letter_template, mock_callback, status, detailed_status_code):
+    notification = create_notification(template=letter_template, status="sent")
+
+    process_letter_provider_status(str(notification.id), "pingen", status, reason="Content failed inspection")
+
+    notification = Notification.query.get(notification.id)
+    assert (notification.status, notification.detailed_status_code) == (status, detailed_status_code)
+    assert mock_callback.called
+
+
+@pytest.mark.parametrize(
+    "from_status, status",
+    [
+        ("delivered", "delivered"),  # a duplicate report
+        ("delivered", "technical-failure"),
+        ("technical-failure", "delivered"),
+        ("created", "delivered"),
+        ("returned-letter", "returned-letter"),
+    ],
+)
+def test_process_letter_provider_status_never_moves_a_letter_backwards(
+    letter_template, mock_callback, mocker, from_status, status
+):
+    returned = mocker.patch("app.celery.tasks.process_returned_letters_list")
+    notification = create_notification(template=letter_template, status=from_status)
+
+    process_letter_provider_status(str(notification.id), "rest-endpoint", status)
+
+    assert _status(notification) == from_status
+    assert not mock_callback.called
+    assert not returned.called
+
+
+@pytest.mark.parametrize("from_status", ["sent", "delivered"])
+def test_process_letter_provider_status_returned_letter(letter_template, mock_callback, mocker, from_status):
+    returned = mocker.patch("app.celery.tasks.process_returned_letters_list")
+    notification = create_notification(template=letter_template, status=from_status, reference="RETURNEDREF")
+
+    process_letter_provider_status(str(notification.id), "pingen", "returned-letter", reason="Moved away")
+
+    # also records the returned letter for the service's report and sends the returned letter callback
+    returned.assert_called_once_with(["RETURNEDREF"])
+    assert not mock_callback.called
+
+
+def test_process_letter_provider_status_for_a_letter_in_notification_history(letter_template, mock_callback):
+    notification = create_notification_history(template=letter_template, status="sent")
+
+    process_letter_provider_status(str(notification.id), "pingen", "delivered")
+
+    assert NotificationHistory.query.get(notification.id).status == "delivered"
+    assert mock_callback.called
