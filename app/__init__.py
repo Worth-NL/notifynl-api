@@ -276,6 +276,7 @@ def register_blueprint(application):
         letter_branding_blueprint,
     )
     from app.letters.rest import letter_job, letter_rates_blueprint
+    from app.notifications.letter_provider_callback import letter_provider_callback_blueprint
     from app.notifications.notifications_letter_callback import (
         letter_callback_blueprint,
     )
@@ -386,6 +387,10 @@ def register_blueprint(application):
 
     letter_callback_blueprint.before_request(requires_no_auth)
     application.register_blueprint(letter_callback_blueprint)
+
+    # [NotifyNL] status updates from letter providers (REST endpoint callbacks, Pingen webhooks)
+    letter_provider_callback_blueprint.before_request(requires_no_auth)
+    application.register_blueprint(letter_provider_callback_blueprint)
 
     billing_blueprint.before_request(requires_admin_auth)
     application.register_blueprint(billing_blueprint)

@@ -768,6 +768,7 @@ class TaskNamesNL(TaskNames):
     DELIVER_LETTER_VIA_PROVIDER = "deliver-letter-via-provider"
     DISPATCH_STRANDED_LETTERS = "dispatch-stranded-letters"
     CHECK_LETTERS_STUCK_SENDING = "check-letters-stuck-sending"
+    PROCESS_LETTER_PROVIDER_STATUS = "process-letter-provider-status"
     # Precompiled letters submitted as multiple PDFs, merged into one letter before delivery -
     # own dedicated task flow, parallel to (and independent of) the single-PDF SCAN_FILE/
     # SANITISE_LETTER/PROCESS_VIRUS_SCAN_* flow above.
