@@ -1364,6 +1364,7 @@ def test_notification_serialization_returns_all_fields(client, notify_db_session
         "scheduled_for": None,
         "postage": None,
         "one_click_unsubscribe_url": None,
+        "print_provider": None,
     }
 
 

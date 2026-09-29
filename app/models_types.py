@@ -209,6 +209,7 @@ class SerializedNotification(TypedDict):
     scheduled_for: None  # Currently hardcoded to None
     postage: str | None
     one_click_unsubscribe_url: str | None
+    print_provider: str | None
     estimated_delivery: NotRequired[str]
 
 

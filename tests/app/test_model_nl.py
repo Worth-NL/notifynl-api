@@ -4,8 +4,11 @@ from app.letters_nl.constants import LETTER_PROVIDER_PINGEN, LETTER_PROVIDER_RES
 from tests.app.db import (
     create_notification,
     create_organisation,
+    create_service,
+    create_template,
 )
 from tests.app.db_nl import create_organisation_letter_provider
+from tests.conftest import set_config
 
 
 @pytest.mark.parametrize("status", ["created", "pending-virus-check"])
@@ -192,3 +195,81 @@ def test_organisation_serialize_letter_provider_defaults_to_none(notify_db_sessi
 
 def test_service_does_not_send_client_reference_to_letter_provider_by_default(sample_service):
     assert sample_service.send_client_reference_to_letter_provider is False
+
+
+@pytest.fixture
+def service_in_organisation(notify_db_session):
+    organisation = create_organisation()
+    service = create_service(organisation=organisation, service_name="placement service")
+    service.letter_address_placement = "50mm"
+    return service
+
+
+def test_effective_letter_address_placement_is_the_services_own_while_letters_go_through_dvla(
+    notify_api, service_in_organisation
+):
+    create_organisation_letter_provider(service_in_organisation.organisation, LETTER_PROVIDER_PINGEN)
+
+    with set_config(notify_api, "LETTER_DELIVERY_VIA_PROVIDERS", False):
+        assert service_in_organisation.effective_letter_address_placement == "50mm"
+
+
+@pytest.mark.parametrize(
+    "provider, endpoint_url, auth_config, expected",
+    [
+        (LETTER_PROVIDER_REST_ENDPOINT, "https://print.example.com", API_KEY_AUTH_CONFIG, "50mm"),
+        # an incomplete endpoint means letters go to Pingen
+        (LETTER_PROVIDER_REST_ENDPOINT, None, API_KEY_AUTH_CONFIG, "60mm"),
+        (LETTER_PROVIDER_PINGEN, None, None, "60mm"),
+        (None, None, None, "60mm"),
+    ],
+)
+def test_effective_letter_address_placement_follows_the_organisations_provider(
+    notify_api, service_in_organisation, provider, endpoint_url, auth_config, expected
+):
+    service_in_organisation.letter_address_placement = "60mm" if expected == "50mm" else "50mm"
+    if provider:
+        create_organisation_letter_provider(
+            service_in_organisation.organisation,
+            provider,
+            endpoint_url=endpoint_url,
+            auth_method="api_key" if auth_config else None,
+            auth_config=auth_config,
+            address_placement="50mm" if provider == LETTER_PROVIDER_REST_ENDPOINT else "60mm",
+        )
+
+    with set_config(notify_api, "LETTER_DELIVERY_VIA_PROVIDERS", True):
+        assert service_in_organisation.effective_letter_address_placement == expected
+
+
+def test_effective_letter_address_placement_without_an_organisation(notify_api, sample_service):
+    sample_service.letter_address_placement = "50mm"
+
+    with set_config(notify_api, "LETTER_DELIVERY_VIA_PROVIDERS", True):
+        assert sample_service.effective_letter_address_placement == "60mm"
+
+
+@pytest.mark.parametrize(
+    "template_type, sent_by, expected",
+    [
+        ("letter", "pingen", "pingen"),
+        ("letter", "rest-endpoint", "rest-endpoint"),
+        # letters sent through notifynl-dvla-service: the shim chose the actual provider
+        ("letter", "dvla", None),
+        ("letter", None, None),
+        ("sms", "spryng", None),
+    ],
+)
+def test_notification_print_provider(sample_service, template_type, sent_by, expected):
+    template = create_template(sample_service, template_type=template_type)
+    notification = create_notification(template=template, status="sent", sent_by=sent_by)
+
+    assert notification.print_provider == expected
+    assert notification.serialize()["print_provider"] == expected
+
+
+def test_letter_accepted_by_print_provider_status(sample_letter_template):
+    notification = create_notification(template=sample_letter_template, status="sent", sent_by="pingen")
+
+    assert notification.formatted_status == "Accepted by print provider"
+    assert notification.serialize()["status"] == "sent"

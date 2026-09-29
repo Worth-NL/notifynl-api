@@ -76,6 +76,7 @@ from app.constants import (
 )
 from app.hashing import check_hash, hashpw
 from app.history_meta import Versioned
+from app.letters_nl.constants import LETTER_PROVIDERS, PINGEN_ADDRESS_PLACEMENT
 from app.models_types import (
     LetterCostDetails,
     SerializedAnnualBilling,
@@ -712,6 +713,19 @@ class Service(db.Model, Versioned):
     def get_default_letter_contact(self):
         default_letter_contact = [x for x in self.letter_contacts if x.is_default]
         return default_letter_contact[0].contact_block if default_letter_contact else None
+
+    @property
+    def effective_letter_address_placement(self):
+        """
+        [NotifyNL] Where the address goes on this service's letters. Once letters go straight to print providers
+        (LETTER_DELIVERY_VIA_PROVIDERS), the organisation's provider decides: its envelopes fix the window.
+        """
+        if not current_app.config.get("LETTER_DELIVERY_VIA_PROVIDERS"):
+            return self.letter_address_placement
+        letter_provider = self.organisation.letter_provider if self.organisation else None
+        if letter_provider and letter_provider.is_complete():
+            return letter_provider.address_placement
+        return PINGEN_ADDRESS_PLACEMENT
 
     def has_permission(self, permission):
         return permission in [p.permission for p in self.permissions]
@@ -1751,6 +1765,7 @@ class Notification(db.Model):
                 "permanent-failure": "Permanent failure",
                 "sending": "Accepted",
                 "created": "Accepted",
+                "sent": "Accepted by print provider",  # [NotifyNL]
                 "delivered": "Received",
                 "returned-letter": "Returned",
             },
@@ -1766,6 +1781,13 @@ class Notification(db.Model):
             },
         }[self.template.template_type].get(self.status, self.status)
 
+    @property
+    def print_provider(self):
+        """[NotifyNL] The print provider that accepted this letter, if it went straight to one."""
+        if self.notification_type == LETTER_TYPE and self.sent_by in LETTER_PROVIDERS:
+            return self.sent_by
+        return None
+
     def get_letter_status(self):
         """
         Return the notification_status, as we should present for letters. The distinction between created and sending is
@@ -1775,6 +1797,7 @@ class Notification(db.Model):
         """
         # this should only ever be called for letter notifications - it makes no sense otherwise and I'd rather not
         # get the two code flows mixed up at all
+        # [NotifyNL] `sent` (accepted by the print provider, see print_provider) is presented as is
         assert self.notification_type == LETTER_TYPE
 
         if self.status in [NOTIFICATION_CREATED, NOTIFICATION_SENDING]:
@@ -1842,6 +1865,7 @@ class Notification(db.Model):
             one_click_unsubscribe_url=self.get_unsubscribe_link_for_headers(
                 template_has_unsubscribe_link=self.template.has_unsubscribe_link
             ),
+            print_provider=self.print_provider,
         )
 
         if self.notification_type == LETTER_TYPE:

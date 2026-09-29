@@ -286,7 +286,9 @@ def preview_letter_template_by_notification_id(service_id, notification_id, file
 
         if content_outside_printable_area and (file_type == "pdf" or page_is_in_invalid_pages):
             path = f"/precompiled/overlay.{file_type}"
-            query_string = _overlay_query_string(file_type, page_number, notification.service.letter_address_placement)
+            query_string = _overlay_query_string(
+                file_type, page_number, notification.service.effective_letter_address_placement
+            )
             content = pdf_file
         elif file_type == "png":
             query_string = "?hide_notify=true" if page_number == "1" else ""
@@ -332,7 +334,7 @@ def preview_letter_template_by_notification_id(service_id, notification_id, file
             "values": notification.personalisation,
             "date": notification.created_at.isoformat(),
             "filename": letter_logo_filename,
-            "letter_address_placement": service.letter_address_placement,
+            "letter_address_placement": service.effective_letter_address_placement,
         }
 
         url = "{}/preview.{}{}".format(
