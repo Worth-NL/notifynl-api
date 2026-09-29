@@ -851,6 +851,11 @@ class ConfigNL(Config):
         "imports": CELERY_IMPORTS,
     }
 
+    # Letter providers: organisation admins configure their own REST endpoint, so only https URLs resolving to
+    # public addresses are allowed (see app/letters_nl/url_validation.py). Local development only: allow http and
+    # private hosts, for the local letter endpoint stub.
+    LETTER_ENDPOINT_ALLOW_INSECURE = False
+
     # Client-side SSL setup
     # NOTE: For mTLS setup, trusted certificates should be added to the system certificates.
     # For a custom bundle to be used, override the CURL_CA_BUNDLE environment variable.
@@ -916,6 +921,8 @@ class ConfigNL(Config):
 class DevNL(ConfigNL):
     DEBUG = True
     SQLALCHEMY_ECHO = False
+
+    LETTER_ENDPOINT_ALLOW_INSECURE = True
 
     CELERY_WORKER_LOG_LEVEL = "INFO"
 

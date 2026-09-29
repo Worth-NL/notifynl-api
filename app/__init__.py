@@ -263,6 +263,7 @@ def register_blueprint(application):
     )
     from app.one_click_unsubscribe.rest import one_click_unsubscribe_blueprint
     from app.organisation.invite_rest import organisation_invite_blueprint
+    from app.organisation.letter_provider_rest_nl import organisation_letter_provider_blueprint
     from app.organisation.rest import organisation_blueprint
     from app.performance_dashboard.rest import performance_dashboard_blueprint
     from app.platform_admin.rest import platform_admin_blueprint
@@ -367,6 +368,10 @@ def register_blueprint(application):
 
     organisation_blueprint.before_request(requires_admin_auth)
     application.register_blueprint(organisation_blueprint, url_prefix="/organisations")
+
+    # [NotifyNL] per-organisation letter provider
+    organisation_letter_provider_blueprint.before_request(requires_admin_auth)
+    application.register_blueprint(organisation_letter_provider_blueprint)
 
     complaint_blueprint.before_request(requires_admin_auth)
     application.register_blueprint(complaint_blueprint)
