@@ -33,6 +33,7 @@ from app.constants import (
     LETTER_TYPE,
     MESSAGEBOX_TERMINAL_STATUSES,
     MESSAGEBOX_TYPE,
+    NOTIFICATION_CANCELLED,
     NOTIFICATION_CREATED,
     NOTIFICATION_DELIVERED,
     NOTIFICATION_PENDING,
@@ -253,6 +254,33 @@ def update_notification_status_by_id(
         detailed_status_code=detailed_status_code,
         messagebox_stadium=messagebox_stadium,
     )
+
+
+### [NotifyNL] #########################################################################################################
+@autocommit
+def dao_cancel_letter_if_still_cancellable(notification_id):
+    """
+    Cancel a letter only if it is still cancellable at write time, under a row lock. A letter can be handed to the
+    print provider (created -> sending) between a caller's letter_can_be_cancelled() check and this update, and a
+    letter that has already been sent must never be marked cancelled. Returns None if nothing was cancelled.
+    """
+    notification = (
+        Notification.query.with_for_update()
+        .filter(
+            Notification.id == notification_id,
+            Notification.status.in_([NOTIFICATION_CREATED, NOTIFICATION_PENDING_VIRUS_CHECK]),
+        )
+        .first()
+    )
+    if not notification:
+        return None
+
+    notification.status = NOTIFICATION_CANCELLED
+    dao_update_notification(notification)
+    return notification
+
+
+########################################################################################################################
 
 
 @autocommit

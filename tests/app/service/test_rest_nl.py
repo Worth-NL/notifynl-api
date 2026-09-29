@@ -1,7 +1,9 @@
 import json
+from datetime import datetime
 
 import pytest
 from flask import url_for
+from freezegun import freeze_time
 
 from tests import create_admin_authorization_header
 
@@ -109,3 +111,25 @@ def test_create_pdf_letter_validates_against_json_schema(
 
     assert response.status_code == 400
     assert json_resp["errors"] == expected_errors
+
+
+@freeze_time("2018-07-07 16:00:00")
+def test_cancel_notification_for_service_refuses_letter_handed_to_provider_after_check(
+    admin_request, sample_letter_notification, mocker
+):
+    # the letter passed the cancellable check, but was claimed for sending before the update ran
+    mocker.patch("app.service.rest.letter_can_be_cancelled", return_value=True)
+    mock_adjust_redis = mocker.patch("app.service.rest.adjust_daily_service_limits_for_cancelled_letters")
+    sample_letter_notification.status = "sending"
+    sample_letter_notification.created_at = datetime.now()
+
+    response = admin_request.post(
+        "service.cancel_notification_for_service",
+        service_id=sample_letter_notification.service_id,
+        notification_id=sample_letter_notification.id,
+        _expected_status=400,
+    )
+
+    assert response["message"] == "We could not cancel this letter. It has already been sent to the print provider."
+    assert sample_letter_notification.status == "sending"
+    assert not mock_adjust_redis.called

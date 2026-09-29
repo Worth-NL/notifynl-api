@@ -1,6 +1,9 @@
 from datetime import datetime, timedelta
 
+import pytest
+
 from app.dao.notifications_dao import (
+    dao_cancel_letter_if_still_cancellable,
     dao_get_letters_and_sheets_volume_by_postage,
     dao_messagebox_notifications_still_pending,
     dao_messagebox_notifications_stuck_sending,
@@ -100,3 +103,21 @@ def test_dao_messagebox_notifications_stuck_sending(notify_db_session):
     results = dao_messagebox_notifications_stuck_sending(cutoff_time)
 
     assert {n.id for n in results} == {stuck_sending.id}
+
+
+@pytest.mark.parametrize("status", ["created", "pending-virus-check"])
+def test_dao_cancel_letter_if_still_cancellable_cancels_letter(sample_letter_template, status):
+    notification = create_notification(template=sample_letter_template, status=status)
+
+    cancelled = dao_cancel_letter_if_still_cancellable(notification.id)
+
+    assert cancelled.id == notification.id
+    assert cancelled.status == "cancelled"
+
+
+@pytest.mark.parametrize("status", ["sending", "sent", "delivered", "technical-failure", "cancelled"])
+def test_dao_cancel_letter_if_still_cancellable_leaves_letter_already_past_cancelling(sample_letter_template, status):
+    notification = create_notification(template=sample_letter_template, status=status)
+
+    assert dao_cancel_letter_if_still_cancellable(notification.id) is None
+    assert notification.status == status

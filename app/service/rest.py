@@ -23,7 +23,6 @@ from app.constants import (
     KEY_TYPE_NORMAL,
     LETTER_TYPE,
     MOBILE_TYPE,
-    NOTIFICATION_CANCELLED,
     NOTIFICATION_TYPES,
     REPORT_REQUEST_NOTIFICATIONS,
     REPORT_REQUEST_PENDING,
@@ -633,10 +632,15 @@ def cancel_notification_for_service(service_id, notification_id):
             )
         raise InvalidRequest(message, status_code=400)
 
-    updated_notification = notifications_dao.update_notification_status_by_id(
-        notification_id,
-        NOTIFICATION_CANCELLED,
-    )
+    ### [NotifyNL] ####################################################################################################
+    # The letter may have been handed to the print provider since the check above, so only cancel it if it is
+    # still cancellable at write time.
+    updated_notification = notifications_dao.dao_cancel_letter_if_still_cancellable(notification_id)
+    if not updated_notification:
+        raise InvalidRequest(
+            "We could not cancel this letter. It has already been sent to the print provider.", status_code=400
+        )
+    ####################################################################################################################
     adjust_daily_service_limits_for_cancelled_letters(service_id, 1, notification.created_at)
 
     return jsonify(notification_with_template_schema.dump(updated_notification)), 200
