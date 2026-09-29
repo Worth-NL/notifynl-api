@@ -765,6 +765,9 @@ class TaskNamesNL(TaskNames):
     MESSAGEBOX_VIRUS_SCAN_FAILED = "messagebox.virus-scan-failed"
     MESSAGEBOX_PROCESS_UNPROCESSED = "messagebox.process-unprocessed"
     MESSAGEBOX_CHECK_STILL_PENDING = "messagebox.check-still-pending"
+    DELIVER_LETTER_VIA_PROVIDER = "deliver-letter-via-provider"
+    DISPATCH_STRANDED_LETTERS = "dispatch-stranded-letters"
+    CHECK_LETTERS_STUCK_SENDING = "check-letters-stuck-sending"
     # Precompiled letters submitted as multiple PDFs, merged into one letter before delivery -
     # own dedicated task flow, parallel to (and independent of) the single-PDF SCAN_FILE/
     # SANITISE_LETTER/PROCESS_VIRUS_SCAN_* flow above.
@@ -782,6 +785,42 @@ class TaskNamesNL(TaskNames):
     PROCESS_VIRUS_SCAN_SUCCESS_LETTER_ATTACHMENTS = "process-virus-scan-success-letter-attachments"
     PROCESS_VIRUS_SCAN_FAILED_LETTER_ATTACHMENTS = "process-virus-scan-failed-letter-attachments"
     PROCESS_VIRUS_SCAN_ERROR_LETTER_ATTACHMENTS = "process-virus-scan-error-letter-attachments"
+
+
+# Beat tasks that only make sense when letters are delivered through notifynl-dvla-service
+DVLA_LETTER_BEAT_TASKS = (
+    "check-time-to-collate-letters",
+    "change-dvla-api-key",
+    "change-dvla-password",
+    "raise-alert-if-letter-notifications-still-sending",
+)
+
+
+def build_letter_beat_schedule(beat_schedule, delivery_via_providers, collation_frequency):
+    """
+    Letters go either through notifynl-dvla-service (DVLA collation) or straight to each organisation's print
+    provider (app/celery/letter_provider_tasks.py), never both, depending on LETTER_DELIVERY_VIA_PROVIDERS.
+    """
+    schedule = {key: value for key, value in beat_schedule.items() if key not in DVLA_LETTER_BEAT_TASKS}
+    if delivery_via_providers:
+        schedule[TaskNamesNL.DISPATCH_STRANDED_LETTERS] = {
+            "task": TaskNamesNL.DISPATCH_STRANDED_LETTERS,
+            "schedule": crontab(minute="*/5"),
+            "options": {"queue": QueueNamesNL.PERIODIC},
+        }
+        schedule[TaskNamesNL.CHECK_LETTERS_STUCK_SENDING] = {
+            "task": TaskNamesNL.CHECK_LETTERS_STUCK_SENDING,
+            "schedule": crontab(hour=9, minute=15),
+            "options": {"queue": QueueNamesNL.PERIODIC},
+        }
+    else:
+        schedule |= {key: value for key, value in beat_schedule.items() if key in DVLA_LETTER_BEAT_TASKS}
+        schedule["check-time-to-collate-letters"] = {
+            "task": "check-time-to-collate-letters",
+            "schedule": crontab(minute=collation_frequency),
+            "options": {"queue": QueueNamesNL.PERIODIC},
+        }
+    return schedule
 
 
 class ConfigNL(Config):
@@ -813,17 +852,14 @@ class ConfigNL(Config):
         key: value for key, value in Config.CELERY["broker_transport_options"].items() if key != "predefined_queues"
     }
 
-    BEAT_SCHEDULE = {
-        key: value for key, value in Config.CELERY["beat_schedule"].items() if key != "check-time-to-collate-letters"
-    }
-
+    # Deliver letters straight to each organisation's print provider (Pingen or its own REST endpoint) instead of
+    # through notifynl-dvla-service. Off until an environment's letter providers are configured.
+    LETTER_DELIVERY_VIA_PROVIDERS = os.getenv("LETTER_DELIVERY_VIA_PROVIDERS", "0") == "1"
     LETTER_COLLATION_FREQUENCY = os.getenv("LETTER_COLLATION_FREQUENCY", "*/5")
 
-    BEAT_SCHEDULE["check-time-to-collate-letters"] = {
-        "task": "check-time-to-collate-letters",
-        "schedule": crontab(minute=LETTER_COLLATION_FREQUENCY),  # every 5 minutes, adjust as needed
-        "options": {"queue": QueueNamesNL.PERIODIC},
-    }
+    BEAT_SCHEDULE = build_letter_beat_schedule(
+        Config.CELERY["beat_schedule"], LETTER_DELIVERY_VIA_PROVIDERS, LETTER_COLLATION_FREQUENCY
+    )
 
     # The ebms-adapter has no true push callback -- delivery status is retrieved by polling the ebms-adapter for
     # unprocessed messages. 5 minutes matches the existing tend-providers-back-to-middle cadence and balances adapter
@@ -842,7 +878,11 @@ class ConfigNL(Config):
         "options": {"queue": QueueNamesNL.PERIODIC},
     }
 
-    CELERY_IMPORTS = Config.CELERY["imports"] + ["app.celery.messagebox_tasks", "app.celery.messagebox_scheduled_tasks"]
+    CELERY_IMPORTS = Config.CELERY["imports"] + [
+        "app.celery.messagebox_tasks",
+        "app.celery.messagebox_scheduled_tasks",
+        "app.celery.letter_provider_tasks",
+    ]
 
     CELERY = {
         **Config.CELERY,

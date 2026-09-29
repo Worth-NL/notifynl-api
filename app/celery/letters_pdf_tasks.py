@@ -9,6 +9,7 @@ from notifications_utils.timezones import convert_bst_to_utc, convert_utc_to_bst
 
 from app import notify_celery, signing
 from app.aws import s3
+from app.celery.letter_provider_tasks import queue_letter_for_delivery
 from app.celery.provider_tasks import deliver_letter
 from app.config import QueueNames, TaskNames, TaskNamesNL
 from app.constants import (
@@ -135,6 +136,8 @@ def update_billable_units_for_letter(self, notification_id, page_count):
     if notification.key_type != KEY_TYPE_TEST:
         notification.billable_units = billable_units
         dao_update_notification(notification)
+        # [NotifyNL] the letter's PDF is ready: hand it to its print provider
+        queue_letter_for_delivery(notification)
 
         extra = {
             "notification_id": notification_id,
@@ -578,6 +581,9 @@ def process_sanitised_letter(self, sanitise_data):
             )
             update_notification_status_by_id(notification.id, NOTIFICATION_TECHNICAL_FAILURE)
             raise NotificationTechnicalFailureException(message) from e
+
+    # [NotifyNL] the sanitised PDF is in the letters bucket: hand the letter to its print provider
+    queue_letter_for_delivery(notification)
 
 
 def _move_invalid_letter_and_update_status(

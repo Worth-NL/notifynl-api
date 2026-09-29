@@ -28,3 +28,6 @@ DEFAULT_API_KEY_HEADER = "X-Api-Key"
 # Pingen's envelopes need the address block 60mm from the top; a REST endpoint's config sets its own placement
 PINGEN_ADDRESS_PLACEMENT = "60mm"
 ADDRESS_PLACEMENTS = ["50mm", "60mm"]
+
+# Where a REST endpoint reports back on a letter it accepted (app/notifications/letter_provider_callback.py)
+LETTER_PROVIDER_CALLBACK_PATH = "/notifications/letter/provider-status"

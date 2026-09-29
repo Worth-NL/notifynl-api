@@ -6,6 +6,7 @@ from notifications_utils.s3 import s3download as utils_s3download
 from sqlalchemy.orm.exc import NoResultFound
 
 from app import create_random_identifier
+from app.celery.letter_provider_tasks import queue_letter_for_delivery
 from app.constants import EMAIL_TYPE, KEY_TYPE_NORMAL, LETTER_TYPE, SMS_TYPE
 from app.dao.notifications_dao import get_notification_by_id
 from app.dao.service_email_reply_to_dao import dao_get_reply_to_by_id
@@ -205,5 +206,7 @@ def send_pdf_letter_notification(service_id, post_data):
     )
 
     move_uploaded_pdf_to_letters_bucket(file_location, upload_filename)
+    # [NotifyNL] the uploaded PDF is in the letters bucket: hand the letter to its print provider
+    queue_letter_for_delivery(notification)
 
     return {"id": str(notification.id)}
