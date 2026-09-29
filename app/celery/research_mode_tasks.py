@@ -12,7 +12,7 @@ from werkzeug.local import LocalProxy
 from app import memo_resetters, notify_celery, signing
 from app.celery.process_ses_receipts_tasks import process_ses_results
 from app.config import QueueNames
-from app.constants import SMS_TYPE
+from app.constants import EUROPE, NETHERLANDS, POSTAGE_TYPES, REST_OF_WORLD, SMS_TYPE
 
 # thread-local copies of persistent requests.Session
 _requests_session_context_var: ContextVar[requests.Session] = ContextVar("research_mode_requests_session")
@@ -110,21 +110,14 @@ def send_letter_response(notification_id: uuid.UUID, billable_units: int, postag
 
 
 def _create_fake_letter_callback_data(notification_id: uuid.UUID, billable_units: int, postage: str):
-    if postage == "first":
-        postage = "1ST"
-        mailing_product = "UNCODED"
-    elif postage == "second":
-        postage = "2ND"
-        mailing_product = "MM"
-    elif postage == "economy":
-        postage = "2ND"
-        mailing_product = "UNSORTEDE"
-    elif postage == "europe":
-        postage = "INTERNATIONAL"
-        mailing_product = "INT EU"
-    else:
-        postage = "INTERNATIONAL"
-        mailing_product = "INT ROW"
+    ### [NotifyNL] #####################################################################################################
+    # The letter callback schema only accepts NL postage values (POSTAGE_TYPES), so send those instead of DVLA's
+    # UK postage classes, mirroring notifynl-dvla-service's own callback. Legacy UK domestic postage maps onto
+    # NETHERLANDS, the single Dutch domestic tier.
+    if postage not in POSTAGE_TYPES:
+        postage = NETHERLANDS
+    mailing_product = {EUROPE: "INT EU", REST_OF_WORLD: "INT ROW"}.get(postage, "UNSORTED")
+    ####################################################################################################################
 
     return {
         "id": "1234",
