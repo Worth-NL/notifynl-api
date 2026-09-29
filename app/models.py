@@ -530,6 +530,7 @@ class Organisation(db.Model):
             billing_contact_email_addresses=self.billing_contact_email_addresses,
             billing_reference=self.billing_reference,
             area_boundary=self.area_boundary,
+            letter_provider=self.letter_provider.serialize_summary() if self.letter_provider else None,
             can_approve_own_go_live_requests=self.can_approve_own_go_live_requests,
             permissions=[x.permission for x in self.permissions],
         )
@@ -601,6 +602,8 @@ class Service(db.Model, Versioned):
     # default delivery provider whenever a service's organisation has no custom Printstraat
     # integration configured). See notifications_utils BaseLetterTemplate._extras.
     letter_address_placement = db.Column(db.String(5), index=False, unique=False, nullable=True, default="60mm")
+    # [NotifyNL] send the letter's client reference to the print provider instead of the generated reference
+    send_client_reference_to_letter_provider = db.Column(db.Boolean, nullable=False, default=False)
     sms_message_limit = db.Column(db.BigInteger, index=False, unique=False, nullable=False, default=999_999_999)
     international_sms_message_limit = db.Column(
         db.BigInteger, index=False, unique=False, nullable=False, default=250_000
@@ -2920,3 +2923,7 @@ class ReportRequest(db.Model):
             created_at=self.created_at.strftime(DATETIME_FORMAT),
             updated_at=get_dt_string_or_none(self.updated_at),
         )
+
+
+# [NotifyNL] NL-only models, imported here so they're always mapped with the rest
+from app.models_nl import LetterProviderReference, OrganisationLetterProvider  # noqa: E402, F401

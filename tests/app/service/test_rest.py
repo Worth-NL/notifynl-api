@@ -293,6 +293,7 @@ def test_get_service_by_id(admin_request, sample_service):
         "purchase_order_number",
         "rate_limit",
         "restricted",
+        "send_client_reference_to_letter_provider",
         "service_callback_api",
         "sms_message_limit",
         "messagebox_message_limit",
