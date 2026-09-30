@@ -208,5 +208,9 @@ def test_dao_get_letters_stuck_sending(sample_letter_template):
     create_notification(
         template=sample_letter_template, status="sending", created_at=six_am, updated_at=six_am, key_type="test"
     )
+    # sent through notifynl-dvla-service, whose alerts cover it
+    create_notification(
+        template=sample_letter_template, status="sending", created_at=six_am, updated_at=six_am, sent_by="dvla"
+    )
 
     assert dao_get_letters_stuck_sending(datetime(2026, 9, 29, 8)) == [stuck]

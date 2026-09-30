@@ -337,11 +337,16 @@ def dao_get_letters_ready_to_send_since(cutoff_time, limit=1000):
 
 
 def dao_get_letters_stuck_sending(cutoff_time):
-    """Letters claimed for sending that haven't been accepted by their print provider nor failed by `cutoff_time`."""
+    """
+    Letters claimed for sending that haven't been accepted by their print provider nor failed by `cutoff_time`. Only
+    letters going straight to a print provider: those have no sent_by until the provider accepts them, while letters
+    that went through notifynl-dvla-service got sent_by "dvla" when they became `sending`.
+    """
     return (
         Notification.query.filter(
             Notification.notification_type == LETTER_TYPE,
             Notification.status == NOTIFICATION_SENDING,
+            Notification.sent_by.is_(None),
             Notification.key_type == KEY_TYPE_NORMAL,
             func.coalesce(Notification.updated_at, Notification.created_at) < cutoff_time,
         )
