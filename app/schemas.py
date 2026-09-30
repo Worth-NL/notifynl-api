@@ -337,6 +337,10 @@ class ServiceSchema(BaseSchema, UUIDsAsStringsMixin):
         # [NotifyNL] with letters going straight to print providers, the organisation's provider decides
         if "letter_address_placement" in data:
             data["letter_address_placement"] = service.effective_letter_address_placement
+            # tells notifynl-admin the service can't choose it (dump-only: unknown keys aren't loaded)
+            data["letter_address_placement_decided_by_provider"] = bool(
+                current_app.config.get("LETTER_DELIVERY_VIA_PROVIDERS")
+            )
         return data
 
     @pre_load

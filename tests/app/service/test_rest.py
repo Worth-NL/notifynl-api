@@ -281,6 +281,7 @@ def test_get_service_by_id(admin_request, sample_service):
         "id",
         "international_sms_message_limit",
         "letter_address_placement",
+        "letter_address_placement_decided_by_provider",
         "letter_branding",
         "letter_message_limit",
         "name",

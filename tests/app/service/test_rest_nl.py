@@ -164,6 +164,7 @@ def test_service_json_has_the_letter_address_placement_its_print_provider_decide
         response = admin_request.get("service.get_service_by_id", service_id=service_with_rest_endpoint_provider.id)
 
     assert response["data"]["letter_address_placement"] == expected
+    assert response["data"]["letter_address_placement_decided_by_provider"] is delivery_via_providers
 
 
 def test_letter_address_placement_decided_by_print_provider_is_not_written_back(
@@ -178,6 +179,7 @@ def test_letter_address_placement_decided_by_print_provider_is_not_written_back(
 
     assert response["data"]["name"] == "renamed service"
     assert response["data"]["letter_address_placement"] == "50mm"
+    assert response["data"]["letter_address_placement_decided_by_provider"] is True
     service = Service.query.get(service_with_rest_endpoint_provider.id)
     assert service.name == "renamed service"
     assert service.letter_address_placement == "60mm"
