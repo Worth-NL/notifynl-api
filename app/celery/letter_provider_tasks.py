@@ -1,11 +1,12 @@
 from datetime import datetime, timedelta
 
 from botocore.exceptions import ClientError as BotoClientError
+from celery.exceptions import Retry
 from flask import current_app
 from notifications_utils.clients.zendesk.zendesk_client import NotifySupportTicket, NotifyTicketType
 from notifications_utils.timezones import convert_utc_to_bst
 
-from app import notify_celery, redis_store, signing, zendesk_client
+from app import db, notify_celery, redis_store, signing, zendesk_client
 from app.clients.letter import (
     Letter,
     LetterClientNonRetryableException,
@@ -98,7 +99,21 @@ def deliver_letter_via_provider(self, notification_id):
         current_app.logger.info("Not delivering letter %s: already being delivered", notification_id, extra=extra)
         return
     try:
+        # while this attempt waited for the lock, a duplicate message may have delivered the letter
+        db.session.refresh(notification)
+        if notification.status != NOTIFICATION_SENDING:
+            current_app.logger.info(
+                "Not delivering letter %s: already %s", notification_id, notification.status, extra=extra
+            )
+            return
         _deliver_claimed_letter(self, notification)
+    except Retry:
+        raise
+    except Exception:
+        # retrying is safe: the letter stays claimed, and retried sends are idempotent where providers support it
+        current_app.logger.exception("RETRY: delivering letter %s failed unexpectedly", notification_id, extra=extra)
+        db.session.rollback()
+        _retry(self, notification_id, "print-provider-error")
     finally:
         lock.release()
 
@@ -112,12 +127,12 @@ def _deliver_claimed_letter(task, notification):
         _fail(notification_id, "no-organisation")
         return
 
-    client, letter_provider = resolve_letter_provider(service.organisation_id)
-
-    if dao_get_letter_provider_reference(notification_id):
+    if reference := dao_get_letter_provider_reference(notification_id):
         # an earlier attempt got the letter accepted but didn't get to mark it sent
-        _mark_sent(notification_id, client.name)
+        _mark_sent(notification_id, reference.provider)
         return
+
+    client, letter_provider = resolve_letter_provider(service.organisation_id)
 
     try:
         pdf = find_letter_pdf_in_s3(notification).get()["Body"].read()

@@ -311,6 +311,112 @@ def test_deliver_letter_via_provider_does_not_resend_a_letter_the_provider_alrea
     assert _status(letter_notification) == "sent"
 
 
+def test_deliver_letter_via_provider_marks_a_resumed_letter_sent_by_the_provider_that_accepted_it(
+    organisation, letter_notification, pdf_in_s3, send_with_pingen, send_with_rest_endpoint, mock_callback
+):
+    # Pingen accepted the letter, then the organisation switched to its own endpoint before the retry
+    letter_notification.status = "sending"
+    create_letter_provider_reference(letter_notification.id, "pingen", "pingen-1")
+    create_organisation_letter_provider(
+        organisation,
+        "rest-endpoint",
+        endpoint_url="https://print.example.com/letters",
+        auth_method="api_key",
+        auth_config={"api_key_header": "X-Api-Key", "api_key": "secret"},
+        address_placement="50mm",
+    )
+
+    deliver_letter_via_provider.push_request(retries=1)
+    try:
+        deliver_letter_via_provider.run(str(letter_notification.id))
+    finally:
+        deliver_letter_via_provider.pop_request()
+
+    assert not send_with_pingen.called
+    assert not send_with_rest_endpoint.called
+    notification = Notification.query.get(letter_notification.id)
+    assert (notification.status, notification.sent_by) == ("sent", "pingen")
+
+
+def test_deliver_letter_via_provider_retry_uses_the_provider_chosen_since_the_claim(
+    organisation, letter_notification, pdf_in_s3, send_with_pingen, send_with_rest_endpoint, mock_callback, mocker
+):
+    send_with_pingen.side_effect = LetterClientRetryableException("down")
+    mocker.patch.object(deliver_letter_via_provider, "retry", side_effect=Retry)
+    with pytest.raises(Retry):
+        deliver_letter_via_provider(str(letter_notification.id))
+
+    create_organisation_letter_provider(
+        organisation,
+        "rest-endpoint",
+        endpoint_url="https://print.example.com/letters",
+        auth_method="api_key",
+        auth_config={"api_key_header": "X-Api-Key", "api_key": "secret"},
+        address_placement="50mm",
+    )
+    deliver_letter_via_provider.push_request(retries=1)
+    try:
+        deliver_letter_via_provider.run(str(letter_notification.id))
+    finally:
+        deliver_letter_via_provider.pop_request()
+
+    assert send_with_pingen.call_count == 1
+    assert send_with_rest_endpoint.call_count == 1
+    notification = Notification.query.get(letter_notification.id)
+    assert (notification.status, notification.sent_by) == ("sent", "rest-endpoint")
+
+
+def test_deliver_letter_via_provider_skips_a_letter_delivered_while_it_waited_for_the_lock(
+    letter_notification, pdf_in_s3, send_with_pingen, mock_callback, mocker
+):
+    letter_notification.status = "sending"
+
+    def other_attempt_delivers_it_meanwhile():
+        Notification.query.filter_by(id=letter_notification.id).update({"status": "sent", "sent_by": "pingen"})
+        return True
+
+    lock = mocker.patch("app.celery.letter_provider_tasks.redis_store.get_lock").return_value
+    lock.acquire.side_effect = other_attempt_delivers_it_meanwhile
+
+    deliver_letter_via_provider.push_request(retries=1)
+    try:
+        deliver_letter_via_provider.run(str(letter_notification.id))
+    finally:
+        deliver_letter_via_provider.pop_request()
+
+    assert not send_with_pingen.called
+    assert lock.release.called
+    assert _status(letter_notification) == "sent"
+
+
+def test_deliver_letter_via_provider_retries_unexpected_errors(
+    letter_notification, pdf_in_s3, send_with_pingen, mock_callback, mocker
+):
+    send_with_pingen.side_effect = KeyError("access_token")
+    retry = mocker.patch.object(deliver_letter_via_provider, "retry", side_effect=Retry)
+    lock = mocker.patch("app.celery.letter_provider_tasks.redis_store.get_lock").return_value
+
+    with pytest.raises(Retry):
+        deliver_letter_via_provider(str(letter_notification.id))
+
+    assert retry.called
+    assert lock.release.called
+    assert _status(letter_notification) == "sending"
+
+
+def test_deliver_letter_via_provider_fails_the_letter_when_unexpected_errors_persist(
+    letter_notification, pdf_in_s3, send_with_pingen, mock_callback, mocker
+):
+    send_with_pingen.side_effect = KeyError("access_token")
+    mocker.patch.object(deliver_letter_via_provider, "retry", side_effect=MaxRetriesExceededError)
+
+    deliver_letter_via_provider(str(letter_notification.id))
+
+    notification = Notification.query.get(letter_notification.id)
+    assert (notification.status, notification.detailed_status_code) == ("technical-failure", "print-provider-error")
+    assert mock_callback.called
+
+
 def test_deliver_letter_via_provider_keeps_a_status_the_provider_already_reported(
     letter_notification, pdf_in_s3, send_with_pingen, mock_callback
 ):
