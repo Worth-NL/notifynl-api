@@ -358,3 +358,33 @@ def test_delete_organisation_letter_provider(admin_request, notify_db_session, m
 
     assert dao_get_organisation_letter_provider(organisation.id) is None
     mock_redis_delete.assert_any_call(f"organisation-{organisation.id}")
+
+
+@pytest.mark.parametrize("header", ["X-Api-Key", "Authorization", "Ocp-Apim-Subscription-Key"])
+def test_set_rest_endpoint_accepts_api_key_headers(admin_request, notify_db_session, notify_user, public_dns, header):
+    organisation = create_organisation()
+
+    _set_letter_provider(
+        admin_request,
+        organisation.id,
+        _rest_endpoint(notify_user, auth_config={"api_key_header": header, "api_key": "secret-key"}),
+    )
+
+    assert dao_get_organisation_letter_provider(organisation.id).auth_config["api_key_header"] == header
+
+
+@pytest.mark.parametrize("header", ["X Api Key", "X-Api-Key\r\nX-Injected: 1", "Host", "content-length", "X" * 101])
+def test_set_rest_endpoint_rejects_unusable_api_key_headers(
+    admin_request, notify_db_session, notify_user, public_dns, header
+):
+    organisation = create_organisation()
+
+    response = _set_letter_provider(
+        admin_request,
+        organisation.id,
+        _rest_endpoint(notify_user, auth_config={"api_key_header": header, "api_key": "secret-key"}),
+        _expected_status=400,
+    )
+
+    assert response["message"] == f"{header} can't be used as the API key header"
+    assert dao_get_organisation_letter_provider(organisation.id).provider.identifier == LETTER_PROVIDER_PINGEN
