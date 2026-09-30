@@ -1,13 +1,14 @@
 import pytest
 
 from app.letters_nl.constants import LETTER_PROVIDER_PINGEN, LETTER_PROVIDER_REST_ENDPOINT
+from app.utils import get_dt_string_or_none
 from tests.app.db import (
     create_notification,
     create_organisation,
     create_service,
     create_template,
 )
-from tests.app.db_nl import create_organisation_letter_provider
+from tests.app.db_nl import create_organisation_letter_provider, delete_organisation_letter_provider
 from tests.conftest import set_config
 
 
@@ -162,7 +163,7 @@ def test_organisation_letter_provider_serialize_omits_secrets(notify_db_session)
         "has_credentials": True,
         "auth_config": {"token_endpoint": "https://idp.example.com/token", "client_id": "notify", "scope": "letters"},
         "is_complete": True,
-        "updated_at": None,
+        "updated_at": get_dt_string_or_none(letter_provider.updated_at),
         "updated_by_id": None,
     }
     assert "super-secret" not in str(serialized)
@@ -189,8 +190,22 @@ def test_organisation_serialize_includes_letter_provider_summary(notify_db_sessi
     }
 
 
-def test_organisation_serialize_letter_provider_defaults_to_none(notify_db_session):
-    assert create_organisation().serialize()["letter_provider"] is None
+def test_new_organisation_sends_letters_with_pingen(notify_db_session):
+    assert create_organisation().serialize()["letter_provider"] == {
+        "identifier": LETTER_PROVIDER_PINGEN,
+        "display_name": "Pingen",
+        "endpoint_url": None,
+        "auth_method": None,
+        "address_placement": "60mm",
+        "has_credentials": False,
+    }
+
+
+def test_organisation_serialize_without_letter_provider(notify_db_session):
+    organisation = create_organisation()
+    delete_organisation_letter_provider(organisation)
+
+    assert organisation.serialize()["letter_provider"] is None
 
 
 def test_service_does_not_send_client_reference_to_letter_provider_by_default(sample_service):

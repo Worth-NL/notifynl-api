@@ -105,7 +105,7 @@ def test_deliver_letter_via_provider_sends_with_pingen_by_default(
         "https://api.notifynl.nl/notifications/letter/provider-status"
         f"?token={signing.encode(str(letter_notification.id))}"
     )
-    assert letter_provider is None
+    assert letter_provider.provider.identifier == "pingen"
 
     notification = Notification.query.get(letter_notification.id)
     assert (notification.status, notification.sent_by) == ("sent", "pingen")

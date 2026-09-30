@@ -1,8 +1,17 @@
 from app import db, redis_store
 from app.dao.dao_utils import autocommit
 from app.dao.provider_details_dao import get_provider_details_by_identifier
+from app.letters_nl.constants import LETTER_PROVIDER_PINGEN, PINGEN_ADDRESS_PLACEMENT
 from app.models import Service
 from app.models_nl import OrganisationLetterProvider
+
+
+def add_default_letter_provider(organisation) -> None:
+    """A new organisation sends its letters with Pingen until it chooses its own letter provider."""
+    organisation.letter_provider = OrganisationLetterProvider(
+        provider_details_id=get_provider_details_by_identifier(LETTER_PROVIDER_PINGEN).id,
+        address_placement=PINGEN_ADDRESS_PLACEMENT,
+    )
 
 
 def dao_get_organisation_letter_provider(organisation_id) -> OrganisationLetterProvider | None:

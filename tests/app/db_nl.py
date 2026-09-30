@@ -13,18 +13,25 @@ def create_organisation_letter_provider(
     address_placement="60mm",
     updated_by=None,
 ):
-    letter_provider = OrganisationLetterProvider(
-        organisation_id=organisation.id,
-        provider_details_id=get_provider_details_by_identifier(provider_identifier).id,
-        endpoint_url=endpoint_url,
-        auth_method=auth_method,
-        address_placement=address_placement,
-        updated_by_id=updated_by.id if updated_by else None,
+    # organisations created through dao_create_organisation already have the default (Pingen) row
+    letter_provider = db.session.get(OrganisationLetterProvider, organisation.id) or OrganisationLetterProvider(
+        organisation_id=organisation.id
     )
+    letter_provider.provider_details_id = get_provider_details_by_identifier(provider_identifier).id
+    letter_provider.endpoint_url = endpoint_url
+    letter_provider.auth_method = auth_method
+    letter_provider.address_placement = address_placement
+    letter_provider.updated_by_id = updated_by.id if updated_by else None
     letter_provider.auth_config = auth_config
     db.session.add(letter_provider)
     db.session.commit()
     return letter_provider
+
+
+def delete_organisation_letter_provider(organisation):
+    """For organisations without a letter provider row, which still send their letters with Pingen."""
+    OrganisationLetterProvider.query.filter_by(organisation_id=organisation.id).delete()
+    db.session.commit()
 
 
 def create_letter_provider_reference(notification_id, provider, provider_reference):
