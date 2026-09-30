@@ -275,7 +275,7 @@ def test_effective_letter_address_placement_without_an_organisation(notify_api, 
         ("sms", "spryng", None),
     ],
 )
-def test_notification_print_provider(sample_service, template_type, sent_by, expected):
+def test_notification_print_provider(client, sample_service, template_type, sent_by, expected):
     template = create_template(sample_service, template_type=template_type)
     notification = create_notification(template=template, status="sent", sent_by=sent_by)
 
@@ -283,7 +283,7 @@ def test_notification_print_provider(sample_service, template_type, sent_by, exp
     assert notification.serialize()["print_provider"] == expected
 
 
-def test_letter_accepted_by_print_provider_status(sample_letter_template):
+def test_letter_accepted_by_print_provider_status(client, sample_letter_template):
     notification = create_notification(template=sample_letter_template, status="sent", sent_by="pingen")
 
     assert notification.formatted_status == "Accepted by print provider"
