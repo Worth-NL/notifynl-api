@@ -152,16 +152,88 @@ def test_updating_rest_endpoint_keeps_secrets_that_are_left_out(
     _set_letter_provider(
         admin_request,
         organisation.id,
+        _rest_endpoint(notify_user, auth_config={"api_key_header": "X-Other", "api_key": ""}, address_placement="60mm"),
+    )
+
+    letter_provider = dao_get_organisation_letter_provider(organisation.id)
+    assert letter_provider.address_placement == "60mm"
+    assert letter_provider.auth_config == {"api_key_header": "X-Other", "api_key": "secret-key"}
+
+
+@pytest.mark.parametrize(
+    "auth_method, auth_config, secret",
+    [
+        ("api_key", {"api_key": "secret-key"}, "api_key"),
+        ("basic", {"username": "denhaag", "password": "hunter2"}, "password"),
+        (
+            "oauth",
+            {"token_endpoint": "https://idp.example.com/token", "client_id": "notify", "client_secret": "s3cret"},
+            "client_secret",
+        ),
+    ],
+)
+def test_changing_the_endpoint_url_requires_the_secrets_again(
+    admin_request, notify_db_session, notify_user, public_dns, auth_method, auth_config, secret
+):
+    organisation = create_organisation()
+    _set_letter_provider(
+        admin_request, organisation.id, _rest_endpoint(notify_user, auth_method=auth_method, auth_config=auth_config)
+    )
+    elsewhere = "https://attacker.example.net/letters"
+    without_secret = {field: value for field, value in auth_config.items() if field != secret}
+
+    response = _set_letter_provider(
+        admin_request,
+        organisation.id,
+        _rest_endpoint(notify_user, auth_method=auth_method, auth_config=without_secret, endpoint_url=elsewhere),
+        _expected_status=400,
+    )
+
+    assert response["message"] == (
+        f"Missing {secret} for auth method {auth_method}: credentials have to be entered again when a URL changes"
+    )
+    letter_provider = dao_get_organisation_letter_provider(organisation.id)
+    assert (letter_provider.endpoint_url, letter_provider.auth_config[secret]) == (ENDPOINT_URL, auth_config[secret])
+
+    _set_letter_provider(
+        admin_request,
+        organisation.id,
         _rest_endpoint(
             notify_user,
-            auth_config={"api_key_header": "X-Other", "api_key": ""},
-            endpoint_url="https://print.example.com/v2/letters",
+            auth_method=auth_method,
+            auth_config=without_secret | {secret: "entered-again"},
+            endpoint_url=elsewhere,
         ),
     )
 
     letter_provider = dao_get_organisation_letter_provider(organisation.id)
-    assert letter_provider.endpoint_url == "https://print.example.com/v2/letters"
-    assert letter_provider.auth_config == {"api_key_header": "X-Other", "api_key": "secret-key"}
+    assert (letter_provider.endpoint_url, letter_provider.auth_config[secret]) == (elsewhere, "entered-again")
+
+
+def test_changing_the_oauth_token_endpoint_requires_the_client_secret_again(
+    admin_request, notify_db_session, notify_user, public_dns
+):
+    organisation = create_organisation()
+    auth_config = {"token_endpoint": "https://idp.example.com/token", "client_id": "notify", "client_secret": "s3cret"}
+    _set_letter_provider(
+        admin_request, organisation.id, _rest_endpoint(notify_user, auth_method="oauth", auth_config=auth_config)
+    )
+
+    response = _set_letter_provider(
+        admin_request,
+        organisation.id,
+        _rest_endpoint(
+            notify_user,
+            auth_method="oauth",
+            auth_config={"token_endpoint": "https://attacker.example.net/token", "client_id": "notify"},
+        ),
+        _expected_status=400,
+    )
+
+    assert response["message"] == (
+        "Missing client_secret for auth method oauth: credentials have to be entered again when a URL changes"
+    )
+    assert dao_get_organisation_letter_provider(organisation.id).auth_config == auth_config
 
 
 def test_changing_auth_method_drops_the_previous_credentials(admin_request, notify_db_session, notify_user, public_dns):

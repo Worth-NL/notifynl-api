@@ -78,10 +78,13 @@ def set_organisation_letter_provider(organisation_id):
         endpoint_url = data["endpoint_url"]
         auth_method = data["auth_method"]
         address_placement = data["address_placement"]
-        auth_config = _merge_auth_config(
-            dao_get_organisation_letter_provider(organisation_id), auth_method, data.get("auth_config", {})
+        auth_config, secrets_dropped = _merge_auth_config(
+            dao_get_organisation_letter_provider(organisation_id),
+            endpoint_url,
+            auth_method,
+            data.get("auth_config", {}),
         )
-        _validate_rest_endpoint(endpoint_url, auth_method, auth_config)
+        _validate_rest_endpoint(endpoint_url, auth_method, auth_config, secrets_dropped)
 
     letter_provider = dao_set_organisation_letter_provider(
         organisation_id,
@@ -104,34 +107,57 @@ def delete_organisation_letter_provider(organisation_id):
     return "", 204
 
 
-def _merge_auth_config(existing, auth_method, update) -> dict:
-    """Secrets left out (or empty) keep their stored value, as long as the auth method didn't change."""
+def _merge_auth_config(existing, endpoint_url, auth_method, update) -> tuple[dict, bool]:
+    """
+    Secrets are write-only, so one left out (or empty) keeps its stored value, but only while the credentials keep
+    going to the same place. When the endpoint URL, the OAuth token endpoint or the auth method changes, they have to
+    be entered again: otherwise anyone who can edit the letter provider could have stored credentials they never saw
+    sent to a server of their own. Returns the auth config, and whether stored secrets were dropped for that reason.
+    """
     stored = {}
-    same_auth_method = existing and existing.auth_method == auth_method
-    if same_auth_method and existing.provider.identifier == LETTER_PROVIDER_REST_ENDPOINT:
+    if (
+        existing
+        and existing.provider.identifier == LETTER_PROVIDER_REST_ENDPOINT
+        and existing.auth_method == auth_method
+    ):
         try:
             stored = existing.auth_config or {}
         except (InvalidToken, ValueError):
             stored = {}
 
+    fields = REQUIRED_AUTH_CONFIG_FIELDS[auth_method] + OPTIONAL_AUTH_CONFIG_FIELDS[auth_method]
+    secret_fields = [field for field in fields if field in SECRET_AUTH_CONFIG_FIELDS]
+
     auth_config = {}
-    for field in REQUIRED_AUTH_CONFIG_FIELDS[auth_method] + OPTIONAL_AUTH_CONFIG_FIELDS[auth_method]:
-        if field in SECRET_AUTH_CONFIG_FIELDS:
-            value = update.get(field) or stored.get(field)
-        else:
+    for field in fields:
+        if field not in SECRET_AUTH_CONFIG_FIELDS:
             value = update[field] if field in update else stored.get(field)
+            if value:
+                auth_config[field] = value
+    if auth_method == AUTH_METHOD_API_KEY:
+        auth_config.setdefault("api_key_header", DEFAULT_API_KEY_HEADER)
+
+    same_destination = (
+        bool(stored)
+        and existing.endpoint_url == endpoint_url
+        and auth_config.get("token_endpoint") == stored.get("token_endpoint")
+    )
+    for field in secret_fields:
+        value = update.get(field) or (stored.get(field) if same_destination else None)
         if value:
             auth_config[field] = value
 
-    if auth_method == AUTH_METHOD_API_KEY:
-        auth_config.setdefault("api_key_header", DEFAULT_API_KEY_HEADER)
-    return auth_config
+    secrets_dropped = not same_destination and any(stored.get(field) for field in secret_fields)
+    return auth_config, secrets_dropped
 
 
-def _validate_rest_endpoint(endpoint_url, auth_method, auth_config):
+def _validate_rest_endpoint(endpoint_url, auth_method, auth_config, secrets_dropped=False):
     missing = [field for field in REQUIRED_AUTH_CONFIG_FIELDS[auth_method] if not auth_config.get(field)]
     if missing:
-        raise InvalidRequest(f"Missing {', '.join(missing)} for auth method {auth_method}", status_code=400)
+        message = f"Missing {', '.join(missing)} for auth method {auth_method}"
+        if secrets_dropped:
+            message += ": credentials have to be entered again when a URL changes"
+        raise InvalidRequest(message, status_code=400)
 
     urls = [endpoint_url] + ([auth_config["token_endpoint"]] if auth_method == AUTH_METHOD_OAUTH else [])
     for url in urls:
