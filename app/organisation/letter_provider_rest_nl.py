@@ -1,3 +1,5 @@
+import re
+
 from cryptography.fernet import InvalidToken
 from flask import Blueprint, jsonify, request
 
@@ -28,6 +30,12 @@ from app.schema_validation.definitions import uuid
 
 organisation_letter_provider_blueprint = Blueprint("organisation_letter_provider", __name__)
 register_errors(organisation_letter_provider_blueprint)
+
+# an HTTP header name (RFC 9110 token), and not one the request itself depends on
+API_KEY_HEADER_PATTERN = re.compile(r"[!#$%&'*+\-.^_`|~0-9A-Za-z]{1,100}")
+RESERVED_HEADERS = frozenset(
+    {"connection", "content-length", "content-type", "host", "idempotency-key", "transfer-encoding", "user-agent"}
+)
 
 ALL_AUTH_CONFIG_FIELDS = sorted(
     {field for fields in REQUIRED_AUTH_CONFIG_FIELDS.values() for field in fields}
@@ -159,9 +167,17 @@ def _validate_rest_endpoint(endpoint_url, auth_method, auth_config, secrets_drop
             message += ": credentials have to be entered again when a URL changes"
         raise InvalidRequest(message, status_code=400)
 
+    if auth_method == AUTH_METHOD_API_KEY:
+        _validate_api_key_header(auth_config["api_key_header"])
+
     urls = [endpoint_url] + ([auth_config["token_endpoint"]] if auth_method == AUTH_METHOD_OAUTH else [])
     for url in urls:
         try:
             validate_letter_endpoint_url(url)
         except InvalidLetterEndpointUrl as e:
             raise InvalidRequest(str(e), status_code=400) from e
+
+
+def _validate_api_key_header(header):
+    if not API_KEY_HEADER_PATTERN.fullmatch(header) or header.lower() in RESERVED_HEADERS:
+        raise InvalidRequest(f"{header} can't be used as the API key header", status_code=400)
