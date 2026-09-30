@@ -6,7 +6,7 @@ import pytest
 from app.dao.organisation_letter_provider_dao import dao_get_organisation_letter_provider
 from app.letters_nl.constants import LETTER_PROVIDER_PINGEN, LETTER_PROVIDER_REST_ENDPOINT
 from tests.app.db import create_organisation, create_service
-from tests.app.db_nl import create_organisation_letter_provider
+from tests.app.db_nl import create_organisation_letter_provider, delete_organisation_letter_provider
 
 ENDPOINT_URL = "https://print.example.com/letters"
 
@@ -44,8 +44,20 @@ def _rest_endpoint(user, auth_method="api_key", auth_config=None, **overrides):
     } | overrides
 
 
+def test_get_organisation_letter_provider_of_new_organisation(admin_request, notify_db_session):
+    organisation = create_organisation()
+
+    response = admin_request.get(
+        "organisation_letter_provider.get_organisation_letter_provider", organisation_id=organisation.id
+    )
+
+    assert response["data"]["identifier"] == LETTER_PROVIDER_PINGEN
+    assert response["data"]["address_placement"] == "60mm"
+
+
 def test_get_organisation_letter_provider_when_none_is_set(admin_request, notify_db_session):
     organisation = create_organisation()
+    delete_organisation_letter_provider(organisation)
 
     response = admin_request.get(
         "organisation_letter_provider.get_organisation_letter_provider", organisation_id=organisation.id
@@ -205,7 +217,7 @@ def test_set_rest_endpoint_requires_the_auth_method_credentials(
     )
 
     assert response["message"] == f"Missing {missing} for auth method {auth_method}"
-    assert dao_get_organisation_letter_provider(organisation.id) is None
+    assert dao_get_organisation_letter_provider(organisation.id).provider.identifier == LETTER_PROVIDER_PINGEN
 
 
 def test_set_rest_endpoint_rejects_private_endpoint(admin_request, notify_db_session, notify_user, mocker):
@@ -218,7 +230,7 @@ def test_set_rest_endpoint_rejects_private_endpoint(admin_request, notify_db_ses
     response = _set_letter_provider(admin_request, organisation.id, _rest_endpoint(notify_user), _expected_status=400)
 
     assert response["message"] == f"{ENDPOINT_URL} must not point to a private or internal address"
-    assert dao_get_organisation_letter_provider(organisation.id) is None
+    assert dao_get_organisation_letter_provider(organisation.id).provider.identifier == LETTER_PROVIDER_PINGEN
 
 
 def test_set_rest_endpoint_validates_the_oauth_token_endpoint(admin_request, notify_db_session, notify_user, mocker):

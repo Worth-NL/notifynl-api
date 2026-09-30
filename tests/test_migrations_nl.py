@@ -6,7 +6,7 @@ from sqlalchemy import text
 
 from app.models_nl import OrganisationLetterProvider
 from tests.app.db import create_organisation
-from tests.app.db_nl import create_organisation_letter_provider
+from tests.app.db_nl import create_organisation_letter_provider, delete_organisation_letter_provider
 
 
 def _load_nl_migration(filename_prefix):
@@ -46,6 +46,8 @@ def test_letter_providers_are_ordered_after_dvla(notify_db_session):
 def test_backfill_assigns_pingen_to_every_organisation_once(notify_db_session):
     backfill = text(_load_nl_migration("0030").BACKFILL_PINGEN_LETTER_PROVIDER)
     without_provider = create_organisation(name="without provider")
+    # organisations created after 0030 get a row from dao_create_organisation: remove it to backfill it
+    delete_organisation_letter_provider(without_provider)
     with_rest_endpoint = create_organisation(name="with rest endpoint")
     create_organisation_letter_provider(
         with_rest_endpoint, "rest-endpoint", endpoint_url="https://print.example.com/letters"

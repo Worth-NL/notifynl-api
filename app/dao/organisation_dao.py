@@ -8,6 +8,7 @@ from app.dao.annual_billing_dao import set_default_free_allowance_for_service
 from app.dao.dao_utils import VersionOptions, autocommit, version_class
 from app.dao.email_branding_dao import dao_get_email_branding_by_id
 from app.dao.letter_branding_dao import dao_get_letter_branding_by_id
+from app.dao.organisation_letter_provider_dao import add_default_letter_provider
 from app.dao.organisation_user_permissions_dao import organisation_user_permissions_dao
 from app.models import (
     Domain,
@@ -79,6 +80,7 @@ def dao_create_organisation(organisation):
         organisation_id=organisation.id, permission=CAN_ASK_TO_JOIN_SERVICE
     )
     organisation.permissions.append(join_a_service_permission)
+    add_default_letter_provider(organisation)  # [NotifyNL]
 
     db.session.add(organisation)
     db.session.commit()

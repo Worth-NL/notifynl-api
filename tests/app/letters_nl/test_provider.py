@@ -4,7 +4,7 @@ from app.clients.letter.pingen import PingenClient
 from app.clients.letter.rest_endpoint import RestEndpointLetterClient
 from app.letters_nl.provider import resolve_letter_provider
 from tests.app.db import create_organisation
-from tests.app.db_nl import create_organisation_letter_provider
+from tests.app.db_nl import create_organisation_letter_provider, delete_organisation_letter_provider
 
 API_KEY = {"api_key_header": "X-Api-Key", "api_key": "k"}
 
@@ -36,7 +36,10 @@ def test_resolves_pingen_when_the_organisation_chose_it(notify_db_session):
 
 
 def test_falls_back_to_pingen_without_a_letter_provider(notify_db_session):
-    client, resolved = resolve_letter_provider(create_organisation().id)
+    organisation = create_organisation()
+    delete_organisation_letter_provider(organisation)
+
+    client, resolved = resolve_letter_provider(organisation.id)
 
     assert isinstance(client, PingenClient)
     assert resolved is None
