@@ -295,6 +295,16 @@ def process_letter_provider_status(notification_id, provider, status, reason=Non
     """A print provider reported back on a letter it accepted (REST endpoint callback or Pingen webhook)."""
     # providers can report back after the letter moved to notification_history
     notification = dao_get_notification_or_history_by_id(notification_id)
+    if not notification:
+        current_app.logger.warning(
+            "Ignoring %s status %s for unknown letter %s",
+            provider,
+            status,
+            notification_id,
+            extra={"notification_id": notification_id, "provider_name": provider, "notification_status_new": status},
+        )
+        return
+
     extra = {
         "notification_id": notification_id,
         "provider_name": provider,
@@ -315,8 +325,15 @@ def process_letter_provider_status(notification_id, provider, status, reason=Non
 
     current_app.logger.info("Letter %s is %s according to %s", notification_id, status, provider, extra=extra)
 
+    if notification.status == NOTIFICATION_SENDING and not notification.sent_by:
+        # the provider reported back before the delivery task got to mark the letter sent (which it then won't)
+        notification.sent_by = provider
+        notification.sent_at = datetime.utcnow()
+
     if status == NOTIFICATION_RETURNED_LETTER:
         from app.celery.tasks import process_returned_letters_list
+
+        dao_update_notification(notification)
 
         # also records the returned letter for the service's report and sends the returned letter callback
         process_returned_letters_list([notification.reference])

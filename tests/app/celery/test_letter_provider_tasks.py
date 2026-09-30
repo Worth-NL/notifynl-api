@@ -530,6 +530,36 @@ def test_process_letter_provider_status_delivered(letter_template, mock_callback
     mock_callback.assert_called_once_with(notification)
 
 
+@freeze_time("2026-09-29 12:00")
+@pytest.mark.parametrize("provider", ["pingen", "rest-endpoint"])
+def test_process_letter_provider_status_before_the_letter_was_marked_sent(letter_template, mock_callback, provider):
+    # the provider's report can overtake the delivery task, which then leaves the letter alone
+    notification = create_notification(template=letter_template, status="sending")
+
+    process_letter_provider_status(str(notification.id), provider, "delivered")
+
+    notification = Notification.query.get(notification.id)
+    assert (notification.status, notification.sent_by, notification.print_provider) == ("delivered", provider, provider)
+    assert notification.sent_at == datetime(2026, 9, 29, 12, 0)
+
+
+def test_process_letter_provider_status_keeps_the_send_details_of_a_sent_letter(letter_template, mock_callback):
+    notification = create_notification(
+        template=letter_template, status="sent", sent_by="pingen", sent_at=datetime(2026, 9, 29, 9, 0)
+    )
+
+    process_letter_provider_status(str(notification.id), "pingen", "delivered")
+
+    notification = Notification.query.get(notification.id)
+    assert (notification.sent_by, notification.sent_at) == ("pingen", datetime(2026, 9, 29, 9, 0))
+
+
+def test_process_letter_provider_status_for_an_unknown_letter(notify_db_session, mock_callback):
+    process_letter_provider_status("f0ffb2d9-e4df-4ee2-9d2a-000000000000", "rest-endpoint", "delivered")
+
+    assert not mock_callback.called
+
+
 @pytest.mark.parametrize(
     "status, detailed_status_code",
     [("technical-failure", "print-provider-issue"), ("permanent-failure", "print-provider-rejected")],
