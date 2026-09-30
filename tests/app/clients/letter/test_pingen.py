@@ -177,3 +177,39 @@ def test_connection_errors_are_retryable(client, letter, pingen, exception):
 
     with pytest.raises(LetterClientRetryableException):
         client.send_letter(letter, None)
+
+
+WEBHOOKS_URL = f"{API}/organisations/{ORGANISATION_ID}/webhooks"
+
+
+def test_webhooks_use_their_own_access_token_scope(client, letter, pingen):
+    pingen.get(
+        WEBHOOKS_URL,
+        json={
+            "data": [
+                {
+                    "id": "b1",
+                    "type": "webhooks",
+                    "attributes": {"event_category": "sent", "url": "https://x/y", "signing_key": "k" * 20},
+                }
+            ]
+        },
+    )
+    pingen.post(WEBHOOKS_URL, status_code=201, json={"data": {"id": "b2", "type": "webhooks"}})
+
+    client.send_letter(letter, None)
+    assert client.list_webhooks() == [
+        {"id": "b1", "event_category": "sent", "url": "https://x/y", "signing_key": "k" * 20}
+    ]
+    assert client.create_webhook("issues", "https://x/y", "k" * 20) == "b2"
+
+    token_requests = _requests(pingen, "POST", f"{IDENTITY}/auth/access-tokens")
+    assert [dict(p.split("=") for p in r.text.split("&"))["scope"] for r in token_requests] == ["letter", "webhook"]
+    (create_request,) = _requests(pingen, "POST", WEBHOOKS_URL)
+    assert create_request.headers["Content-Type"] == "application/vnd.api+json"
+    assert create_request.json() == {
+        "data": {
+            "type": "webhooks",
+            "attributes": {"event_category": "issues", "url": "https://x/y", "signing_key": "k" * 20},
+        }
+    }
