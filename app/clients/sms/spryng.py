@@ -4,6 +4,7 @@ import logging
 from requests import RequestException, request
 
 from app.clients.sms import SmsClient, SmsClientResponseException
+from app.otel_metrics.provider import record_request_duration
 
 logger = logging.getLogger(__name__)
 
@@ -42,6 +43,7 @@ class SpryngClient(SmsClient):
         self.url = self.current_app.config.get("SPRYNG_URL")
         self.receipt_url = self.current_app.config.get("SPRYNG_RECEIPT_URL")
 
+    @record_request_duration(notification_type="sms", provider_name="spryng")
     def try_send_sms(self, to, content, reference, international, sender):
         data = {
             "originator": sender,

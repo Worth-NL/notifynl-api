@@ -1,10 +1,10 @@
 import itertools
-import json
 import uuid
 from datetime import datetime
 from uuid import UUID
 
 from flask import Blueprint, current_app, jsonify, request
+from notifications_utils.json import RelaxedContainerJSONEncoder as RCJSONEncoder
 from notifications_utils.letter_timings import (
     letter_can_be_cancelled,
     too_late_to_cancel_letter,
@@ -108,6 +108,8 @@ from app.dao.services_dao import (
     dao_add_user_to_service,
     dao_archive_service,
     dao_create_service,
+    dao_fetch_active_users_for_service,
+    dao_fetch_active_users_with_manage_settings_for_service,
     dao_fetch_all_services,
     dao_fetch_all_services_by_user,
     dao_fetch_live_services_data,
@@ -156,6 +158,7 @@ from app.schemas import (
     service_schema,
 )
 from app.service import statistics
+from app.service.api_key_schema import post_revoke_api_key_schema
 from app.service.report_request_schema import add_report_request_schema
 from app.service.send_notification import (
     send_one_off_notification,
@@ -329,9 +332,20 @@ def update_service(service_id):
     dao_update_service(service)
 
     if service_going_live:
+        active_team_members = dao_fetch_active_users_for_service(service.id)
         send_notification_to_service_users(
-            service_id=service_id,
             template_id=current_app.config["SERVICE_NOW_LIVE_TEMPLATE_ID"],
+            user_list=active_team_members,
+            personalisation={
+                "service_name": current_data["name"],
+            },
+            include_user_fields=["name"],
+        )
+
+        active_team_members_with_manage_settings = dao_fetch_active_users_with_manage_settings_for_service(service.id)
+        send_notification_to_service_users(
+            template_id=current_app.config["MANAGING_YOUR_SERVICE_TEMPLATE_ID"],
+            user_list=active_team_members_with_manage_settings,
             personalisation={
                 "service_name": current_data["name"],
             },
@@ -353,7 +367,9 @@ def create_api_key(service_id=None):
 
 @service_blueprint.route("/<uuid:service_id>/api-key/revoke/<uuid:api_key_id>", methods=["POST"])
 def revoke_api_key(service_id, api_key_id):
-    expire_api_key(service_id=service_id, api_key_id=api_key_id)
+    data = request.get_json(silent=True) or {}
+    validate(data, post_revoke_api_key_schema)
+    expire_api_key(service_id=service_id, api_key_id=api_key_id, created_by_id=data.get("created_by"))
     return jsonify(), 202
 
 
@@ -422,11 +438,10 @@ def remove_user_from_service(service_id, user_id):
 # tables. This is so product owner can pass stories as done
 @service_blueprint.route("/<uuid:service_id>/history", methods=["GET"])
 def get_service_history(service_id):
-    from app.models import ApiKey, Service, TemplateHistory
+    from app.models import ApiKey, Service
     from app.schemas import (
         api_key_history_schema,
         service_history_schema,
-        template_history_schema,
     )
 
     service_history = Service.get_history_model().query.filter_by(id=service_id).all()
@@ -434,14 +449,9 @@ def get_service_history(service_id):
     api_key_history = ApiKey.get_history_model().query.filter_by(service_id=service_id).all()
     api_keys_data = api_key_history_schema.dump(api_key_history, many=True)
 
-    template_history = TemplateHistory.query.filter_by(service_id=service_id).all()
-    template_data = template_history_schema.dump(template_history, many=True)
-
     data = {
         "service_history": service_data,
         "api_key_history": api_keys_data,
-        "template_history": template_data,
-        "events": [],
     }
 
     return jsonify(data=data)
@@ -1591,7 +1601,7 @@ def create_report_request_by_type(service_id):
         extra = {
             "user_id": existing_request.user_id,
             "service_id": existing_request.service_id,
-            "report_request_parameter": json.dumps(existing_request.parameter, separators=(",", ":")),
+            "report_request_parameter": RCJSONEncoder(separators=(",", ":")).encode(existing_request.parameter),
             "report_request_id": existing_request.id,
         }
         current_app.logger.info(
@@ -1610,7 +1620,7 @@ def create_report_request_by_type(service_id):
         "report_request_id": created_request.id,
         "user_id": created_request.user_id,
         "service_id": created_request.service_id,
-        "report_request_parameter": json.dumps(created_request.parameter, separators=(",", ":")),
+        "report_request_parameter": RCJSONEncoder(separators=(",", ":")).encode(created_request.parameter),
     }
     current_app.logger.info(
         "Report request %(report_request_id)s for user %(user_id)s (service %(service_id)s) "

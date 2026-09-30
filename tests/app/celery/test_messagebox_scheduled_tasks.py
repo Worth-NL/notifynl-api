@@ -216,14 +216,14 @@ def test_messagebox_process_unprocessed_messages_leaves_envelope_unprocessed_on_
     mock_apply_async = mocker.patch(
         "app.celery.messagebox_scheduled_tasks.process_messagebox_client_response.apply_async"
     )
-    mock_statsd_incr = mocker.patch("app.celery.messagebox_scheduled_tasks.statsd_client.incr")
+    mock_record_failure = mocker.patch("app.celery.messagebox_scheduled_tasks.record_envelope_fetch_parse_failure")
 
     with caplog.at_level("ERROR"):
         messagebox_process_unprocessed_messages()
 
     mock_apply_async.assert_not_called()
     mock_core_client.process_message.assert_not_called()
-    mock_statsd_incr.assert_called_once_with("messagebox.envelope-fetch-parse-failure")
+    mock_record_failure.assert_called_once_with()
     fetch_failure_records = [r for r in caplog.records if "Failed to fetch/parse" in r.message]
     assert len(fetch_failure_records) == 1
     assert fetch_failure_records[0].envelope_id == "envelope-1"

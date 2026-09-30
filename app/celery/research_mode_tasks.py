@@ -1,10 +1,13 @@
-import json
 import uuid
+from collections.abc import Mapping
 from contextvars import ContextVar
 from datetime import datetime
+from typing import Any
+from urllib.parse import urljoin
 
 import requests
 from flask import current_app, jsonify
+from notifications_utils.json import RelaxedContainerJSONEncoder as RCJSONEncoder
 from notifications_utils.local_vars import LazyLocalGetter
 from notifications_utils.timezones import local_timezone
 from werkzeug.local import LocalProxy
@@ -13,6 +16,7 @@ from app import memo_resetters, notify_celery, signing
 from app.celery.process_ses_receipts_tasks import process_ses_results
 from app.config import QueueNames
 from app.constants import SMS_TYPE
+from app.utils import add_authentication_to_url
 
 # thread-local copies of persistent requests.Session
 _requests_session_context_var: ContextVar[requests.Session] = ContextVar("research_mode_requests_session")
@@ -32,7 +36,7 @@ perm_fail_email = "perm-fail@simulator.notify"
 temp_fail_email = "temp-fail@simulator.notify"
 
 
-def send_sms_response(provider, reference, to):
+def send_sms_response(provider: str, reference: str, to: str) -> None:
     if provider == "spryng":
         # Spryng-specific: see app/celery/research_mode_tasks_nl.py -- its
         # real callback is a GET with query params, unlike mmg/firetext's
@@ -45,13 +49,15 @@ def send_sms_response(provider, reference, to):
     if provider == "mmg":
         body = mmg_callback(reference, to)
         headers = {"Content-type": "application/json"}
+        basic_auth_credentials = current_app.config["RESEARCH_MODE_SELF_CALLBACK_MMG_BASIC_AUTH_CREDENTIALS"]
     else:
         headers = {"Content-type": "application/x-www-form-urlencoded"}
         body = firetext_callback(reference, to)
+        basic_auth_credentials = current_app.config["RESEARCH_MODE_SELF_CALLBACK_FIRETEXT_BASIC_AUTH_CREDENTIALS"]
         # to simulate getting a temporary_failure from firetext
         # we need to send a pending status updated then a permanent-failure
         if body["status"] == "2":  # pending status
-            make_request(SMS_TYPE, provider, body, headers)
+            make_request(SMS_TYPE, provider, body, headers, basic_auth_credentials=basic_auth_credentials)
             # 1 is a declined status for firetext, will result in a temp-failure
             body = {
                 "mobile": to,
@@ -61,7 +67,7 @@ def send_sms_response(provider, reference, to):
                 "reference": reference,
             }
 
-    make_request(SMS_TYPE, provider, body, headers)
+    make_request(SMS_TYPE, provider, body, headers, basic_auth_credentials=basic_auth_credentials)
 
 
 def send_email_response(reference, to, service_id):
@@ -89,7 +95,9 @@ def send_letter_response(notification_id: uuid.UUID, billable_units: int, postag
     data = _create_fake_letter_callback_data(notification_id, billable_units, postage)
 
     try:
-        response = requests_session.request("POST", api_call, headers=headers, data=json.dumps(data), timeout=30)  # type: ignore[attr-defined]
+        response = requests_session.request(  # type: ignore[attr-defined]
+            "POST", api_call, headers=headers, data=RCJSONEncoder().encode(data), timeout=30
+        )
         response.raise_for_status()
     except requests.HTTPError as e:
         current_app.logger.error(
@@ -155,18 +163,39 @@ def _create_fake_letter_callback_data(notification_id: uuid.UUID, billable_units
     }
 
 
-def make_request(notification_type, provider, data, headers):
-    api_call = f"{current_app.config['API_HOST_NAME_INTERNAL']}/notifications/{notification_type}/{provider}"
+def make_request(
+    notification_type: str,
+    provider: str,
+    data: Mapping[str, Any],
+    headers: Mapping[str, str],
+    basic_auth_credentials: tuple[str, str] | None = None,
+):
+    base_url = current_app.config["API_HOST_NAME_INTERNAL"]
+    if basic_auth_credentials is not None:
+        base_url = add_authentication_to_url(
+            current_app.config["API_HOST_NAME_INTERNAL"],
+            *basic_auth_credentials,
+        )
+    final_url = urljoin(base_url, f"/notifications/{notification_type}/{provider}")
 
     try:
-        response = requests_session.request("POST", api_call, headers=headers, data=data, timeout=60)  # type: ignore[attr-defined]
+        response = requests_session.request(  # type: ignore[attr-defined]
+            "POST",
+            final_url,
+            headers={
+                "User-agent": "notifications-research-mode",
+                **headers,
+            },
+            data=data,
+            timeout=60,
+        )
         response.raise_for_status()
     except requests.HTTPError as e:
         current_app.logger.error(
             "API POST request on %s failed with status %s",
-            api_call,
+            final_url,
             e.response.status_code,
-            extra={"url": api_call, "status_code": e.response.status_code},
+            extra={"url": final_url, "status_code": e.response.status_code},
         )
         raise e
     finally:
@@ -188,7 +217,7 @@ def mmg_callback(notification_id, to):
     else:
         status = "3"
 
-    return json.dumps(
+    return RCJSONEncoder().encode(
         {
             "reference": "mmg_reference",
             "CID": str(notification_id),
@@ -277,7 +306,7 @@ def ses_notification_callback(reference):
         "MessageId": "8e83c020-1234-1234-1234-92a8ee9baa0a",
         "TopicArn": "arn:aws:sns:eu-west-1:12341234:ses_notifications",
         "Subject": None,
-        "Message": json.dumps(ses_message_body),
+        "Message": RCJSONEncoder().encode(ses_message_body),
         "Timestamp": uniform_timestamp,
         "SignatureVersion": "1",
         "Signature": "[REDACTED]",
@@ -346,7 +375,7 @@ def _ses_bounce_callback(reference, bounce_type):
         "MessageId": "36e67c28-1234-1234-1234-2ea0172aa4a7",
         "TopicArn": "arn:aws:sns:eu-west-1:12341234:ses_notifications",
         "Subject": None,
-        "Message": json.dumps(ses_message_body),
+        "Message": RCJSONEncoder().encode(ses_message_body),
         "Timestamp": uniform_timestamp,
         "SignatureVersion": "1",
         "Signature": "[REDACTED]",

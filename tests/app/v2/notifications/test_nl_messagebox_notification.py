@@ -88,7 +88,7 @@ def _valid_messagebox_data(**overrides):
                         "filename": fake.file_name(extension="pdf"),
                     }
                 ],
-                # "message": "This is missing the message field",
+                # no message field: that's what makes this payload invalid
             },
             False,
         ),

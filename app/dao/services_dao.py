@@ -13,10 +13,12 @@ from app.constants import (
     INTERNATIONAL_SMS_TYPE,
     KEY_TYPE_TEST,
     LETTER_TYPE,
+    MANAGE_SETTINGS,
     MESSAGEBOX_TYPE,
     NHS_ORGANISATION_TYPES,
     NON_CROWN_ORGANISATION_TYPES,
     NOTIFICATION_PERMANENT_FAILURE,
+    ORG_TYPE_NHS_NOTIFY,
     SMS_TYPE,
 )
 from app.dao.dao_utils import VersionOptions, autocommit, version_class
@@ -309,6 +311,9 @@ def dao_create_service(  # noqa: C901
         service.email_branding = dao_get_email_branding_by_name("NHS")
         service.letter_branding = dao_get_letter_branding_by_name("NHS")
 
+    if service.organisation_type == ORG_TYPE_NHS_NOTIFY:
+        service.organisation_id = current_app.config["NHS_NOTIFY_ORG_ID"]
+
     if organisation:
         service.crown = organisation.crown
     elif service.organisation_type in CROWN_ORGANISATION_TYPES:
@@ -505,6 +510,18 @@ def dao_fetch_active_users_for_service(service_id):
     query = User.query.filter(User.services.any(id=service_id), User.state == "active")
 
     return query.all()
+
+
+def dao_fetch_active_users_with_manage_settings_for_service(service_id):
+    return (
+        User.query.join(Permission, Permission.user_id == User.id)
+        .filter(
+            User.state == "active",
+            Permission.service_id == service_id,
+            Permission.permission == MANAGE_SETTINGS,
+        )
+        .all()
+    )
 
 
 @retryable_query()

@@ -15,6 +15,7 @@ from notifications_utils.clients.zendesk.zendesk_client import (
     NotifySupportTicketStatus,
     NotifyTicketType,
 )
+from notifications_utils.testing.comparisons import RestrictedAny
 from redis.exceptions import LockError
 
 from app.celery import scheduled_tasks
@@ -22,13 +23,16 @@ from app.celery.letters_pdf_tasks import get_pdf_for_templated_letter
 from app.celery.provider_tasks import deliver_email, deliver_sms
 from app.celery.scheduled_tasks import (
     _check_slow_text_message_delivery_reports_and_raise_error_if_needed,
+    archive_pending_files,
     change_dvla_api_key,
     change_dvla_password,
     check_for_low_available_inbound_sms_numbers,
     check_for_missing_rows_in_completed_jobs,
     check_for_services_with_high_failure_rates_or_sending_to_tv_numbers,
+    check_if_letters_in_technical_failure,
     check_if_letters_still_in_created,
     check_if_letters_still_pending_virus_check,
+    check_if_letters_still_pending_virus_check_nightly,
     check_job_status,
     delete_invitations,
     delete_old_records_from_events_table,
@@ -61,9 +65,34 @@ from app.constants import (
 )
 from app.dao.annual_billing_dao import set_default_free_allowance_for_service
 from app.dao.jobs_dao import dao_get_job_by_id
-from app.dao.notifications_dao import SlowProviderDeliveryReport
+from app.dao.notifications_dao import BandedSlowProviderDeliveryReport, SlowProviderDeliveryReport
 from app.dao.provider_details_dao import get_provider_details_by_identifier
+from app.dao.template_email_files_dao import dao_get_template_email_file_by_id
 from app.models import Event, InboundNumber, Notification
+from app.otel_metrics.notification import (
+    _undelivered_notification_age as notification_undelivered_notification_age_metric,
+)
+from app.otel_metrics.provider import (
+    _info as provider_info_metric,
+)
+from app.otel_metrics.provider import (
+    _priority as provider_priority_metric,
+)
+from app.otel_metrics.provider import (
+    _sms_banded_not_delivered_within as provider_sms_banded_not_delivered_within_metric,
+)
+from app.otel_metrics.provider import (
+    _sms_banded_not_delivered_within_absolute as provider_sms_banded_not_delivered_within_absolute_metric,
+)
+from app.otel_metrics.provider import (
+    _sms_banded_not_delivered_within_total as provider_sms_banded_not_delivered_within_total_metric,
+)
+from app.otel_metrics.provider import (
+    _sms_legacy_not_delivered_within as provider_sms_legacy_not_delivered_within_metric,
+)
+from app.otel_metrics.provider import (
+    _updated_at as provider_updated_at_metric,
+)
 from tests.app import load_example_csv
 from tests.app.db import (
     create_email_branding,
@@ -71,6 +100,7 @@ from tests.app.db import (
     create_notification,
     create_organisation,
     create_template,
+    create_template_email_file,
     create_user,
 )
 from tests.conftest import _with_message_group_id, set_config, set_config_values
@@ -103,6 +133,61 @@ def test_should_update_scheduled_jobs_and_put_on_queue(mock_celery_task, sample_
         queue="job-tasks",
         MessageGroupId=str(job.service_id),
     )
+
+
+@pytest.mark.parametrize("pending_expiry_exceeded", (True, False))
+def test_archive_pending_files_only_scopes_stale_files(sample_email_template, pending_expiry_exceeded, caplog):
+    pending_file = create_template_email_file(
+        template_id=sample_email_template.id,
+        created_by_id=sample_email_template.created_by_id,
+        pending=True,
+        created_at=datetime.fromisoformat("2016-01-01 01:00:00.000000"),
+        version=0,
+    )
+    pending_file_already_archived = create_template_email_file(
+        template_id=sample_email_template.id,
+        created_by_id=sample_email_template.created_by_id,
+        pending=True,
+        created_at=datetime.fromisoformat("2016-01-01 01:00:00.000000"),
+        version=0,
+        archived_at=datetime.fromisoformat("2016-01-01 03:30:00.000000"),
+    )
+    live_file = create_template_email_file(
+        template_id=sample_email_template.id,
+        created_by_id=sample_email_template.created_by_id,
+        pending=False,
+        created_at=datetime.fromisoformat("2016-01-01 01:00:00.000000"),
+        version=0,
+    )
+    with freeze_time("2016-01-02 01:00:01.00000" if pending_expiry_exceeded else "2016-01-02 00:00:00.00000"):
+        archive_pending_files()
+    service_id = str(sample_email_template.service_id)
+    template_id = str(sample_email_template.id)
+    expected_archived_file = dao_get_template_email_file_by_id(
+        service_id=service_id,
+        template_id=template_id,
+        template_email_file_id=str(pending_file.id),
+    )
+    expected_pending_file_already_archived = dao_get_template_email_file_by_id(
+        service_id=service_id,
+        template_id=template_id,
+        template_email_file_id=str(pending_file_already_archived.id),
+    )
+    expected_live_file = dao_get_template_email_file_by_id(
+        service_id=service_id,
+        template_id=template_id,
+        template_email_file_id=str(live_file.id),
+    )
+    assert not expected_live_file.archived_at
+    assert expected_pending_file_already_archived.archived_at == datetime.fromisoformat("2016-01-01 03:30:00.000000")
+    assert len(caplog.messages) == 1
+    if pending_expiry_exceeded:
+        assert expected_archived_file.archived_at == datetime.fromisoformat("2016-01-02 01:00:01.00000")
+        assert expected_archived_file.created_at == datetime.fromisoformat("2016-01-01 01:00:00.000000")
+        assert "Archived 1 files created more than 24 hours ago that are still in pending" in caplog.messages
+    else:
+        assert not expected_archived_file.archived_at
+        assert "Archived 0 files created more than 24 hours ago that are still in pending" in caplog.messages
 
 
 def test_should_update_all_scheduled_jobs_and_put_on_queue(sample_template, mock_celery_task):
@@ -182,16 +267,94 @@ def test_switch_current_sms_provider_on_slow_delivery_does_nothing_if_no_need(
         ),
     ),
 )
-def test_generate_sms_delivery_stats(slow_delivery_config_option, expect_check_slow_delivery, mocker, notify_api):
+@pytest.mark.skip(reason="[NOTIFYNL] results also include Spryng, see test_provider_stats_nl.py")
+def test_generate_sms_delivery_stats(slow_delivery_config_option, expect_check_slow_delivery, notify_api, mocker):
+    undelivered_notification_age_metric_set_mock = mocker.patch.object(
+        notification_undelivered_notification_age_metric, "set"
+    )
+    sms_not_delivered_within_metric_set_mock = mocker.patch.object(
+        provider_sms_legacy_not_delivered_within_metric, "set"
+    )
+    sms_banded_not_delivered_within_metric_set_mock = mocker.patch.object(
+        provider_sms_banded_not_delivered_within_metric, "set"
+    )
+    sms_banded_not_delivered_within_absolute_metric_set_mock = mocker.patch.object(
+        provider_sms_banded_not_delivered_within_absolute_metric, "set"
+    )
+    sms_banded_not_delivered_within_total_metric_set_mock = mocker.patch.object(
+        provider_sms_banded_not_delivered_within_total_metric, "set"
+    )
+    priority_metric_mock = mocker.patch.object(provider_priority_metric, "set")
+    updated_at_metric_mock = mocker.patch.object(provider_updated_at_metric, "set")
+    info_metric_mock = mocker.patch.object(provider_info_metric, "set")
+
+    mock_get_recent_undelivered_notification_ages = mocker.patch(
+        "app.celery.scheduled_tasks.get_recent_undelivered_notification_ages",
+        return_value={
+            ("mmg", "sms", "normal"): tuple(range(3)),
+            ("mmg", "sms", "test"): tuple(range(6, 3, -1)),
+            ("firetext", "sms", "normal"): tuple(range(10, 13)),
+            ("ses", "email", "normal"): tuple(range(20, 23)),
+        },
+    )
+    # reduce the volume of args/output we need to mock
+    mocker.patch(
+        "app.celery.scheduled_tasks.UNDELIVERED_NOTIFICATION_AGE_HISTOGRAM_BUCKETS",
+        [20, 30, 40],
+    )
+
     slow_delivery_reports = [
         SlowProviderDeliveryReport(provider="mmg", slow_ratio=0.4, slow_notifications=40, total_notifications=100),
         SlowProviderDeliveryReport(provider="firetext", slow_ratio=0.8, slow_notifications=80, total_notifications=100),
     ]
-    mocker.patch(
+    mock_get_slow_text_message_delivery_reports_by_provider = mocker.patch(
         "app.celery.scheduled_tasks.get_slow_text_message_delivery_reports_by_provider",
         return_value=slow_delivery_reports,
     )
-    mock_statsd = mocker.patch("app.celery.scheduled_tasks.statsd_client.gauge")
+
+    banded_slow_delivery_reports = {
+        "mmg": (
+            BandedSlowProviderDeliveryReport(
+                provider="mmg",
+                slow_ratio=0.4,
+                slow_notifications=40,
+                total_notifications=100,
+                sent_after_ago=timedelta(seconds=120),
+                delivered_within=timedelta(seconds=60),
+            ),
+            BandedSlowProviderDeliveryReport(
+                provider="mmg",
+                slow_ratio=0.45,
+                slow_notifications=45,
+                total_notifications=100,
+                sent_after_ago=timedelta(seconds=240),
+                delivered_within=timedelta(seconds=120),
+            ),
+        ),
+        "firetext": (
+            BandedSlowProviderDeliveryReport(
+                provider="firetext",
+                slow_ratio=0.8,
+                slow_notifications=80,
+                total_notifications=100,
+                sent_after_ago=timedelta(seconds=120),
+                delivered_within=timedelta(seconds=60),
+            ),
+            BandedSlowProviderDeliveryReport(
+                provider="firetext",
+                slow_ratio=0.85,
+                slow_notifications=85,
+                total_notifications=100,
+                sent_after_ago=timedelta(seconds=240),
+                delivered_within=timedelta(seconds=120),
+            ),
+        ),
+    }
+    mock_get_banded_slow_text_message_delivery_reports_by_provider = mocker.patch(
+        "app.celery.scheduled_tasks.get_banded_slow_text_message_delivery_reports_by_provider",
+        return_value=banded_slow_delivery_reports,
+    )
+
     mock_check_slow_delivery = mocker.patch(
         "app.celery.scheduled_tasks._check_slow_text_message_delivery_reports_and_raise_error_if_needed"
     )
@@ -199,21 +362,347 @@ def test_generate_sms_delivery_stats(slow_delivery_config_option, expect_check_s
     with set_config(notify_api, "CHECK_SLOW_TEXT_MESSAGE_DELIVERY", slow_delivery_config_option):
         generate_sms_delivery_stats()
 
-    calls = [
-        call("slow-delivery.mmg.delivered-within-minutes.1.ratio", 0.4),
-        call("slow-delivery.mmg.delivered-within-minutes.5.ratio", 0.4),
-        call("slow-delivery.mmg.delivered-within-minutes.10.ratio", 0.4),
-        call("slow-delivery.firetext.delivered-within-minutes.1.ratio", 0.8),
-        call("slow-delivery.firetext.delivered-within-minutes.5.ratio", 0.8),
-        call("slow-delivery.firetext.delivered-within-minutes.10.ratio", 0.8),
-        call("slow-delivery.sms.delivered-within-minutes.1.ratio", 0.6),
-        call("slow-delivery.sms.delivered-within-minutes.5.ratio", 0.6),
-        call("slow-delivery.sms.delivered-within-minutes.10.ratio", 0.6),
+    assert mock_get_recent_undelivered_notification_ages.call_args_list == [
+        call((timedelta(seconds=20), timedelta(seconds=30), timedelta(seconds=40)), session=mock.ANY)
     ]
-    mock_statsd.assert_has_calls(calls, any_order=True)
+
+    assert mock_get_slow_text_message_delivery_reports_by_provider.call_args_list == [
+        call(created_within_minutes=15, delivered_within_minutes=1),
+        call(created_within_minutes=15, delivered_within_minutes=5),
+        call(created_within_minutes=15, delivered_within_minutes=10),
+    ]
+
+    assert mock_get_banded_slow_text_message_delivery_reports_by_provider.call_args_list == [
+        call(
+            (
+                (timedelta(seconds=30), timedelta(seconds=60)),
+                (timedelta(seconds=60), timedelta(seconds=120)),
+                (timedelta(seconds=120), timedelta(seconds=240)),
+                (timedelta(seconds=240), timedelta(seconds=480)),
+                (timedelta(seconds=480), timedelta(seconds=960)),
+            ),
+            session=mock.ANY,
+        )
+    ]
 
     assert mock_check_slow_delivery.call_args_list == (
-        [mocker.call(slow_delivery_reports)] if expect_check_slow_delivery else []
+        [call(slow_delivery_reports)] if expect_check_slow_delivery else []
+    )
+
+    # normalizing order of following calls by sorting by sorted attribute k/v pairs
+
+    assert sorted(
+        undelivered_notification_age_metric_set_mock.mock_calls, key=lambda c: sorted(c.args[1].items())
+    ) == sorted(
+        (
+            call(
+                20,
+                {
+                    "key.type": "normal",
+                    "notification.type": "email",
+                    "provider.name": "ses",
+                    "time_window.evaluation": 40.0,
+                    "le": 20.0,
+                },
+            ),
+            call(
+                10,
+                {
+                    "key.type": "normal",
+                    "notification.type": "sms",
+                    "provider.name": "firetext",
+                    "time_window.evaluation": 40.0,
+                    "le": 20.0,
+                },
+            ),
+            call(
+                0,
+                {
+                    "key.type": "normal",
+                    "notification.type": "sms",
+                    "provider.name": "mmg",
+                    "time_window.evaluation": 40.0,
+                    "le": 20.0,
+                },
+            ),
+            call(
+                21,
+                {
+                    "key.type": "normal",
+                    "notification.type": "email",
+                    "provider.name": "ses",
+                    "time_window.evaluation": 40.0,
+                    "le": 30.0,
+                },
+            ),
+            call(
+                11,
+                {
+                    "key.type": "normal",
+                    "notification.type": "sms",
+                    "provider.name": "firetext",
+                    "time_window.evaluation": 40.0,
+                    "le": 30.0,
+                },
+            ),
+            call(
+                1,
+                {
+                    "key.type": "normal",
+                    "notification.type": "sms",
+                    "provider.name": "mmg",
+                    "time_window.evaluation": 40.0,
+                    "le": 30.0,
+                },
+            ),
+            call(
+                22,
+                {
+                    "key.type": "normal",
+                    "notification.type": "email",
+                    "provider.name": "ses",
+                    "time_window.evaluation": 40.0,
+                    "le": 40.0,
+                },
+            ),
+            call(
+                12,
+                {
+                    "key.type": "normal",
+                    "notification.type": "sms",
+                    "provider.name": "firetext",
+                    "time_window.evaluation": 40.0,
+                    "le": 40.0,
+                },
+            ),
+            call(
+                2,
+                {
+                    "key.type": "normal",
+                    "notification.type": "sms",
+                    "provider.name": "mmg",
+                    "time_window.evaluation": 40.0,
+                    "le": 40.0,
+                },
+            ),
+            call(
+                6,
+                {
+                    "key.type": "test",
+                    "notification.type": "sms",
+                    "provider.name": "mmg",
+                    "time_window.evaluation": 40.0,
+                    "le": 20.0,
+                },
+            ),
+            call(
+                5,
+                {
+                    "key.type": "test",
+                    "notification.type": "sms",
+                    "provider.name": "mmg",
+                    "time_window.evaluation": 40.0,
+                    "le": 30.0,
+                },
+            ),
+            call(
+                4,
+                {
+                    "key.type": "test",
+                    "notification.type": "sms",
+                    "provider.name": "mmg",
+                    "time_window.evaluation": 40.0,
+                    "le": 40.0,
+                },
+            ),
+        ),
+        key=lambda c: sorted(c.args[1].items()),
+    )
+
+    assert sorted(
+        sms_not_delivered_within_metric_set_mock.mock_calls, key=lambda c: sorted(c.args[1].items())
+    ) == sorted(
+        (
+            call(0.4, {"provider.name": "mmg", "time_window.evaluation": 900, "time_window.delivery": 60}),
+            call(0.8, {"provider.name": "firetext", "time_window.evaluation": 900, "time_window.delivery": 60}),
+            call(0.4, {"provider.name": "mmg", "time_window.evaluation": 900, "time_window.delivery": 300}),
+            call(0.8, {"provider.name": "firetext", "time_window.evaluation": 900, "time_window.delivery": 300}),
+            call(0.4, {"provider.name": "mmg", "time_window.evaluation": 900, "time_window.delivery": 600}),
+            call(0.8, {"provider.name": "firetext", "time_window.evaluation": 900, "time_window.delivery": 600}),
+        ),
+        key=lambda c: sorted(c.args[1].items()),
+    )
+
+    assert sorted(
+        sms_banded_not_delivered_within_metric_set_mock.mock_calls, key=lambda c: sorted(c.args[1].items())
+    ) == sorted(
+        (
+            call(
+                0.8,
+                {
+                    "provider.name": "firetext",
+                    "time_window.evaluation": 60.0,
+                    "time_window.delivery": 60.0,
+                    "time_window.delay": 60.0,
+                },
+            ),
+            call(
+                0.85,
+                {
+                    "provider.name": "firetext",
+                    "time_window.evaluation": 120.0,
+                    "time_window.delivery": 120.0,
+                    "time_window.delay": 120.0,
+                },
+            ),
+            call(
+                0.4,
+                {
+                    "provider.name": "mmg",
+                    "time_window.evaluation": 60.0,
+                    "time_window.delivery": 60.0,
+                    "time_window.delay": 60.0,
+                },
+            ),
+            call(
+                0.45,
+                {
+                    "provider.name": "mmg",
+                    "time_window.evaluation": 120.0,
+                    "time_window.delivery": 120.0,
+                    "time_window.delay": 120.0,
+                },
+            ),
+        ),
+        key=lambda c: sorted(c.args[1].items()),
+    )
+
+    assert sorted(
+        sms_banded_not_delivered_within_absolute_metric_set_mock.mock_calls, key=lambda c: sorted(c.args[1].items())
+    ) == sorted(
+        (
+            call(
+                80,
+                {
+                    "provider.name": "firetext",
+                    "time_window.evaluation": 60.0,
+                    "time_window.delivery": 60.0,
+                    "time_window.delay": 60.0,
+                },
+            ),
+            call(
+                85,
+                {
+                    "provider.name": "firetext",
+                    "time_window.evaluation": 120.0,
+                    "time_window.delivery": 120.0,
+                    "time_window.delay": 120.0,
+                },
+            ),
+            call(
+                40,
+                {
+                    "provider.name": "mmg",
+                    "time_window.evaluation": 60.0,
+                    "time_window.delivery": 60.0,
+                    "time_window.delay": 60.0,
+                },
+            ),
+            call(
+                45,
+                {
+                    "provider.name": "mmg",
+                    "time_window.evaluation": 120.0,
+                    "time_window.delivery": 120.0,
+                    "time_window.delay": 120.0,
+                },
+            ),
+        ),
+        key=lambda c: sorted(c.args[1].items()),
+    )
+
+    assert sorted(
+        sms_banded_not_delivered_within_total_metric_set_mock.mock_calls, key=lambda c: sorted(c.args[1].items())
+    ) == sorted(
+        (
+            call(
+                100,
+                {
+                    "provider.name": "firetext",
+                    "time_window.evaluation": 60.0,
+                    "time_window.delivery": 60.0,
+                    "time_window.delay": 60.0,
+                },
+            ),
+            call(
+                100,
+                {
+                    "provider.name": "firetext",
+                    "time_window.evaluation": 120.0,
+                    "time_window.delivery": 120.0,
+                    "time_window.delay": 120.0,
+                },
+            ),
+            call(
+                100,
+                {
+                    "provider.name": "mmg",
+                    "time_window.evaluation": 60.0,
+                    "time_window.delivery": 60.0,
+                    "time_window.delay": 60.0,
+                },
+            ),
+            call(
+                100,
+                {
+                    "provider.name": "mmg",
+                    "time_window.evaluation": 120.0,
+                    "time_window.delivery": 120.0,
+                    "time_window.delay": 120.0,
+                },
+            ),
+        ),
+        key=lambda c: sorted(c.args[1].items()),
+    )
+
+    assert sorted(priority_metric_mock.mock_calls, key=lambda c: sorted(c.args[1].items())) == sorted(
+        (
+            call(0, {"provider.name": "firetext"}),
+            call(100, {"provider.name": "mmg"}),
+        ),
+        key=lambda c: sorted(c.args[1].items()),
+    )
+
+    assert sorted(updated_at_metric_mock.mock_calls, key=lambda c: sorted(c.args[1].items())) == sorted(
+        (
+            call(RestrictedAny(lambda x: x < datetime.utcnow().timestamp()), {"provider.name": "firetext"}),
+            call(RestrictedAny(lambda x: x < datetime.utcnow().timestamp()), {"provider.name": "mmg"}),
+        ),
+        key=lambda c: sorted(c.args[1].items()),
+    )
+
+    assert sorted(info_metric_mock.mock_calls, key=lambda c: sorted(c.args[1].items())) == sorted(
+        (
+            call(
+                1,
+                {
+                    "provider.name": "firetext",
+                    "provider.active": True,
+                    "provider.supports_international": False,
+                    "notification.type": "sms",
+                },
+            ),
+            call(
+                1,
+                {
+                    "provider.name": "mmg",
+                    "provider.active": True,
+                    "provider.supports_international": True,
+                    "notification.type": "sms",
+                },
+            ),
+        ),
+        key=lambda c: sorted(c.args[1].items()),
     )
 
 
@@ -593,9 +1082,294 @@ def test_check_if_letters_still_pending_virus_check_raises_zendesk_if_files_cant
         notify_ticket_type=NotifyTicketType.TECHNICAL,
         notify_task_type="notify_task_letters_pending_scan",
     )
-    assert "2 precompiled letters have been pending-virus-check" in mock_create_ticket.call_args.kwargs["message"]
-    assert f"{(str(notification_1.id), notification_1.reference)}" in mock_create_ticket.call_args.kwargs["message"]
-    assert f"{(str(notification_2.id), notification_2.reference)}" in mock_create_ticket.call_args.kwargs["message"]
+    ticket_message = mock_create_ticket.call_args.kwargs["message"]
+    assert "2 precompiled letters have been pending-virus-check" in ticket_message
+    assert f"{(str(notification_1.id), notification_1.reference)}" in ticket_message
+    assert f"{(str(notification_2.id), notification_2.reference)}" in ticket_message
+    assert "have reached the maximum number of retries" not in ticket_message
+    assert "We couldn't find them in the scan bucket" in ticket_message
+    mock_send_ticket_to_zendesk.assert_called_once()
+
+
+@freeze_time("2026-05-30 14:00:00")
+@pytest.mark.skip(reason="[NOTIFYNL] Postage issue")
+def test_check_if_letters_still_pending_virus_check_with_letters_both_missing_from_scan_bucket_and_in_it(
+    sample_letter_template,
+    mocker,
+):
+    mock_file_exists = mocker.patch("app.aws.s3.file_exists", side_effect=[False, True])
+    mock_create_ticket = mocker.spy(NotifySupportTicket, "__init__")
+    mock_celery = mocker.patch("app.celery.scheduled_tasks.notify_celery.send_task")
+    mock_send_ticket_to_zendesk = mocker.patch(
+        "app.celery.scheduled_tasks.zendesk_client.send_ticket_to_zendesk",
+        autospec=True,
+    )
+    notification_1 = create_notification(
+        template=sample_letter_template,
+        status=NOTIFICATION_PENDING_VIRUS_CHECK,
+        created_at=datetime.utcnow() - timedelta(seconds=601),
+        reference="one",
+    )
+    notification_2 = create_notification(
+        template=sample_letter_template,
+        status=NOTIFICATION_PENDING_VIRUS_CHECK,
+        created_at=datetime.utcnow() - timedelta(seconds=1000),
+        reference="two",
+    )
+
+    check_if_letters_still_pending_virus_check()
+
+    assert mock_file_exists.call_count == 2
+    mock_file_exists.assert_has_calls(
+        [
+            call("test-letters-scan", "NOTIFY.ONE.D.2.C.20260530134959.PDF"),
+            call("test-letters-scan", "NOTIFY.TWO.D.2.C.20260530134320.PDF"),
+        ],
+        any_order=True,
+    )
+
+    mock_celery.assert_called_once_with(
+        name=TaskNames.SCAN_FILE,
+        kwargs={"filename": "NOTIFY.ONE.D.2.C.20260530134959.PDF"},
+        queue=QueueNames.ANTIVIRUS,
+        MessageGroupId=str(sample_letter_template.service_id),
+    )
+
+    mock_create_ticket.assert_called_once_with(
+        ANY,
+        subject="[test] Letters still pending virus check",
+        message=ANY,
+        ticket_type="task",
+        notify_ticket_type=NotifyTicketType.TECHNICAL,
+        notify_task_type="notify_task_letters_pending_scan",
+    )
+    ticket_message = mock_create_ticket.call_args.kwargs["message"]
+    assert "1 precompiled letters have been pending-virus-check" in ticket_message
+    assert f"{(str(notification_1.id), notification_1.reference)}" not in ticket_message
+    assert f"{(str(notification_2.id), notification_2.reference)}" in ticket_message
+    assert "have reached the maximum number of retries" not in ticket_message
+    assert "We couldn't find them in the scan bucket" in ticket_message
+
+    mock_send_ticket_to_zendesk.assert_called_once()
+
+
+def test_check_if_letters_still_pending_virus_check_nightly_raises_error_if_args_in_wrong_order():
+    with pytest.raises(ValueError):
+        check_if_letters_still_pending_virus_check_nightly(
+            max_minutes_ago_to_check_only=500,
+            max_minutes_ago_to_check_and_rescan=1000,
+        )
+
+
+@freeze_time("2026-05-30 14:00:00")
+@pytest.mark.skip(reason="[NOTIFYNL] Postage issue")
+def test_check_if_letters_still_pending_virus_check_nightly_when_all_letters_can_be_processed(
+    sample_letter_template,
+    mocker,
+):
+    mock_file_exists = mocker.patch("app.aws.s3.file_exists", return_value=True)
+    mock_create_ticket = mocker.spy(NotifySupportTicket, "__init__")
+    mock_celery = mocker.patch("app.celery.scheduled_tasks.notify_celery.send_task")
+
+    create_notification(
+        template=sample_letter_template,
+        status=NOTIFICATION_PENDING_VIRUS_CHECK,
+        created_at=datetime.utcnow() - timedelta(minutes=10, seconds=1),
+        reference="one",
+    )
+    create_notification(
+        template=sample_letter_template,
+        status=NOTIFICATION_PENDING_VIRUS_CHECK,
+        created_at=datetime.utcnow() - timedelta(minutes=9, seconds=59),
+        reference="still has time to send",
+    )
+    expected_filename = "NOTIFY.ONE.D.2.C.20260530134959.PDF"
+
+    check_if_letters_still_pending_virus_check_nightly()
+
+    mock_file_exists.assert_called_once_with("test-letters-scan", expected_filename)
+
+    mock_celery.assert_called_once_with(
+        name=TaskNames.SCAN_FILE,
+        kwargs={"filename": expected_filename},
+        queue=QueueNames.ANTIVIRUS,
+        MessageGroupId=str(sample_letter_template.service_id),
+    )
+    assert mock_create_ticket.called is False
+
+
+@freeze_time("2026-05-30 14:00:00")
+def test_check_if_letters_still_pending_virus_check_nightly_alerts_on_old_letters_that_wont_be_retried(
+    sample_letter_template,
+    mocker,
+):
+    mock_file_exists = mocker.patch("app.aws.s3.file_exists", return_value=False)
+    mock_create_ticket = mocker.spy(NotifySupportTicket, "__init__")
+    mock_celery = mocker.patch("app.celery.scheduled_tasks.notify_celery.send_task")
+    mock_send_ticket_to_zendesk = mocker.patch(
+        "app.celery.scheduled_tasks.zendesk_client.send_ticket_to_zendesk",
+        autospec=True,
+    )
+
+    create_notification(
+        template=sample_letter_template,
+        status=NOTIFICATION_DELIVERED,
+        created_at=datetime.utcnow() - timedelta(days=4),
+        reference="ignore as status in delivered",
+    )
+    notification_1 = create_notification(
+        template=sample_letter_template,
+        status=NOTIFICATION_PENDING_VIRUS_CHECK,
+        created_at=datetime.utcnow() - timedelta(days=3, seconds=1),
+        reference="one",
+    )
+    notification_2 = create_notification(
+        template=sample_letter_template,
+        status=NOTIFICATION_PENDING_VIRUS_CHECK,
+        created_at=datetime.utcnow() - timedelta(days=5),
+        reference="two",
+    )
+
+    check_if_letters_still_pending_virus_check_nightly()
+
+    assert not mock_file_exists.called
+    assert not mock_celery.called
+
+    mock_create_ticket.assert_called_once_with(
+        ANY,
+        subject="[test] Letters still pending virus check",
+        message=ANY,
+        ticket_type="task",
+        notify_ticket_type=NotifyTicketType.TECHNICAL,
+        notify_task_type="notify_task_letters_pending_scan",
+    )
+    ticket_message = mock_create_ticket.call_args.kwargs["message"]
+    assert "2 precompiled letters have been pending-virus-check" in ticket_message
+    assert f"{(str(notification_1.id), notification_1.reference)}" in ticket_message
+    assert f"{(str(notification_2.id), notification_2.reference)}" in ticket_message
+    assert "have reached the maximum number of retries" in ticket_message
+    assert "We couldn't find them in the scan bucket" not in ticket_message
+    mock_send_ticket_to_zendesk.assert_called_once()
+
+
+@freeze_time("2026-05-30 14:00:00")
+@pytest.mark.skip(reason="[NOTIFYNL] Postage issue")
+def test_check_if_letters_still_pending_virus_check_nightly_warns_about_letters_not_in_scan_bucket(
+    sample_letter_template,
+    mocker,
+):
+    mock_file_exists = mocker.patch("app.aws.s3.file_exists", side_effect=[False, True])
+    mock_create_ticket = mocker.spy(NotifySupportTicket, "__init__")
+    mock_celery = mocker.patch("app.celery.scheduled_tasks.notify_celery.send_task")
+    mock_send_ticket_to_zendesk = mocker.patch(
+        "app.celery.scheduled_tasks.zendesk_client.send_ticket_to_zendesk",
+        autospec=True,
+    )
+    notification_1 = create_notification(
+        template=sample_letter_template,
+        status=NOTIFICATION_PENDING_VIRUS_CHECK,
+        created_at=datetime.utcnow() - timedelta(seconds=601),
+        reference="one",
+    )
+    # notification_2 is returned first from dao function, so is the file not found
+    notification_2 = create_notification(
+        template=sample_letter_template,
+        status=NOTIFICATION_PENDING_VIRUS_CHECK,
+        created_at=datetime.utcnow() - timedelta(seconds=1000),
+        reference="two",
+    )
+
+    check_if_letters_still_pending_virus_check_nightly()
+
+    assert mock_file_exists.call_count == 2
+    mock_file_exists.assert_has_calls(
+        [
+            call("test-letters-scan", "NOTIFY.ONE.D.2.C.20260530134959.PDF"),
+            call("test-letters-scan", "NOTIFY.TWO.D.2.C.20260530134320.PDF"),
+        ],
+        any_order=True,
+    )
+
+    mock_celery.assert_called_once_with(
+        name=TaskNames.SCAN_FILE,
+        kwargs={"filename": "NOTIFY.ONE.D.2.C.20260530134959.PDF"},
+        queue=QueueNames.ANTIVIRUS,
+        MessageGroupId=str(sample_letter_template.service_id),
+    )
+
+    mock_create_ticket.assert_called_once_with(
+        ANY,
+        subject="[test] Letters still pending virus check",
+        message=ANY,
+        ticket_type="task",
+        notify_ticket_type=NotifyTicketType.TECHNICAL,
+        notify_task_type="notify_task_letters_pending_scan",
+    )
+    ticket_message = mock_create_ticket.call_args.kwargs["message"]
+    assert "1 precompiled letters have been pending-virus-check" in ticket_message
+    assert f"{(str(notification_1.id), notification_1.reference)}" not in ticket_message
+    assert f"{(str(notification_2.id), notification_2.reference)}" in ticket_message
+    assert "have reached the maximum number of retries" not in ticket_message
+    assert "We couldn't find them in the scan bucket" in ticket_message
+
+    mock_send_ticket_to_zendesk.assert_called_once()
+
+
+@freeze_time("2026-05-30 14:00:00")
+@pytest.mark.skip(reason="[NOTIFYNL] Postage issue")
+def test_check_if_letters_still_pending_virus_check_nightly_with_both_types_of_zendesk_warning(
+    sample_letter_template,
+    mocker,
+):
+    mock_file_exists = mocker.patch("app.aws.s3.file_exists", return_value=False)
+    mock_create_ticket = mocker.spy(NotifySupportTicket, "__init__")
+    mock_celery = mocker.patch("app.celery.scheduled_tasks.notify_celery.send_task")
+    mock_send_ticket_to_zendesk = mocker.patch(
+        "app.celery.scheduled_tasks.zendesk_client.send_ticket_to_zendesk",
+        autospec=True,
+    )
+    # notification_1 is too old to be rescanned
+    notification_1 = create_notification(
+        template=sample_letter_template,
+        status=NOTIFICATION_PENDING_VIRUS_CHECK,
+        created_at=datetime.utcnow() - timedelta(days=4),
+        reference="one",
+    )
+    # notification_2 cannot be found in the scan bucket
+    notification_2 = create_notification(
+        template=sample_letter_template,
+        status=NOTIFICATION_PENDING_VIRUS_CHECK,
+        created_at=datetime.utcnow() - timedelta(seconds=1000),
+        reference="two",
+    )
+
+    check_if_letters_still_pending_virus_check_nightly()
+
+    assert mock_file_exists.call_count == 1
+    mock_file_exists.assert_has_calls(
+        [
+            call("test-letters-scan", "NOTIFY.TWO.D.2.C.20260530134320.PDF"),
+        ],
+    )
+
+    assert mock_celery.called is False
+
+    mock_create_ticket.assert_called_once_with(
+        ANY,
+        subject="[test] Letters still pending virus check",
+        message=ANY,
+        ticket_type="task",
+        notify_ticket_type=NotifyTicketType.TECHNICAL,
+        notify_task_type="notify_task_letters_pending_scan",
+    )
+    normalized_ticket_message = " ".join(mock_create_ticket.call_args.kwargs["message"].split())
+    assert "1 precompiled letters have been pending-virus-check for over 10 minutes" in normalized_ticket_message
+    assert "1 precompiled letters have been pending-virus-check for over 3 days" in normalized_ticket_message
+    assert f"{(str(notification_1.id), notification_1.reference)}" in normalized_ticket_message
+    assert f"{(str(notification_2.id), notification_2.reference)}" in normalized_ticket_message
+    assert "have reached the maximum number of retries" in normalized_ticket_message
+    assert "We couldn't find them in the scan bucket" in normalized_ticket_message
+
     mock_send_ticket_to_zendesk.assert_called_once()
 
 
@@ -713,6 +1487,57 @@ def test_check_if_letters_still_in_created_during_utc(sample_letter_template, ca
         ticket_type="task",
         notify_ticket_type=NotifyTicketType.TECHNICAL,
         notify_task_type="notify_task_letters_created_status",
+    )
+    mock_send_ticket_to_zendesk.assert_called_once()
+
+
+def test_check_if_letters_in_technical_failure(sample_letter_template, caplog, mocker):
+    mock_create_ticket = mocker.spy(NotifySupportTicket, "__init__")
+    mock_send_ticket_to_zendesk = mocker.patch(
+        "app.celery.scheduled_tasks.zendesk_client.send_ticket_to_zendesk",
+        autospec=True,
+    )
+
+    with caplog.at_level("ERROR"):
+        create_notification(
+            template=sample_letter_template,
+            status="technical-failure",
+            created_at=datetime.utcnow() - timedelta(hours=6),
+        )
+        create_notification(
+            template=sample_letter_template,
+            status="technical-failure",
+            created_at=datetime.utcnow() - timedelta(minutes=10),
+        )
+        create_notification(
+            template=sample_letter_template,
+            status="technical-failure",
+            created_at=datetime.utcnow() - timedelta(days=2),
+        )
+        create_notification(
+            template=sample_letter_template,
+            status="technical-failure",
+            created_at=datetime.utcnow() - timedelta(days=3),
+        )
+        create_notification(
+            template=sample_letter_template,
+            status="technical-failure",
+            created_at=datetime.utcnow() - timedelta(days=4),
+        )
+        check_if_letters_in_technical_failure()
+
+    assert "3 letter notifications have 'technical-failure' status" in caplog.messages
+    mock_create_ticket.assert_called_once_with(
+        ANY,
+        message=(
+            "3 letters have 'technical-failure' status. "
+            "Follow runbook to resolve: "
+            "https://github.com/alphagov/notifications-manuals/wiki/Support-Runbook#fixing-letters-in-technical-failure."
+        ),
+        subject="[test] Letters in 'technical-failure' status",
+        ticket_type="task",
+        notify_ticket_type=NotifyTicketType.TECHNICAL,
+        notify_task_type="notify_task_letters_technical_failure_status",
     )
     mock_send_ticket_to_zendesk.assert_called_once()
 
@@ -886,16 +1711,20 @@ MockServicesWithHighFailureRate = namedtuple(
                 "Service 123 has had a high permanent-failure rate (0.3) for text messages in the last 24 hours",
                 "Service 456 has had a high permanent-failure rate (0.7) for text messages in the last 24 hours",
             ],
-            "2 service(s) have had high permanent-failure rates for sms messages in last 24 hours:\n"
-            f"service: {Config.ADMIN_BASE_URL}/services/123 failure rate: 0.3,\n"
-            f"service: {Config.ADMIN_BASE_URL}/services/456 failure rate: 0.7,\n",
+            (
+                "2 service(s) have had high permanent-failure rates for sms messages in last 24 hours:\n"
+                f"service: {Config.ADMIN_BASE_URL}/services/123 failure rate: 0.3,\n"
+                f"service: {Config.ADMIN_BASE_URL}/services/456 failure rate: 0.7,\n"
+            ),
         ],
         [
             [],
             [MockServicesSendingToTVNumbers("123", 567)],
             ["Service 123 has sent 567 text messages to tv numbers in the last 24 hours"],
-            "1 service(s) have sent over 500 sms messages to tv numbers in last 24 hours:\n"
-            f"service: {Config.ADMIN_BASE_URL}/services/123 count of sms to tv numbers: 567,\n",
+            (
+                "1 service(s) have sent over 500 sms messages to tv numbers in last 24 hours:\n"
+                f"service: {Config.ADMIN_BASE_URL}/services/123 count of sms to tv numbers: 567,\n"
+            ),
         ],
         [
             [MockServicesWithHighFailureRate("123", 0.3)],
@@ -904,10 +1733,12 @@ MockServicesWithHighFailureRate = namedtuple(
                 "Service 123 has had a high permanent-failure rate (0.3) for text messages in the last 24 hours",
                 "Service 456 has sent 567 text messages to tv numbers in the last 24 hours",
             ],
-            "1 service(s) have had high permanent-failure rates for sms messages in last 24 hours:\n"
-            f"service: {Config.ADMIN_BASE_URL}/services/123 failure rate: 0.3,\n"
-            "1 service(s) have sent over 500 sms messages to tv numbers in last 24 hours:\n"
-            f"service: {Config.ADMIN_BASE_URL}/services/456 count of sms to tv numbers: 567,\n",
+            (
+                "1 service(s) have had high permanent-failure rates for sms messages in last 24 hours:\n"
+                f"service: {Config.ADMIN_BASE_URL}/services/123 failure rate: 0.3,\n"
+                "1 service(s) have sent over 500 sms messages to tv numbers in last 24 hours:\n"
+                f"service: {Config.ADMIN_BASE_URL}/services/456 count of sms to tv numbers: 567,\n"
+            ),
         ],
     ],
 )

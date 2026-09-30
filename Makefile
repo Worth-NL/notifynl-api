@@ -10,8 +10,6 @@ GIT_COMMIT ?= $(shell git rev-parse HEAD)
 VIRTUALENV_ROOT := $(shell [ -z $$VIRTUAL_ENV ] && echo $$(pwd)/venv || echo $$VIRTUAL_ENV)
 PYTHON_EXECUTABLE_PREFIX := $(shell test -d "$${VIRTUALENV_ROOT}" && echo "$${VIRTUALENV_ROOT}/bin/" || echo "")
 
-EXCLUDE_REQUIREMENTS_NEWER_THAN_DAYS ?= 7
-
 
 ## DEVELOPMENT
 
@@ -106,17 +104,18 @@ lint: ## Run static type checks
 	ruff check .
 	ruff format --check .
 	mypy
+	grep '^\*\*/\.git/config$$' ./.dockerignore > /dev/null
 
 .PHONY: refreeze-requirements
 refreeze-requirements: ## Upgrade unpinned requirements
-	EXTRA_UV_PIP_COMPILE_FLAGS="--upgrade --exclude-newer $(EXCLUDE_REQUIREMENTS_NEWER_THAN_DAYS)d" make freeze-requirements
+	EXTRA_UV_PIP_COMPILE_FLAGS="--upgrade" make freeze-requirements
 
 .PHONY: freeze-requirements
 freeze-requirements: ## Pin all requirements including sub dependencies into requirements.txt
-	uv pip compile requirements.in -o requirements.txt $(EXTRA_UV_PIP_COMPILE_FLAGS)
-	uv pip sync requirements.txt
+	uv pip install "`cat requirements.in | grep 'notifications-utils @'`"
 	python -c "from notifications_utils.version_tools import copy_config; copy_config()"
-	uv pip compile requirements_for_test.in -o requirements_for_test.txt $(EXTRA_UV_PIP_COMPILE_FLAGS)
+	uv pip compile --quiet requirements.in -o requirements.txt $(EXTRA_UV_PIP_COMPILE_FLAGS)
+	uv pip compile --quiet requirements_for_test.in -o requirements_for_test.txt $(EXTRA_UV_PIP_COMPILE_FLAGS)
 	uv pip sync requirements_for_test.txt
 
 .PHONY: show-outdated-requirements

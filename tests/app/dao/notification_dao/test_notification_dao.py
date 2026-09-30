@@ -29,6 +29,7 @@ from app.constants import (
     SMS_TYPE,
 )
 from app.dao.notifications_dao import (
+    BandedSlowProviderDeliveryReport,
     dao_create_notification,
     dao_delete_notifications_by_id,
     dao_get_last_notification_added_for_job_id,
@@ -40,15 +41,19 @@ from app.dao.notifications_dao import (
     dao_get_notification_or_history_by_reference,
     dao_get_notifications_by_recipient_or_reference,
     dao_get_notifications_processing_time_stats,
+    dao_letters_in_technical_failure,
+    dao_precompiled_letters_still_pending_virus_check,
     dao_record_letter_despatched_on_by_id,
     dao_timeout_notifications,
     dao_update_notification,
     dao_update_notifications_by_reference,
+    get_banded_slow_text_message_delivery_reports_by_provider,
     get_notification_by_id,
     get_notification_by_job_and_job_row_number,
     get_notification_with_personalisation,
     get_notifications_for_job,
     get_notifications_for_service,
+    get_recent_undelivered_notification_ages,
     get_service_ids_with_notifications_before,
     get_service_ids_with_notifications_on_date,
     is_delivery_slow_for_providers,
@@ -1148,6 +1153,515 @@ def test_delivery_is_delivery_slow_for_providers_filters_out_notifications_it_sh
     assert result["spryng"] == expected_result
 
 
+def _tds(s):
+    return timedelta(seconds=s)
+
+
+@pytest.mark.parametrize(
+    "notifications,expected_result",
+    (
+        (
+            (
+                # no notifications
+            ),
+            {
+                ("dvla", "letter", "normal"): (0, 0, 0),
+                ("dvla", "letter", "team"): (0, 0, 0),
+                ("dvla", "letter", "test"): (0, 0, 0),
+                ("firetext", "sms", "normal"): (0, 0, 0),
+                ("firetext", "sms", "team"): (0, 0, 0),
+                ("firetext", "sms", "test"): (0, 0, 0),
+                ("mmg", "sms", "normal"): (0, 0, 0),
+                ("mmg", "sms", "team"): (0, 0, 0),
+                ("mmg", "sms", "test"): (0, 0, 0),
+                ("ses", "email", "normal"): (0, 0, 0),
+                ("ses", "email", "team"): (0, 0, 0),
+                ("ses", "email", "test"): (0, 0, 0),
+            },
+        ),
+        (
+            (
+                (_tds(60), _tds(55), NOTIFICATION_SENDING, {"sent_by": "mmg"}),
+                (_tds(61), _tds(55), NOTIFICATION_SENDING, {"sent_by": "mmg"}),
+                (_tds(62), _tds(60), NOTIFICATION_SENDING, {"sent_by": "mmg"}),
+                (_tds(63), _tds(61), NOTIFICATION_SENDING, {"sent_by": "mmg"}),
+                (_tds(64), _tds(62), NOTIFICATION_DELIVERED, {"sent_by": "mmg"}),  # excluded
+                (_tds(130), _tds(81), NOTIFICATION_PENDING, {"sent_by": "mmg"}),
+                (_tds(300), _tds(120), NOTIFICATION_SENDING, {"sent_by": "mmg"}),  # excluded
+                (_tds(1500), _tds(85), NOTIFICATION_PENDING, {"sent_by": "mmg"}),  # excluded
+                (_tds(33), _tds(32), NOTIFICATION_PENDING, {"sent_by": "mmg", "key_type": KEY_TYPE_TEST}),
+                (_tds(10), _tds(9), NOTIFICATION_SENDING, {"sent_by": "firetext"}),
+                (_tds(5), _tds(4), NOTIFICATION_DELIVERED, {"sent_by": "firetext"}),  # excluded
+                (_tds(39), _tds(10), NOTIFICATION_PENDING, {"sent_by": "firetext", "key_type": KEY_TYPE_TEAM}),
+                (_tds(50), _tds(11), NOTIFICATION_SENDING, {"sent_by": "firetext", "key_type": KEY_TYPE_TEAM}),
+                (_tds(61), _tds(12), NOTIFICATION_PENDING, {"sent_by": "firetext"}),
+                (
+                    _tds(62),
+                    _tds(62),
+                    NOTIFICATION_DELIVERED,
+                    {"sent_by": "firetext", "key_type": KEY_TYPE_TEST},
+                ),  # excluded
+                (_tds(300), _tds(50), NOTIFICATION_DELIVERED, {"sent_by": "firetext"}),  # excluded
+            ),
+            {
+                ("dvla", "letter", "normal"): (0, 0, 0),
+                ("dvla", "letter", "team"): (0, 0, 0),
+                ("dvla", "letter", "test"): (0, 0, 0),
+                ("firetext", "sms", "normal"): (2, 2, 2),
+                ("firetext", "sms", "team"): (2, 2, 2),
+                ("firetext", "sms", "test"): (0, 0, 0),
+                ("mmg", "sms", "normal"): (0, 3, 5),
+                ("mmg", "sms", "team"): (0, 0, 0),
+                ("mmg", "sms", "test"): (0, 1, 1),
+                ("ses", "email", "normal"): (0, 0, 0),
+                ("ses", "email", "team"): (0, 0, 0),
+                ("ses", "email", "test"): (0, 0, 0),
+            },
+        ),
+        (
+            (
+                (
+                    _tds(10),
+                    _tds(1),
+                    NOTIFICATION_DELIVERED,
+                    {"sent_by": "firetext", "key_type": KEY_TYPE_TEAM},
+                ),  # excluded
+                (_tds(2), _tds(2), NOTIFICATION_PERMANENT_FAILURE, {"sent_by": "firetext"}),  # excluded
+                (
+                    _tds(50),
+                    _tds(11),
+                    NOTIFICATION_DELIVERED,
+                    {"sent_by": "firetext", "key_type": KEY_TYPE_TEAM},
+                ),  # excluded
+                (_tds(100), _tds(99), NOTIFICATION_SENDING, {"sent_by": "firetext"}),  # excluded
+                (_tds(80), _tds(80), NOTIFICATION_SENT, {"sent_by": "firetext"}),  # excluded
+                (_tds(1), _tds(1), NOTIFICATION_SENDING, {"sent_by": "mmg", "key_type": KEY_TYPE_TEST}),
+                (_tds(123), _tds(1), NOTIFICATION_SENDING, {"sent_by": "mmg", "key_type": KEY_TYPE_TEST}),
+                (_tds(90), _tds(90), NOTIFICATION_SENDING, {"sent_by": "mmg", "key_type": KEY_TYPE_TEST}),
+            ),
+            {
+                ("dvla", "letter", "normal"): (0, 0, 0),
+                ("dvla", "letter", "team"): (0, 0, 0),
+                ("dvla", "letter", "test"): (0, 0, 0),
+                ("firetext", "sms", "normal"): (0, 0, 0),
+                ("firetext", "sms", "team"): (0, 0, 0),
+                ("firetext", "sms", "test"): (0, 0, 0),
+                ("mmg", "sms", "normal"): (0, 0, 0),
+                ("mmg", "sms", "team"): (0, 0, 0),
+                ("mmg", "sms", "test"): (2, 2, 3),
+                ("ses", "email", "normal"): (0, 0, 0),
+                ("ses", "email", "team"): (0, 0, 0),
+                ("ses", "email", "test"): (0, 0, 0),
+            },
+        ),
+    ),
+)
+@pytest.mark.parametrize(
+    "session,expected_bind_key",
+    (
+        (db.session, None),
+        (db.session_bulk, "bulk"),
+    ),
+    ids=("default", "bulk"),
+)
+@freeze_time()
+@pytest.mark.skip(reason="[NOTIFYNL] results also include Spryng, see test_provider_stats_nl.py")
+def test_get_recent_undelivered_notification_ages(
+    notify_db_session, sample_template, notifications, session, expected_result, expected_bind_key
+):
+    uniform_now = datetime.now()
+
+    for created_delta, sent_delta, status, options in notifications:
+        created_at = uniform_now - created_delta
+        sent_at = uniform_now - sent_delta
+        create_notification(
+            template=sample_template,
+            sent_at=sent_at,
+            created_at=created_at,
+            status=status,
+            updated_at=sent_at,
+            **options,
+        )
+
+    with QueryRecorder() as query_recorder:
+        assert (
+            get_recent_undelivered_notification_ages(
+                (_tds(30), _tds(60), _tds(90)), created_sent_difference_allowance=timedelta(minutes=15), session=session
+            )
+            == expected_result
+        )
+
+    assert {query_info.bind_key for query_info in query_recorder.queries} == {expected_bind_key}
+
+
+@pytest.mark.parametrize(
+    "bands,notifications,expected_result",
+    (
+        (
+            (
+                (_tds(60), _tds(120)),
+                (_tds(120), _tds(240)),
+            ),
+            (
+                (_tds(55), NOTIFICATION_SENDING, None, {"sent_by": "mmg"}),  # excluded
+                (_tds(61), NOTIFICATION_SENDING, None, {"sent_by": "mmg"}),  # slow
+                (_tds(118), NOTIFICATION_DELIVERED, _tds(5), {"sent_by": "mmg"}),  # ok
+                (_tds(123), NOTIFICATION_PENDING, _tds(5), {"sent_by": "mmg"}),  # slow
+                (_tds(124), NOTIFICATION_DELIVERED, _tds(5), {"sent_by": "mmg"}),  # ok
+                (_tds(125), NOTIFICATION_DELIVERED, _tds(5), {"sent_by": "mmg"}),  # ok
+                (_tds(128), NOTIFICATION_DELIVERED, _tds(61), {"sent_by": "mmg"}),  # ok
+                (_tds(236), NOTIFICATION_DELIVERED, _tds(130), {"sent_by": "mmg"}),  # slow
+                (_tds(244), NOTIFICATION_DELIVERED, _tds(130), {"sent_by": "mmg"}),  # excluded
+                (_tds(65), NOTIFICATION_SENDING, None, {"sent_by": "firetext"}),  # slow
+                (_tds(66), NOTIFICATION_DELIVERED, _tds(5), {"sent_by": "firetext"}),  # ok
+                (_tds(111), NOTIFICATION_DELIVERED, _tds(66), {"sent_by": "firetext"}),  # slow
+                (_tds(112), NOTIFICATION_PENDING, _tds(5), {"sent_by": "firetext"}),  # slow
+                (_tds(122), NOTIFICATION_PENDING, _tds(5), {"sent_by": "firetext"}),  # slow
+                (_tds(222), NOTIFICATION_DELIVERED, _tds(5), {"sent_by": "firetext"}),  # ok
+                (_tds(223), NOTIFICATION_DELIVERED, _tds(121), {"sent_by": "firetext"}),  # slow
+                (_tds(224), NOTIFICATION_DELIVERED, _tds(115), {"sent_by": "firetext"}),  # ok
+            ),
+            {
+                "mmg": (
+                    BandedSlowProviderDeliveryReport(
+                        provider="mmg",
+                        slow_ratio=0.5,
+                        slow_notifications=1,
+                        total_notifications=2,
+                        delivered_within=_tds(60),
+                        sent_after_ago=_tds(120),
+                    ),
+                    BandedSlowProviderDeliveryReport(
+                        provider="mmg",
+                        slow_ratio=0.4,
+                        slow_notifications=2,
+                        total_notifications=5,
+                        delivered_within=_tds(120),
+                        sent_after_ago=_tds(240),
+                    ),
+                ),
+                "firetext": (
+                    BandedSlowProviderDeliveryReport(
+                        provider="firetext",
+                        slow_ratio=0.75,
+                        slow_notifications=3,
+                        total_notifications=4,
+                        delivered_within=_tds(60),
+                        sent_after_ago=_tds(120),
+                    ),
+                    BandedSlowProviderDeliveryReport(
+                        provider="firetext",
+                        slow_ratio=0.5,
+                        slow_notifications=2,
+                        total_notifications=4,
+                        delivered_within=_tds(120),
+                        sent_after_ago=_tds(240),
+                    ),
+                ),
+            },
+        ),
+        (
+            ((_tds(30), _tds(60)),),
+            (
+                (_tds(29), NOTIFICATION_SENDING, None, {"sent_by": "mmg"}),  # excluded
+                (_tds(30), NOTIFICATION_DELIVERED, _tds(1), {"sent_by": "mmg"}),  # excluded
+                (_tds(32), NOTIFICATION_TEMPORARY_FAILURE, _tds(31), {"sent_by": "mmg"}),  # excluded
+                (_tds(35), NOTIFICATION_PERMANENT_FAILURE, _tds(31), {"sent_by": "mmg"}),  # excluded
+                (_tds(36), NOTIFICATION_SENDING, None, {"sent_by": "mmg", "key_type": KEY_TYPE_TEST}),  # excluded
+                (_tds(60.1), NOTIFICATION_PENDING, _tds(1), {"sent_by": "mmg"}),  # excluded
+                (_tds(40), NOTIFICATION_SENT, _tds(32), {"sent_by": "firetext"}),  # excluded
+                (_tds(41), NOTIFICATION_PENDING, _tds(10), {"sent_by": "firetext"}),  # slow
+                (_tds(60), NOTIFICATION_DELIVERED, _tds(1), {"sent_by": "firetext"}),  # ok
+            ),
+            {
+                "mmg": (
+                    BandedSlowProviderDeliveryReport(
+                        provider="mmg",
+                        slow_ratio=0.0,
+                        slow_notifications=0,
+                        total_notifications=0,
+                        delivered_within=_tds(30),
+                        sent_after_ago=_tds(60),
+                    ),
+                ),
+                "firetext": (
+                    BandedSlowProviderDeliveryReport(
+                        provider="firetext",
+                        slow_ratio=0.5,
+                        slow_notifications=1,
+                        total_notifications=2,
+                        delivered_within=_tds(30),
+                        sent_after_ago=_tds(60),
+                    ),
+                ),
+            },
+        ),
+        (
+            (
+                (_tds(30), _tds(60)),
+                (_tds(60), _tds(70)),
+                (_tds(70), _tds(80)),
+            ),
+            (
+                (_tds(31), NOTIFICATION_DELIVERED, _tds(30), {"sent_by": "mmg"}),  # slow
+                (_tds(60), NOTIFICATION_DELIVERED, _tds(60), {"sent_by": "mmg"}),  # slow
+                (_tds(70), NOTIFICATION_DELIVERED, _tds(70), {"sent_by": "mmg"}),  # slow
+                (_tds(80), NOTIFICATION_DELIVERED, _tds(80), {"sent_by": "mmg"}),  # slow
+                (_tds(40), NOTIFICATION_PENDING, _tds(10), {"sent_by": "firetext"}),  # slow
+            ),
+            {
+                "mmg": (
+                    BandedSlowProviderDeliveryReport(
+                        provider="mmg",
+                        slow_ratio=1.0,
+                        slow_notifications=2,
+                        total_notifications=2,
+                        delivered_within=_tds(30),
+                        sent_after_ago=_tds(60),
+                    ),
+                    BandedSlowProviderDeliveryReport(
+                        provider="mmg",
+                        slow_ratio=1.0,
+                        slow_notifications=1,
+                        total_notifications=1,
+                        delivered_within=_tds(60),
+                        sent_after_ago=_tds(70),
+                    ),
+                    BandedSlowProviderDeliveryReport(
+                        provider="mmg",
+                        slow_ratio=1.0,
+                        slow_notifications=1,
+                        total_notifications=1,
+                        delivered_within=_tds(70),
+                        sent_after_ago=_tds(80),
+                    ),
+                ),
+                "firetext": (
+                    BandedSlowProviderDeliveryReport(
+                        provider="firetext",
+                        slow_ratio=1.0,
+                        slow_notifications=1,
+                        total_notifications=1,
+                        delivered_within=_tds(30),
+                        sent_after_ago=_tds(60),
+                    ),
+                    BandedSlowProviderDeliveryReport(
+                        provider="firetext",
+                        slow_ratio=0.0,
+                        slow_notifications=0,
+                        total_notifications=0,
+                        delivered_within=_tds(60),
+                        sent_after_ago=_tds(70),
+                    ),
+                    BandedSlowProviderDeliveryReport(
+                        provider="firetext",
+                        slow_ratio=0.0,
+                        slow_notifications=0,
+                        total_notifications=0,
+                        delivered_within=_tds(70),
+                        sent_after_ago=_tds(80),
+                    ),
+                ),
+            },
+        ),
+    ),
+)
+@pytest.mark.parametrize(
+    "session,expected_bind_key",
+    (
+        (db.session, None),
+        (db.session_bulk, "bulk"),
+    ),
+    ids=("default", "bulk"),
+)
+@freeze_time()
+@pytest.mark.skip(reason="[NOTIFYNL] results also include Spryng, see test_provider_stats_nl.py")
+def test_get_banded_slow_text_message_delivery_reports_by_provider(
+    notify_db_session, sample_template, bands, notifications, session, expected_result, expected_bind_key
+):
+    uniform_now = datetime.now()
+
+    for created_sent_delta, status, updated_at_delta, options in notifications:
+        created_sent = uniform_now - created_sent_delta
+        create_notification(
+            template=sample_template,
+            sent_at=created_sent,
+            created_at=created_sent,
+            status=status,
+            updated_at=created_sent + (updated_at_delta or timedelta()),
+            **options,
+        )
+
+    with QueryRecorder() as query_recorder:
+        assert get_banded_slow_text_message_delivery_reports_by_provider(bands, session=session) == expected_result
+
+    assert {query_info.bind_key for query_info in query_recorder.queries} == {expected_bind_key}
+
+
+@pytest.mark.parametrize(
+    "bands,notifications,expected_result",
+    (
+        (
+            ((_tds(60), _tds(120)),),
+            (
+                (_tds(60), _tds(55), NOTIFICATION_SENDING, None, {"sent_by": "mmg"}),  # excluded
+                (_tds(61), _tds(55), NOTIFICATION_SENDING, None, {"sent_by": "mmg"}),  # excluded
+                (_tds(62), _tds(60), NOTIFICATION_SENDING, None, {"sent_by": "mmg"}),  # excluded
+                (_tds(63), _tds(61), NOTIFICATION_SENDING, None, {"sent_by": "mmg"}),  # slow
+                (_tds(130), _tds(110), NOTIFICATION_SENDING, None, {"sent_by": "mmg"}),  # slow
+                (_tds(300), _tds(120), NOTIFICATION_SENDING, None, {"sent_by": "mmg"}),  # slow
+                (_tds(1120), _tds(119), NOTIFICATION_DELIVERED, _tds(1), {"sent_by": "mmg"}),  # excluded
+                (_tds(60), _tds(59), NOTIFICATION_DELIVERED, _tds(1), {"sent_by": "firetext"}),  # excluded
+                (_tds(61), _tds(60), NOTIFICATION_DELIVERED, _tds(1), {"sent_by": "firetext"}),  # excluded
+                (_tds(100), _tds(70), NOTIFICATION_DELIVERED, _tds(1), {"sent_by": "firetext"}),  # ok
+                (_tds(100), _tds(70), NOTIFICATION_DELIVERED, _tds(65), {"sent_by": "firetext"}),  # slow
+                (_tds(300), _tds(50), NOTIFICATION_DELIVERED, _tds(1), {"sent_by": "firetext"}),  # excluded
+            ),
+            {
+                "mmg": (
+                    BandedSlowProviderDeliveryReport(
+                        provider="mmg",
+                        slow_ratio=1.0,
+                        slow_notifications=3,
+                        total_notifications=3,
+                        delivered_within=_tds(60),
+                        sent_after_ago=_tds(120),
+                    ),
+                ),
+                "firetext": (
+                    BandedSlowProviderDeliveryReport(
+                        provider="firetext",
+                        slow_ratio=0.5,
+                        slow_notifications=1,
+                        total_notifications=2,
+                        delivered_within=_tds(60),
+                        sent_after_ago=_tds(120),
+                    ),
+                ),
+            },
+        ),
+        (
+            (
+                # misordered and overlapping bands should "work" but aren't advisable
+                (_tds(80), _tds(90)),
+                (_tds(60), _tds(140)),
+                (_tds(25), _tds(50)),
+            ),
+            (
+                (_tds(24), _tds(23), NOTIFICATION_DELIVERED, _tds(1), {"sent_by": "mmg"}),  # excluded
+                (_tds(25), _tds(24), NOTIFICATION_DELIVERED, _tds(1), {"sent_by": "mmg"}),  # excluded
+                (_tds(26), _tds(25), NOTIFICATION_DELIVERED, _tds(1), {"sent_by": "mmg"}),  # excluded
+                (_tds(27), _tds(26), NOTIFICATION_DELIVERED, _tds(1), {"sent_by": "mmg"}),  # ok
+                (_tds(28), _tds(27), NOTIFICATION_PENDING, _tds(26), {"sent_by": "mmg"}),  # slow
+                (_tds(95), _tds(85), NOTIFICATION_DELIVERED, _tds(61), {"sent_by": "mmg"}),  # 2 bands, ok/slow
+                (_tds(1000), _tds(86), NOTIFICATION_DELIVERED, _tds(1), {"sent_by": "mmg"}),  # 2 bands, ok/ok
+                (_tds(1000.1), _tds(86.1), NOTIFICATION_DELIVERED, _tds(1), {"sent_by": "mmg"}),  # 2 bands, ok/ok
+                (_tds(1000.2), _tds(86.2), NOTIFICATION_DELIVERED, _tds(1), {"sent_by": "mmg"}),  # 2 bands, ok/ok
+                (_tds(1001), _tds(87), NOTIFICATION_SENDING, None, {"sent_by": "mmg"}),  # 2 bands, slow/slow
+                (_tds(1100), _tds(88), NOTIFICATION_SENDING, None, {"sent_by": "mmg"}),  # excluded
+                (_tds(1101), _tds(110), NOTIFICATION_SENDING, None, {"sent_by": "mmg"}),  # excluded
+                (_tds(800), _tds(111), NOTIFICATION_DELIVERED, _tds(60), {"sent_by": "mmg"}),  # ok
+                (_tds(55), _tds(54), NOTIFICATION_SENDING, None, {"sent_by": "firetext"}),  # excluded
+                (_tds(90), _tds(55), NOTIFICATION_SENDING, None, {"sent_by": "firetext"}),  # excluded
+                (_tds(300), _tds(56), NOTIFICATION_SENDING, None, {"sent_by": "firetext"}),  # excluded
+                (_tds(301), _tds(57), NOTIFICATION_DELIVERED, _tds(56), {"sent_by": "firetext"}),  # excluded
+                (_tds(302), _tds(62), NOTIFICATION_DELIVERED, _tds(10), {"sent_by": "firetext"}),  # ok
+            ),
+            {
+                "mmg": (
+                    BandedSlowProviderDeliveryReport(
+                        provider="mmg",
+                        slow_ratio=0.2,
+                        slow_notifications=1,
+                        total_notifications=5,
+                        delivered_within=_tds(80),
+                        sent_after_ago=_tds(90),
+                    ),
+                    BandedSlowProviderDeliveryReport(
+                        provider="mmg",
+                        slow_ratio=0.5,
+                        slow_notifications=3,
+                        total_notifications=6,
+                        delivered_within=_tds(60),
+                        sent_after_ago=_tds(140),
+                    ),
+                    BandedSlowProviderDeliveryReport(
+                        provider="mmg",
+                        slow_ratio=0.5,
+                        slow_notifications=1,
+                        total_notifications=2,
+                        delivered_within=_tds(25),
+                        sent_after_ago=_tds(50),
+                    ),
+                ),
+                "firetext": (
+                    BandedSlowProviderDeliveryReport(
+                        provider="firetext",
+                        slow_ratio=0.0,
+                        slow_notifications=0,
+                        total_notifications=0,
+                        delivered_within=_tds(80),
+                        sent_after_ago=_tds(90),
+                    ),
+                    BandedSlowProviderDeliveryReport(
+                        provider="firetext",
+                        slow_ratio=0.0,
+                        slow_notifications=0,
+                        total_notifications=1,
+                        delivered_within=_tds(60),
+                        sent_after_ago=_tds(140),
+                    ),
+                    BandedSlowProviderDeliveryReport(
+                        provider="firetext",
+                        slow_ratio=0.0,
+                        slow_notifications=0,
+                        total_notifications=0,
+                        delivered_within=_tds(25),
+                        sent_after_ago=_tds(50),
+                    ),
+                ),
+            },
+        ),
+    ),
+)
+@pytest.mark.parametrize(
+    "session,expected_bind_key",
+    (
+        (db.session, None),
+        (db.session_bulk, "bulk"),
+    ),
+    ids=("default", "bulk"),
+)
+@freeze_time()
+@pytest.mark.skip(reason="[NOTIFYNL] results also include Spryng, see test_provider_stats_nl.py")
+def test_get_banded_slow_text_message_delivery_reports_by_provider_created_at_sent_at(
+    notify_db_session, sample_template, bands, notifications, session, expected_result, expected_bind_key
+):
+    uniform_now = datetime.now()
+
+    for created_delta, sent_delta, status, updated_at_delta, options in notifications:
+        created_at = uniform_now - created_delta
+        sent_at = uniform_now - sent_delta
+        create_notification(
+            template=sample_template,
+            sent_at=sent_at,
+            created_at=created_at,
+            status=status,
+            updated_at=sent_at + (updated_at_delta or timedelta()),
+            **options,
+        )
+
+    with QueryRecorder() as query_recorder:
+        assert (
+            get_banded_slow_text_message_delivery_reports_by_provider(
+                bands, created_sent_difference_allowance=timedelta(minutes=15), session=session
+            )
+            == expected_result
+        )
+
+    assert {query_info.bind_key for query_info in query_recorder.queries} == {expected_bind_key}
+
+
 @pytest.mark.parametrize(
     "session,expected_bind_key",
     (
@@ -2233,3 +2747,71 @@ def test_fetch_service_data_retention_by_for_all_services_by_notification_type_u
         get_service_ids_with_notifications_before("email", datetime.utcnow(), session=session)
 
     assert {query_info.bind_key for query_info in query_recorder.queries} == {expected_bind_key}
+
+
+@pytest.mark.parametrize(
+    "session,expected_bind_key",
+    (
+        (db.session, None),
+        (db.session_bulk, "bulk"),
+    ),
+    ids=("default", "bulk"),
+)
+def test_dao_letters_in_technical_failure(sample_letter_template, sample_email_template, session, expected_bind_key):
+
+    letter_tf_1 = create_notification(template=sample_letter_template, status="technical-failure")
+    letter_tf_2 = create_notification(template=sample_letter_template, status="technical-failure")
+
+    create_notification(template=sample_letter_template, status="delivered")
+    create_notification(template=sample_letter_template, status="created")
+
+    create_notification(template=sample_email_template, status="technical-failure")
+
+    results = []
+
+    with QueryRecorder() as query_recorder:
+        results = dao_letters_in_technical_failure(session=session)
+
+    assert {query_info.bind_key for query_info in query_recorder.queries} == {expected_bind_key}
+
+    assert len(results) == 2
+    assert {n.id for n in results} == {letter_tf_1.id, letter_tf_2.id}
+
+
+@freeze_time("2026-07-01 13:00:00")
+def test_dao_precompiled_letters_still_pending_virus_check(
+    sample_letter_template,
+    sample_email_template,
+    notify_db_session,
+):
+    sample_letter_template.hidden = True
+
+    # only these letters in the correct time period are returned
+    letter_1 = create_notification(
+        created_at=datetime(2026, 7, 1, 12, 00), template=sample_letter_template, status="pending-virus-check"
+    )
+    letter_2 = create_notification(
+        created_at=datetime(2026, 7, 1, 12, 1), template=sample_letter_template, status="pending-virus-check"
+    )
+    letter_3 = create_notification(
+        created_at=datetime(2026, 7, 1, 12, 44), template=sample_letter_template, status="pending-virus-check"
+    )
+    # letters just before or after the time period
+    create_notification(
+        created_at=datetime(2026, 7, 1, 11, 59), template=sample_letter_template, status="pending-virus-check"
+    )
+    create_notification(
+        created_at=datetime(2026, 7, 1, 12, 45), template=sample_letter_template, status="pending-virus-check"
+    )
+    # letters with the wrong status
+    create_notification(created_at=datetime(2026, 7, 1, 12, 30), template=sample_letter_template, status="delivered")
+    create_notification(created_at=datetime(2026, 7, 1, 12, 30), template=sample_letter_template, status="created")
+    # non-letter
+    create_notification(created_at=datetime(2026, 7, 1, 12, 30), template=sample_email_template, status="created")
+
+    notify_db_session.commit()
+
+    assert dao_precompiled_letters_still_pending_virus_check(
+        max_minutes_ago_to_check=60,
+        min_minutes_ago_to_check=15,
+    ) == [letter_1, letter_2, letter_3]

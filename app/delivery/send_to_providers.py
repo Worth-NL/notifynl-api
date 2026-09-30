@@ -9,7 +9,7 @@ from notifications_utils.template import (
     SMSMessageTemplate,
 )
 
-from app import create_uuid, db, notification_provider_clients, redis_store, statsd_client
+from app import create_uuid, db, notification_provider_clients, redis_store
 from app.celery.research_mode_tasks import (
     send_email_response,
     send_sms_response,
@@ -58,6 +58,20 @@ def send_sms_to_provider(notification: Notification) -> None:
             prefix=service.name,
             show_prefix=service.prefix_sms,
         )
+
+        if non_gsm_characters := template.non_gsm_characters:
+            current_app.logger.info(
+                "%s character(s) caused UTF-16 encoding in SMS content for service %s and notification %s",
+                len(non_gsm_characters),
+                service.id,
+                notification.id,
+                extra={
+                    "non_compatible_character_count": len(non_gsm_characters),
+                    "service_id": service.id,
+                    "notification_id": notification.id,
+                },
+            )
+
         created_at = notification.created_at
         key_type = notification.key_type
         try:
@@ -100,7 +114,6 @@ def send_sms_to_provider(notification: Notification) -> None:
                     notification.billable_units = template.fragment_count
                     update_notification_to_sending(notification, provider)
                     if notification.international:
-                        statsd_client.incr(f"international-sms.{NOTIFICATION_SENT}.{notification.phone_prefix}")
                         record_international_sms(
                             1, notification_status=NOTIFICATION_SENT, sms_country_code=notification.phone_prefix
                         )
@@ -112,13 +125,6 @@ def send_sms_to_provider(notification: Notification) -> None:
                 provider_name=provider.name,
             )
 
-        delta_seconds = (datetime.utcnow() - created_at).total_seconds()
-        statsd_client.timing("sms.total-time", delta_seconds)
-
-        if key_type == KEY_TYPE_TEST:
-            statsd_client.timing("sms.test-key.total-time", delta_seconds)
-        else:
-            statsd_client.timing("sms.live-key.total-time", delta_seconds)
     else:
         extra = {"notification_id": notification.id, "notification_status": notification.status}
         current_app.logger.warning(
@@ -210,12 +216,6 @@ def send_email_to_provider(notification):
                 notification_type="email",
                 provider_name=provider.name,
             )
-        delta_seconds = (datetime.utcnow() - created_at).total_seconds()
-
-        if key_type == KEY_TYPE_TEST:
-            statsd_client.timing("email.test-key.total-time", delta_seconds)
-        else:
-            statsd_client.timing("email.live-key.total-time", delta_seconds)
 
 
 def update_notification_to_sending(notification, provider):

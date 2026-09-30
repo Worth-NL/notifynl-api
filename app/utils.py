@@ -6,14 +6,14 @@ from functools import wraps
 from inspect import signature
 from itertools import islice
 from typing import Any, overload
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlparse
 from uuid import UUID
 
 from flask import current_app, url_for
 from flask_sqlalchemy.pagination import Pagination
 from notifications_utils.recipient_validation.errors import InvalidPhoneError
 from notifications_utils.recipient_validation.notifynl.phone_number import PhoneNumber
-from notifications_utils.recipient_validation.phone_number import international_phone_info
+from notifications_utils.recipient_validation.phone_number import InternationalPhoneInfo
 from notifications_utils.s3 import S3ObjectNotFound
 from notifications_utils.s3 import s3download as utils_s3download
 from notifications_utils.template import (
@@ -88,6 +88,19 @@ def url_with_token(data, url: str, base_url: str | None = None) -> str:
     )
     base_url = (base_url or current_app.config["ADMIN_BASE_URL"]) + url
     return urljoin(base_url, token)
+
+
+def add_authentication_to_url(url: str, username: str, password: str) -> str:
+    original_parseresult = urlparse(url)
+    return original_parseresult._replace(
+        netloc="".join(
+            (
+                f"{username}:{password}@",
+                original_parseresult.hostname or "",
+                ("" if original_parseresult.port is None else f":{original_parseresult.port}"),
+            )
+        ),
+    ).geturl()
 
 
 def get_template_instance(template: dict[str, Any], values: dict[str, Any]) -> Template:
@@ -221,7 +234,7 @@ def parse_and_format_phone_number(number: str, with_country_code=True) -> str:
     return phone_number.get_normalised_format()
 
 
-def get_international_phone_info(number: str) -> international_phone_info:
+def get_international_phone_info(number: str) -> InternationalPhoneInfo:
     phone_number = PhoneNumber(number)
     return phone_number.get_international_phone_info()
 
