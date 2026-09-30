@@ -20,6 +20,7 @@ from app.letters_nl.constants import (
     LETTER_PROVIDER_CALLBACK_PATH,
     LETTER_PROVIDER_PINGEN,
     LETTER_PROVIDER_REST_ENDPOINT,
+    PINGEN_WEBHOOK_PATH,
 )
 from app.schema_validation import validate
 
@@ -70,7 +71,7 @@ def process_letter_provider_callback():
     return {}, 204
 
 
-@letter_provider_callback_blueprint.route("/notifications/letter/pingen", methods=["POST"])
+@letter_provider_callback_blueprint.route(PINGEN_WEBHOOK_PATH, methods=["POST"])
 def process_pingen_webhook():
     payload = request.get_data()
     signing_key = current_app.config.get("PINGEN_WEBHOOK_SIGNING_KEY")
