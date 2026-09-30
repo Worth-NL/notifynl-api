@@ -146,6 +146,7 @@ def test_failure_firetext_callback(phone_number):
         ("2", "rest-of-world", "INTERNATIONAL", "INT ROW"),
     ],
 )
+@pytest.mark.skip(reason="[NOTIFYNL] NL postage values in callback, see test_research_mode_tasks_nl.py")
 def test_create_fake_letter_callback_sends_letter_response(
     notify_api,
     sample_letter_notification,

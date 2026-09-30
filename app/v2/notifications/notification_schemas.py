@@ -57,6 +57,8 @@ get_notification_response = {
         "sent_at": {"type": ["string", "null"]},
         "completed_at": {"type": ["string", "null"]},
         "scheduled_for": {"type": ["string", "null"]},
+        # [NotifyNL] the print provider that accepted a letter
+        "print_provider": {"type": ["string", "null"]},
     },
     "required": [
         # technically, all keys are required since we always have all of them

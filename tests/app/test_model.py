@@ -887,6 +887,7 @@ def test_organisation_serializes_with_all_fields(notify_db_session):
         "billing_contact_email_addresses": "billing@example.com",
         "billing_reference": "REF123",
         "area_boundary": None,
+        "letter_provider": None,
         "can_approve_own_go_live_requests": True,
         "permissions": [],
     }
@@ -927,6 +928,7 @@ def test_organisation_serializes_with_minimal_fields(notify_db_session):
         "billing_contact_email_addresses": None,
         "billing_reference": None,
         "area_boundary": None,
+        "letter_provider": None,
         "can_approve_own_go_live_requests": False,
         "permissions": [],
     }
@@ -1362,6 +1364,7 @@ def test_notification_serialization_returns_all_fields(client, notify_db_session
         "scheduled_for": None,
         "postage": None,
         "one_click_unsubscribe_url": None,
+        "print_provider": None,
     }
 
 

@@ -621,6 +621,7 @@ def test_fetch_billing_data_for_day_returns_list_for_given_service(notify_db_ses
     ),
     ids=("default", "bulk"),
 )
+@pytest.mark.skip(reason="[NOTIFYNL] letters in 'sent' are billable, see test_fact_billing_dao_nl.py")
 def test_fetch_billing_data_for_day_bills_correctly_for_status(notify_db_session, session, expected_bind_key):
     service = create_service()
     sms_template = create_template(service=service, template_type="sms")

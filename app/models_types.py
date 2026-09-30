@@ -80,6 +80,7 @@ class SerializedOrganisation(TypedDict):
     billing_contact_email_addresses: str | None
     billing_reference: str | None
     area_boundary: dict | None
+    letter_provider: dict | None
     can_approve_own_go_live_requests: bool
     permissions: list[str]
 
@@ -208,6 +209,7 @@ class SerializedNotification(TypedDict):
     scheduled_for: None  # Currently hardcoded to None
     postage: str | None
     one_click_unsubscribe_url: str | None
+    print_provider: str | None
     estimated_delivery: NotRequired[str]
 
 

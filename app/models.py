@@ -76,6 +76,7 @@ from app.constants import (
 )
 from app.hashing import check_hash, hashpw
 from app.history_meta import Versioned
+from app.letters_nl.constants import LETTER_PROVIDERS, PINGEN_ADDRESS_PLACEMENT
 from app.models_types import (
     LetterCostDetails,
     SerializedAnnualBilling,
@@ -530,6 +531,7 @@ class Organisation(db.Model):
             billing_contact_email_addresses=self.billing_contact_email_addresses,
             billing_reference=self.billing_reference,
             area_boundary=self.area_boundary,
+            letter_provider=self.letter_provider.serialize_summary() if self.letter_provider else None,
             can_approve_own_go_live_requests=self.can_approve_own_go_live_requests,
             permissions=[x.permission for x in self.permissions],
         )
@@ -601,6 +603,8 @@ class Service(db.Model, Versioned):
     # default delivery provider whenever a service's organisation has no custom Printstraat
     # integration configured). See notifications_utils BaseLetterTemplate._extras.
     letter_address_placement = db.Column(db.String(5), index=False, unique=False, nullable=True, default="60mm")
+    # [NotifyNL] send the letter's client reference to the print provider instead of the generated reference
+    send_client_reference_to_letter_provider = db.Column(db.Boolean, nullable=False, default=False)
     sms_message_limit = db.Column(db.BigInteger, index=False, unique=False, nullable=False, default=999_999_999)
     international_sms_message_limit = db.Column(
         db.BigInteger, index=False, unique=False, nullable=False, default=250_000
@@ -709,6 +713,19 @@ class Service(db.Model, Versioned):
     def get_default_letter_contact(self):
         default_letter_contact = [x for x in self.letter_contacts if x.is_default]
         return default_letter_contact[0].contact_block if default_letter_contact else None
+
+    @property
+    def effective_letter_address_placement(self):
+        """
+        [NotifyNL] Where the address goes on this service's letters. Once letters go straight to print providers
+        (LETTER_DELIVERY_VIA_PROVIDERS), the organisation's provider decides: its envelopes fix the window.
+        """
+        if not current_app.config.get("LETTER_DELIVERY_VIA_PROVIDERS"):
+            return self.letter_address_placement
+        letter_provider = self.organisation.letter_provider if self.organisation else None
+        if letter_provider and letter_provider.is_complete():
+            return letter_provider.address_placement
+        return PINGEN_ADDRESS_PLACEMENT
 
     def has_permission(self, permission):
         return permission in [p.permission for p in self.permissions]
@@ -1748,6 +1765,7 @@ class Notification(db.Model):
                 "permanent-failure": "Permanent failure",
                 "sending": "Accepted",
                 "created": "Accepted",
+                "sent": "Accepted by print provider",  # [NotifyNL]
                 "delivered": "Received",
                 "returned-letter": "Returned",
             },
@@ -1763,6 +1781,13 @@ class Notification(db.Model):
             },
         }[self.template.template_type].get(self.status, self.status)
 
+    @property
+    def print_provider(self):
+        """[NotifyNL] The print provider that accepted this letter, if it went straight to one."""
+        if self.notification_type == LETTER_TYPE and self.sent_by in LETTER_PROVIDERS:
+            return self.sent_by
+        return None
+
     def get_letter_status(self):
         """
         Return the notification_status, as we should present for letters. The distinction between created and sending is
@@ -1772,6 +1797,7 @@ class Notification(db.Model):
         """
         # this should only ever be called for letter notifications - it makes no sense otherwise and I'd rather not
         # get the two code flows mixed up at all
+        # [NotifyNL] `sent` (accepted by the print provider, see print_provider) is presented as is
         assert self.notification_type == LETTER_TYPE
 
         if self.status in [NOTIFICATION_CREATED, NOTIFICATION_SENDING]:
@@ -1839,6 +1865,7 @@ class Notification(db.Model):
             one_click_unsubscribe_url=self.get_unsubscribe_link_for_headers(
                 template_has_unsubscribe_link=self.template.has_unsubscribe_link
             ),
+            print_provider=self.print_provider,
         )
 
         if self.notification_type == LETTER_TYPE:
@@ -2920,3 +2947,7 @@ class ReportRequest(db.Model):
             created_at=self.created_at.strftime(DATETIME_FORMAT),
             updated_at=get_dt_string_or_none(self.updated_at),
         )
+
+
+# [NotifyNL] NL-only models, imported here so they're always mapped with the rest
+from app.models_nl import LetterProviderReference, OrganisationLetterProvider  # noqa: E402, F401

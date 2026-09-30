@@ -23,13 +23,14 @@ from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm.exc import NoResultFound
 
-from app import db
+from app import db, get_pingen_client
 from app.aws import s3
 from app.celery.letters_pdf_tasks import (
     get_pdf_for_templated_letter,
     resanitise_pdf,
 )
 from app.celery.tasks import get_id_task_args_kwargs_for_job_row, process_job_row
+from app.clients.letter import LetterClientException
 from app.config import QueueNames
 from app.constants import DEFAULT_POSTAGE, KEY_TYPE_TEST, NETHERLANDS, NOTIFICATION_CREATED, POSTAGE_TYPES, SMS_TYPE
 from app.dao.annual_billing_dao import (
@@ -64,6 +65,7 @@ from app.dao.users_dao import (
     get_user_by_email,
 )
 from app.functional_tests_fixtures import apply_fixtures
+from app.letters_nl.constants import PINGEN_WEBHOOK_EVENT_CATEGORIES, PINGEN_WEBHOOK_PATH
 from app.models import (
     ApiKey,
     Domain,
@@ -1287,3 +1289,43 @@ def create_api_key(service_id, user_id, name, key_type):
     print(full_key)
 
     return full_key
+
+
+@notify_command(name="register-pingen-webhook")
+@click.option(
+    "-u",
+    "--url",
+    default=None,
+    help=f"Where Pingen posts its webhooks (default: API_HOST_NAME{PINGEN_WEBHOOK_PATH})",
+)
+def register_pingen_webhook(url):
+    """
+    Register our Pingen webhook route with Pingen, for every letter event category we act on, signed with
+    PINGEN_WEBHOOK_SIGNING_KEY. Safe to run again: categories already registered for the URL are left alone.
+    """
+    signing_key = current_app.config.get("PINGEN_WEBHOOK_SIGNING_KEY") or ""
+    if not 20 <= len(signing_key) <= 32:
+        raise click.ClickException("PINGEN_WEBHOOK_SIGNING_KEY must be 20 to 32 characters long (a Pingen requirement)")
+    url = url or f"{current_app.config['API_HOST_NAME']}{PINGEN_WEBHOOK_PATH}"
+
+    pingen = get_pingen_client()
+    try:
+        registered = {(webhook["event_category"], webhook["url"]): webhook for webhook in pingen.list_webhooks()}
+        other_signing_key = []
+        for event_category in PINGEN_WEBHOOK_EVENT_CATEGORIES:
+            webhook = registered.get((event_category, url))
+            if webhook is None:
+                webhook_id = pingen.create_webhook(event_category, url, signing_key)
+                print(f"Registered the {event_category} webhook for {url} ({webhook_id})")
+            elif webhook.get("signing_key") != signing_key:
+                other_signing_key.append(f"{event_category} ({webhook['id']})")
+            else:
+                print(f"The {event_category} webhook for {url} is already registered ({webhook['id']})")
+    except LetterClientException as e:
+        raise click.ClickException(str(e)) from e
+
+    if other_signing_key:
+        raise click.ClickException(
+            f"These webhooks for {url} are signed with another key, so their requests would be rejected: "
+            f"{', '.join(other_signing_key)}. Delete them in Pingen and run this command again."
+        )

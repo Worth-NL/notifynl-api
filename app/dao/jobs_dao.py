@@ -208,9 +208,11 @@ def dao_get_jobs_older_than_data_retention(notification_types):
 
 @autocommit
 def dao_cancel_letter_job(job):
-    number_of_notifications_cancelled = Notification.query.filter(Notification.job_id == job.id).update(
-        {"status": NOTIFICATION_CANCELLED, "updated_at": datetime.utcnow(), "billable_units": 0}
-    )
+    number_of_notifications_cancelled = Notification.query.filter(
+        Notification.job_id == job.id,
+        # [NotifyNL] never cancel letters handed to the print provider since can_letter_job_be_cancelled() ran
+        Notification.status.in_(CANCELLABLE_JOB_LETTER_STATUSES),
+    ).update({"status": NOTIFICATION_CANCELLED, "updated_at": datetime.utcnow(), "billable_units": 0})
     job.job_status = JOB_STATUS_CANCELLED
     dao_update_job(job)
     return number_of_notifications_cancelled

@@ -41,6 +41,8 @@ from app.clients.document_download import DocumentDownloadClient
 from app.clients.email.aws_ses import AwsSesClient
 from app.clients.email.aws_ses_stub import AwsSesStubClient
 from app.clients.letter.dvla import DVLAClient
+from app.clients.letter.pingen import PingenClient
+from app.clients.letter.rest_endpoint import RestEndpointLetterClient
 from app.clients.messagebox.ebms_adapter import EbmsAdapterClient
 from app.clients.sms.firetext import FiretextClient
 from app.clients.sms.mmg import MMGClient
@@ -134,6 +136,26 @@ get_ebms_adapter_client: LazyLocalGetter[EbmsAdapterClient] = LazyLocalGetter(
 memo_resetters.append(lambda: get_ebms_adapter_client.clear())
 ebms_adapter_client = LocalProxy(get_ebms_adapter_client)
 
+### [NotifyNL] letter providers ########################################################################################
+_pingen_client_context_var: ContextVar[PingenClient] = ContextVar("pingen_client")
+get_pingen_client: LazyLocalGetter[PingenClient] = LazyLocalGetter(
+    _pingen_client_context_var,
+    lambda: PingenClient(current_app, statsd_client=statsd_client),
+    expected_type=PingenClient,
+)
+memo_resetters.append(lambda: get_pingen_client.clear())
+
+_rest_endpoint_letter_client_context_var: ContextVar[RestEndpointLetterClient] = ContextVar(
+    "rest_endpoint_letter_client"
+)
+get_rest_endpoint_letter_client: LazyLocalGetter[RestEndpointLetterClient] = LazyLocalGetter(
+    _rest_endpoint_letter_client_context_var,
+    lambda: RestEndpointLetterClient(current_app, statsd_client=statsd_client),
+    expected_type=RestEndpointLetterClient,
+)
+memo_resetters.append(lambda: get_rest_endpoint_letter_client.clear())
+########################################################################################################################
+
 _notification_provider_clients_context_var: ContextVar[NotificationProviderClients] = ContextVar(
     "notification_provider_clients"
 )
@@ -149,6 +171,11 @@ get_notification_provider_clients: LazyLocalGetter[NotificationProviderClients] 
             # If a stub url is provided for SES, then use the stub client rather
             # than the real SES boto client
             for getter in ((get_aws_ses_stub_client,) if current_app.config["SES_STUB_URL"] else (get_aws_ses_client,))
+        },
+        # [NotifyNL]
+        letter_clients={
+            getter.expected_type.name: LocalProxy(getter)
+            for getter in (get_pingen_client, get_rest_endpoint_letter_client)
         },
     ),
 )
@@ -249,6 +276,7 @@ def register_blueprint(application):
         letter_branding_blueprint,
     )
     from app.letters.rest import letter_job, letter_rates_blueprint
+    from app.notifications.letter_provider_callback import letter_provider_callback_blueprint
     from app.notifications.notifications_letter_callback import (
         letter_callback_blueprint,
     )
@@ -263,6 +291,7 @@ def register_blueprint(application):
     )
     from app.one_click_unsubscribe.rest import one_click_unsubscribe_blueprint
     from app.organisation.invite_rest import organisation_invite_blueprint
+    from app.organisation.letter_provider_rest_nl import organisation_letter_provider_blueprint
     from app.organisation.rest import organisation_blueprint
     from app.performance_dashboard.rest import performance_dashboard_blueprint
     from app.platform_admin.rest import platform_admin_blueprint
@@ -359,6 +388,10 @@ def register_blueprint(application):
     letter_callback_blueprint.before_request(requires_no_auth)
     application.register_blueprint(letter_callback_blueprint)
 
+    # [NotifyNL] status updates from letter providers (REST endpoint callbacks, Pingen webhooks)
+    letter_provider_callback_blueprint.before_request(requires_no_auth)
+    application.register_blueprint(letter_provider_callback_blueprint)
+
     billing_blueprint.before_request(requires_admin_auth)
     application.register_blueprint(billing_blueprint)
 
@@ -367,6 +400,10 @@ def register_blueprint(application):
 
     organisation_blueprint.before_request(requires_admin_auth)
     application.register_blueprint(organisation_blueprint, url_prefix="/organisations")
+
+    # [NotifyNL] per-organisation letter provider
+    organisation_letter_provider_blueprint.before_request(requires_admin_auth)
+    application.register_blueprint(organisation_letter_provider_blueprint)
 
     complaint_blueprint.before_request(requires_admin_auth)
     application.register_blueprint(complaint_blueprint)

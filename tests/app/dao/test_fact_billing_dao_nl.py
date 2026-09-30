@@ -1,18 +1,71 @@
 from datetime import date, datetime
 from decimal import Decimal
 
+import pytest
 from freezegun import freeze_time
+from notifications_utils.timezones import convert_utc_to_bst
 
+from app import db
+from app.constants import NOTIFICATION_SENT, NOTIFICATION_STATUS_TYPES
 from app.dao.fact_billing_dao import (
+    fetch_billing_data_for_day,
     fetch_usage_for_all_services_letter_breakdown,
     get_rate,
     get_rates_for_billing,
 )
 from tests.app.db import (
     create_letter_rate,
+    create_notification,
     create_rate,
+    create_service,
+    create_template,
     set_up_usage_data,
 )
+from tests.utils import QueryRecorder
+
+
+@pytest.mark.parametrize(
+    "session,expected_bind_key",
+    (
+        (db.session, None),
+        (db.session_bulk, "bulk"),
+    ),
+    ids=("default", "bulk"),
+)
+def test_fetch_billing_data_for_day_bills_correctly_for_status(notify_db_session, session, expected_bind_key):
+    service = create_service()
+    sms_template = create_template(service=service, template_type="sms")
+    email_template = create_template(service=service, template_type="email")
+    letter_template = create_template(service=service, template_type="letter")
+    for status in NOTIFICATION_STATUS_TYPES:
+        create_notification(template=sms_template, status=status)
+        create_notification(template=email_template, status=status)
+        create_notification(template=letter_template, status=status)
+
+    service_id = service.id
+
+    today = convert_utc_to_bst(datetime.utcnow())
+    with QueryRecorder() as query_recorder:
+        results = fetch_billing_data_for_day(process_day=today.date(), service_ids=[service_id], session=session)
+
+    assert {query_info.bind_key for query_info in query_recorder.queries} == {expected_bind_key}
+    # letters: sending, sent (accepted by the print provider), delivered, returned-letter
+    assert sorted((r.notification_type, r.notifications_sent) for r in results) == [
+        ("email", 4),
+        ("letter", 4),
+        ("sms", 6),
+    ]
+
+
+def test_fetch_billing_data_for_day_bills_letters_accepted_by_print_provider(notify_db_session):
+    service = create_service()
+    letter_template = create_template(service=service, template_type="letter")
+    create_notification(template=letter_template, status=NOTIFICATION_SENT, billable_units=2)
+
+    today = convert_utc_to_bst(datetime.utcnow())
+    results = fetch_billing_data_for_day(process_day=today.date(), service_ids=[service.id])
+
+    assert [(r.notification_type, r.notifications_sent, r.billable_units) for r in results] == [("letter", 1, 2)]
 
 
 @freeze_time("2017-06-01 12:00")

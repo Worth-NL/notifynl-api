@@ -1,8 +1,6 @@
 import json
 import logging
-import os
 from contextvars import ContextVar
-from urllib.parse import urlparse
 
 import requests
 from flask import current_app
@@ -16,6 +14,7 @@ from app.dao.inbound_sms_dao import dao_get_inbound_sms_by_id
 from app.dao.returned_letters_dao import fetch_returned_letter_callback_data_dao
 from app.dao.service_callback_api_dao import get_service_callback_api_by_callback_type
 from app.utils import DATETIME_FORMAT
+from app.utils_nl import get_client_certificate_path
 
 # thread-local copies of persistent requests.Session
 _requests_session_context_var: ContextVar[requests.Session] = ContextVar("service_callback_requests_session")
@@ -149,14 +148,8 @@ def _send_data_to_service_callback_api(self, data, service_callback_url, token, 
         }
 
         ### [NotifyNL] #################################################################################################
-        certificate_name = f"{urlparse(service_callback_url).hostname.replace('.', '-')}.pem"
-        certificate_path = f"{current_app.config.get('SSL_CERT_DIR')}/{certificate_name}"
-
-        if os.path.exists(certificate_path):
-            current_app.logger.info(
-                "Certificate [%s] found for [%s], using as client certificate.", certificate_name, service_callback_url
-            )
-
+        certificate_path = get_client_certificate_path(service_callback_url)
+        if certificate_path:
             request_kwargs["cert"] = certificate_path
         ################################################################################################################
 
@@ -213,7 +206,10 @@ def create_delivery_status_callback_data(notification, service_callback_api):
         # URL, encrypted or not: it's meaningless ciphertext to the receiving
         # service, and decrypting it just to re-send over HTTP would reintroduce
         # exposure this change is meant to close.
-        "notification_to": None if notification.notification_type == MESSAGEBOX_TYPE else notification.to,
+        # [NotifyNL] NotificationHistory has no `to` column; a provider can report back after the move to history.
+        "notification_to": (
+            None if notification.notification_type == MESSAGEBOX_TYPE else getattr(notification, "to", None)
+        ),
         "notification_status": notification.status,
         "notification_detailed_status_code": notification.detailed_status_code,
         "notification_created_at": notification.created_at.strftime(DATETIME_FORMAT),
