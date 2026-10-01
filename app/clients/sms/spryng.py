@@ -51,7 +51,9 @@ class SpryngClient(SmsClient):
             "body": content,
             "reference": reference,
             "route": "business",
-            "encoding": "unicode",
+            # "auto": Spryng uses the plain GSM alphabet (160 chars/part) unless the message needs unicode
+            # (70 chars/part), matching how notifications-utils counts fragments for billing
+            "encoding": "auto",
         }
 
         try:
