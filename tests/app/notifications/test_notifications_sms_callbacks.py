@@ -1,3 +1,4 @@
+import pytest
 from flask import json
 from freezegun import freeze_time
 from werkzeug.datastructures import Authorization
@@ -37,6 +38,7 @@ def mmg_post(client, data):
     )
 
 
+@pytest.mark.skip(reason="[NOTIFYNL] Firetext receipt auth is log-only, see test_notifications_sms_callbacks_nl.py")
 def test_firetext_callback_needs_auth(client, mocker):
     mocker.patch("app.notifications.notifications_sms_callback.process_sms_client_response")
     data = "mobile=441234123123&status=0&reference=notification_id&time=2016-03-10 14:17:00"

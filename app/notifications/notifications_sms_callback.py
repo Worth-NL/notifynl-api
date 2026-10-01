@@ -56,7 +56,9 @@ def process_mmg_response():
 
 
 @sms_callback_blueprint.route("/firetext", methods=["POST"])
-@view_requires_basic_auth("FIRETEXT_DELIVERY_STATUS_CALLBACK_ALLOWED_BASIC_AUTH_CREDENTIALS")
+# [NotifyNL] log_only until notifynl-full configures Firetext receipt credentials: missing/invalid basic auth is
+# logged but the receipt is still accepted, as before the upstream sync. Remove log_only to enforce.
+@view_requires_basic_auth("FIRETEXT_DELIVERY_STATUS_CALLBACK_ALLOWED_BASIC_AUTH_CREDENTIALS", log_only=True)
 def process_firetext_response():
     uniform_now = datetime.utcnow()
     client_name = "Firetext"
