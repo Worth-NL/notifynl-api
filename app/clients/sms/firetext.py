@@ -72,6 +72,9 @@ class FiretextClient(SmsClient):
             "to": to.replace("+", ""),
             "message": content,
             "reference": reference,
+            # [NotifyNL] Firetext defaults to GSM-only (0); 2 = auto-detect, so the Dutch ë/ï/ê and emoji that
+            # notifications-utils no longer downgrades are sent as unicode only when a message needs it
+            "unicode": 2,
         }
 
         if self.receipt_url:
