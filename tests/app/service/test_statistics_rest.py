@@ -114,7 +114,7 @@ def test_get_service_notification_statistics_with_unknown_service(admin_request)
         SMS_TYPE: {"requested": 0, "delivered": 0, "failed": 0},
         EMAIL_TYPE: {"requested": 0, "delivered": 0, "failed": 0},
         LETTER_TYPE: {"requested": 0, "delivered": 0, "failed": 0},
-        MESSAGEBOX_TYPE: {"requested": 0, "delivered": 0, "failed": 0}
+        MESSAGEBOX_TYPE: {"requested": 0, "delivered": 0, "failed": 0},
     }
 
 
@@ -187,7 +187,7 @@ def test_get_monthly_notification_stats_returns_stats(admin_request, sample_serv
         },
         "email": {},
         "letter": {},
-        "messagebox": {}
+        "messagebox": {},
     }
     assert response["data"]["2016-07"] == {
         # it combines the two template types
@@ -197,7 +197,7 @@ def test_get_monthly_notification_stats_returns_stats(admin_request, sample_serv
         },
         "email": {"delivered": 1},
         "letter": {},
-        "messagebox": {}
+        "messagebox": {},
     }
 
 
@@ -228,7 +228,7 @@ def test_get_monthly_notification_stats_combines_todays_data_and_historic_stats(
         },
         "email": {},
         "letter": {},
-        "messagebox": {}
+        "messagebox": {},
     }
 
 

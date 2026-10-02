@@ -4,17 +4,25 @@ import pytest
 from freezegun import freeze_time
 from sqlalchemy.exc import NoResultFound
 
+from app import db
 from app.constants import EMAIL_TYPE
 from app.dao.template_email_files_dao import (
     dao_archive_template_email_file,
     dao_create_template_email_file,
+    dao_get_archived_template_email_files_older_than,
     dao_get_template_email_file_by_id,
     dao_get_template_email_files_by_template_id,
     dao_update_template_email_file,
 )
 from app.dao.templates_dao import dao_update_template
 from app.models import Template, TemplateEmailFile
-from tests.app.db import create_template, create_template_email_file
+from tests.app.db import (
+    create_archived_template_email_file,
+    create_service,
+    create_template,
+    create_template_email_file,
+)
+from tests.utils import QueryRecorder
 
 
 def test_create_template_email_files_dao(sample_email_template, sample_service):
@@ -44,7 +52,16 @@ def test_create_template_email_files_dao(sample_email_template, sample_service):
     assert not template_email_file.pending
 
 
-def test_dao_get_template_email_file_by_id(sample_template_email_file_not_pending, sample_service):
+@pytest.mark.parametrize(
+    "session,expected_bind_key",
+    (
+        (db.session, None),
+        (db.session_bulk, "bulk"),
+    ),
+)
+def test_dao_get_template_email_file_by_id(
+    sample_template_email_file_not_pending, sample_service, session, expected_bind_key
+):
     # additional file for new template, get method shouldn't return this file
     new_template = create_template(service=sample_service, template_type=EMAIL_TYPE, template_name="template_two")
     create_template_email_file(
@@ -53,7 +70,20 @@ def test_dao_get_template_email_file_by_id(sample_template_email_file_not_pendin
         filename="file_two.pdf",
         link_text="click this other link",
     )
-    template_email_file_fetched = dao_get_template_email_file_by_id(str(sample_template_email_file_not_pending.id))
+
+    service_id = str(sample_service.id)
+    template_id = str(sample_template_email_file_not_pending.template_id)
+    template_email_file_id = str(sample_template_email_file_not_pending.id)
+
+    with QueryRecorder() as query_recorder:
+        template_email_file_fetched = dao_get_template_email_file_by_id(
+            service_id=service_id,
+            template_id=template_id,
+            template_email_file_id=template_email_file_id,
+            session=session,
+        )
+
+    assert {query_info.bind_key for query_info in query_recorder.queries} == {expected_bind_key}
     assert template_email_file_fetched.id == sample_template_email_file_not_pending.id
     assert template_email_file_fetched.filename == sample_template_email_file_not_pending.filename
     assert template_email_file_fetched.link_text == sample_template_email_file_not_pending.link_text
@@ -66,9 +96,65 @@ def test_dao_get_template_email_file_by_id(sample_template_email_file_not_pendin
     assert not template_email_file_fetched.pending
 
 
-def test_dao_get_template_email_file_by_id_returns_none_when_not_found():
+def test_dao_get_template_email_file_by_id_returns_none_when_not_found(sample_service, sample_email_template):
     with pytest.raises(NoResultFound):
-        dao_get_template_email_file_by_id("2117b6ab-0219-4bfa-aaa4-a3248dafa1a0")
+        dao_get_template_email_file_by_id(
+            service_id=str(sample_service.id),
+            template_id=str(sample_email_template.id),
+            template_email_file_id="2117b6ab-0219-4bfa-aaa4-a3248dafa1a0",
+        )
+
+
+@pytest.mark.parametrize(
+    "session,expected_bind_key",
+    (
+        (db.session, None),
+        (db.session_bulk, "bulk"),
+    ),
+)
+def test_dao_get_template_email_file_by_id_filtered_by_template_id(
+    sample_template_email_file_not_pending, sample_email_template, sample_service, session, expected_bind_key
+):
+    service_id = str(sample_service.id)
+    template_email_file_id = str(sample_template_email_file_not_pending.id)
+    template_id = str(sample_email_template.id)
+
+    with QueryRecorder() as query_recorder:
+        template_email_file_fetched = dao_get_template_email_file_by_id(
+            service_id=service_id,
+            template_id=template_id,
+            template_email_file_id=template_email_file_id,
+            session=session,
+        )
+
+    assert {query_info.bind_key for query_info in query_recorder.queries} == {expected_bind_key}
+    assert template_email_file_fetched.id == sample_template_email_file_not_pending.id
+
+
+def test_dao_get_template_email_file_by_id_raises_when_file_belongs_to_another_template(
+    sample_template_email_file_not_pending, sample_service
+):
+    other_template = create_template(service=sample_service, template_type=EMAIL_TYPE, template_name="template_two")
+
+    with pytest.raises(NoResultFound):
+        dao_get_template_email_file_by_id(
+            service_id=str(sample_service.id),
+            template_id=str(other_template.id),
+            template_email_file_id=str(sample_template_email_file_not_pending.id),
+        )
+
+
+def test_dao_get_template_email_file_by_id_raises_when_file_belongs_to_another_service(
+    sample_template_email_file_not_pending, sample_email_template
+):
+    other_service = create_service(service_name="another service")
+
+    with pytest.raises(NoResultFound):
+        dao_get_template_email_file_by_id(
+            service_id=str(other_service.id),
+            template_id=str(sample_email_template.id),
+            template_email_file_id=str(sample_template_email_file_not_pending.id),
+        )
 
 
 def test_dao_get_template_email_files_by_template_id(
@@ -137,8 +223,6 @@ def test_dao_get_template_email_files_by_template_id_historical(
 ):
     sample_email_template.updated_at = datetime.datetime.utcnow()
     dao_update_template(sample_email_template)
-    # sample_email_template.updated_at = datetime.datetime.utcnow()
-    # dao_update_template(sample_email_template)
     sample_template_email_file_not_pending.retention_period = 20
     dao_update_template_email_file(sample_template_email_file_not_pending)
     assert sample_email_template.version == 3
@@ -191,3 +275,123 @@ def test_dao_archive_template_email_file(sample_email_template, sample_template_
     assert fetched_latest_history.archived_at == datetime.datetime(2025, 7, 30, 16, 6, 4)
     assert fetched_latest_history.archived_by_id == sample_template_email_file_not_pending.created_by_id
     assert fetched_latest_history.template_version == sample_email_template.version + 1
+
+
+@freeze_time("2026-04-23 12:00:00")
+@pytest.mark.parametrize(
+    "session,expected_bind_key",
+    (
+        (db.session, None),
+        (db.session_bulk, "bulk"),
+    ),
+)
+def test_dao_get_archived_template_email_files_older_than_filters_by_archived_before(
+    sample_email_template, session, expected_bind_key
+):
+    within_deletion_window_archived_file = create_archived_template_email_file(
+        sample_email_template,
+        datetime.datetime(2026, 3, 24, 12, 0, tzinfo=datetime.UTC),
+        "within_deletion_window_archived_file.pdf",
+    )
+    create_archived_template_email_file(
+        sample_email_template,
+        datetime.datetime(2026, 4, 13, 12, 0, tzinfo=datetime.UTC),
+        "outside_deletion_before_window.pdf",
+    )
+    create_template_email_file(
+        template_id=sample_email_template.id,
+        created_by_id=sample_email_template.created_by_id,
+        filename="live_template_email_file.pdf",
+    )
+
+    with QueryRecorder() as query_recorder:
+        results = dao_get_archived_template_email_files_older_than(
+            session=session,
+            archived_before=datetime.datetime(2026, 4, 9, 12, 0, tzinfo=datetime.UTC),
+            page_size=10,
+        )
+
+    assert len(results) == 1
+
+    archived_file, service_id = results[0]
+
+    assert archived_file.id == within_deletion_window_archived_file.id
+    assert service_id == sample_email_template.service_id
+    assert {query_info.bind_key for query_info in query_recorder.queries} == {expected_bind_key}
+
+
+@freeze_time("2026-04-23 12:00:00")
+@pytest.mark.parametrize(
+    "session,expected_bind_key",
+    (
+        (db.session, None),
+        (db.session_bulk, "bulk"),
+    ),
+)
+def test_dao_get_archived_template_email_files_older_than_supports_page_size_and_keyset_pagination(
+    sample_email_template, session, expected_bind_key
+):
+    archived_file_one = create_archived_template_email_file(
+        sample_email_template, datetime.datetime(2026, 4, 3, 12, 0, tzinfo=datetime.UTC), "one.pdf"
+    )
+    archived_file_two = create_archived_template_email_file(
+        sample_email_template, datetime.datetime(2026, 4, 4, 12, 0, tzinfo=datetime.UTC), "two.pdf"
+    )
+    archived_file_three = create_archived_template_email_file(
+        sample_email_template, datetime.datetime(2026, 4, 5, 12, 0, tzinfo=datetime.UTC), "three.pdf"
+    )
+
+    # all three files are older than this cutoff
+    archived_before = datetime.datetime(2026, 4, 9, 12, 0, tzinfo=datetime.UTC)
+
+    with QueryRecorder() as query_recorder:
+        # first page should return only two rows because of the page size.
+        first_batch = dao_get_archived_template_email_files_older_than(
+            session=session,
+            archived_before=archived_before,
+            page_size=2,
+        )
+        # second page resumes from the last row of page one using the last row's id as the cursor.
+        second_batch = dao_get_archived_template_email_files_older_than(
+            session=session,
+            archived_before=archived_before,
+            page_size=2,
+            older_than=first_batch[-1][0].id,
+        )
+
+    assert [row[0].id for row in first_batch] == [archived_file_one.id, archived_file_two.id]
+    assert [row[0].id for row in second_batch] == [archived_file_three.id]
+    assert {query_info.bind_key for query_info in query_recorder.queries} == {expected_bind_key}
+
+
+@freeze_time("2026-04-23 12:00:00")
+@pytest.mark.parametrize(
+    "session,expected_bind_key",
+    (
+        (db.session, None),
+        (db.session_bulk, "bulk"),
+    ),
+)
+def test_dao_get_archived_template_email_files_older_than_filters_by_archived_after(
+    sample_email_template, session, expected_bind_key
+):
+    create_archived_template_email_file(
+        sample_email_template, datetime.datetime(2026, 3, 24, 12, 0, tzinfo=datetime.UTC), "old-window.pdf"
+    )
+    in_window_archived_file = create_archived_template_email_file(
+        sample_email_template, datetime.datetime(2026, 4, 8, 12, 0, tzinfo=datetime.UTC), "in-window.pdf"
+    )
+
+    archived_before = datetime.datetime(2026, 4, 9, 12, 0, tzinfo=datetime.UTC)
+    archived_after = datetime.datetime(2026, 4, 3, 12, 0, tzinfo=datetime.UTC)
+
+    with QueryRecorder() as query_recorder:
+        results = dao_get_archived_template_email_files_older_than(
+            session=session,
+            archived_before=archived_before,
+            archived_after=archived_after,
+            page_size=10,
+        )
+
+    assert [archived_file.id for archived_file, _ in results] == [in_window_archived_file.id]
+    assert {query_info.bind_key for query_info in query_recorder.queries} == {expected_bind_key}

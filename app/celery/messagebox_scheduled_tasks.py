@@ -7,7 +7,7 @@ from ebms_adapter_client.client import EbmsAdapterClient as EbmsCoreClient
 from flask import current_app
 from notifications_utils.clients.zendesk.zendesk_client import NotifySupportTicket, NotifyTicketType
 
-from app import notify_celery, statsd_client, zendesk_client
+from app import notify_celery, zendesk_client
 from app.celery.process_messagebox_client_response_tasks import process_messagebox_client_response
 from app.config import QueueNamesNL, TaskNamesNL
 from app.constants import NOTIFICATION_CREATED, NOTIFICATION_PENDING_VIRUS_CHECK
@@ -15,6 +15,7 @@ from app.dao.notifications_dao import (
     dao_messagebox_notifications_still_pending,
     dao_messagebox_notifications_stuck_sending,
 )
+from app.otel_metrics.messagebox_nl import record_envelope_fetch_parse_failure
 
 MESSAGEBOX_STATUS_DELIVERED = "10"
 MESSAGEBOX_STATUS_FAILED = "20"
@@ -48,7 +49,7 @@ def messagebox_process_unprocessed_messages():
                 message = core_client.get_message(envelope_id)
                 batch = parse_berichten_verwerk_response(message.data_sources[0].content)
             except Exception as e:
-                statsd_client.incr("messagebox.envelope-fetch-parse-failure")
+                record_envelope_fetch_parse_failure()
                 current_app.logger.exception(
                     "Failed to fetch/parse messagebox envelope %s, will retry next poll",
                     envelope_id,
@@ -165,7 +166,7 @@ def check_if_messagebox_still_pending(max_minutes_ago_to_check: int = 60, max_ho
             f"Notifications: {notification_ids}"
         )
 
-        if current_app.should_send_zendesk_alerts:
+        if current_app.should_send_zendesk_alerts:  # type: ignore[attr-defined]
             environment = current_app.config["NOTIFY_ENVIRONMENT"]
             ticket = NotifySupportTicket(
                 subject=f"[{environment}] Messagebox notifications still pending virus check",
@@ -174,7 +175,7 @@ def check_if_messagebox_still_pending(max_minutes_ago_to_check: int = 60, max_ho
                 notify_ticket_type=NotifyTicketType.TECHNICAL,
                 notify_task_type="notify_task_messagebox_pending_scan",
             )
-            zendesk_client.send_ticket_to_zendesk(ticket)
+            zendesk_client.send_ticket_to_zendesk(ticket)  # type: ignore[attr-defined]
             current_app.logger.error(
                 "Messagebox notifications still pending virus check",
                 extra={"number_of_notifications": len(stuck_pending_virus_check), "notification_ids": notification_ids},
@@ -194,7 +195,7 @@ def check_if_messagebox_still_pending(max_minutes_ago_to_check: int = 60, max_ho
             f"Notifications: {notification_ids}"
         )
 
-        if current_app.should_send_zendesk_alerts:
+        if current_app.should_send_zendesk_alerts:  # type: ignore[attr-defined]
             environment = current_app.config["NOTIFY_ENVIRONMENT"]
             ticket = NotifySupportTicket(
                 subject=f"[{environment}] Messagebox notifications stuck sending",
@@ -203,7 +204,7 @@ def check_if_messagebox_still_pending(max_minutes_ago_to_check: int = 60, max_ho
                 notify_ticket_type=NotifyTicketType.TECHNICAL,
                 notify_task_type="notify_task_messagebox_stuck_sending",
             )
-            zendesk_client.send_ticket_to_zendesk(ticket)
+            zendesk_client.send_ticket_to_zendesk(ticket)  # type: ignore[attr-defined]
             current_app.logger.error(
                 "Messagebox notifications stuck sending",
                 extra={"number_of_notifications": len(stuck_sending), "notification_ids": notification_ids},

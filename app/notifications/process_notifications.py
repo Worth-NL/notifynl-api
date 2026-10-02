@@ -9,7 +9,8 @@ from notifications_utils.recipient_validation.email_address import (
     format_email_address,
     validate_and_format_email_address,
 )
-from notifications_utils.recipient_validation.notifynl.phone_number import NL_PREFIX
+from notifications_utils.recipient_validation.notifynl.phone_number import NL_PREFIX, PhoneNumber
+from notifications_utils.recipient_validation.phone_number import InvalidPhoneError
 from notifications_utils.template import (
     LetterPrintTemplate,
     PlainTextEmailTemplate,
@@ -169,7 +170,7 @@ def persist_notification(
         reply_to_text=reply_to_text,
         unsubscribe_link=unsubscribe_link,
         billable_units=billable_units,
-        document_download_count=document_download_count,
+        document_download_count=document_download_count or None,
         updated_at=updated_at,
         sent_by=sent_by,
     )
@@ -179,6 +180,18 @@ def persist_notification(
         notification.international = recipient["international"]
         notification.phone_prefix = recipient["phone_prefix"]
         notification.rate_multiplier = recipient["rate_multiplier"]
+        try:
+            number = PhoneNumber(strip_and_remove_obscure_whitespace(notification.to))
+            five_digit_prefix = str(number.number.national_number)[:5]
+            if number.is_number_in_S7_protected_range() and not number.is_tv_number(number.number):
+                current_app.logger.info(
+                    "Service %s tried to send to UK mobile number in ofcom protected range. Prefix without leading zero: %s",  # noqa: E501
+                    service.id,
+                    five_digit_prefix,
+                    extra={"service_id": service.id, "five_digit_prefix": five_digit_prefix},
+                )
+        except InvalidPhoneError:
+            current_app.logger.info("Could not parse number")
 
     elif notification_type == EMAIL_TYPE:
         notification.to = strip_and_remove_obscure_whitespace(notification.to)

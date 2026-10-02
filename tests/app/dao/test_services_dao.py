@@ -3,6 +3,7 @@ from datetime import datetime, timedelta
 from unittest import mock
 
 import pytest
+from flask import current_app
 from freezegun import freeze_time
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm.exc import NoResultFound
@@ -38,6 +39,7 @@ from app.dao.services_dao import (
     dao_archive_service,
     dao_create_service,
     dao_fetch_active_users_for_service,
+    dao_fetch_active_users_with_manage_settings_for_service,
     dao_fetch_all_services,
     dao_fetch_all_services_by_user,
     dao_fetch_live_services_data,
@@ -194,6 +196,31 @@ def test_create_nhs_service_get_default_branding_based_on_email_address(
     else:
         assert service_db.letter_branding is None
         assert service_db.email_branding is None
+
+
+def test_create_nhs_notify_service(
+    notify_db_session,
+    nhs_email_branding,
+    nhs_letter_branding,
+):
+    user = create_user(email="test@nhs.net")
+
+    organisation = create_organisation(
+        organisation_type="nhs_notify", organisation_id=current_app.config["NHS_NOTIFY_ORG_ID"]
+    )
+
+    service = Service(
+        name="service_name",
+        restricted=False,
+        organisation_type="nhs_notify",
+        created_by=user,
+    )
+    dao_create_service(service, user)
+    service_db = Service.query.one()
+
+    assert service_db.letter_branding.id == nhs_letter_branding.id
+    assert service_db.email_branding.id == nhs_email_branding.id
+    assert service_db.organisation_id == organisation.id
 
 
 def test_cannot_create_two_services_with_same_name(notify_db_session):
@@ -1150,6 +1177,36 @@ def test_dao_fetch_active_users_for_service_returns_active_only(notify_db_sessio
     users = dao_fetch_active_users_for_service(service.id)
 
     assert len(users) == 1
+    assert users[0].id == active_user.id
+
+
+def test_dao_fetch_active_users_with_manage_settings_for_service(notify_db_session):
+    active_user = create_user(email="active@foo.com", state="active")
+    active_user_2 = create_user(email="active_2@foo.com", state="active")
+    active_user_3 = create_user(email="active_2@foo.com", state="active")
+    pending_user = create_user(email="pending@foo.com", state="pending")
+    active_user_service_2 = create_user(email="active_service_2@foo.com", state="active")
+
+    service = create_service(user=active_user)
+    service_2 = create_service(service_name="Service 2", user=active_user)
+
+    dao_add_user_to_service(
+        service,
+        active_user_2,
+        permissions=[Permission(permission="manage_settings"), Permission(permission="manage_api_keys")],
+    )
+    dao_add_user_to_service(service, active_user_3, [Permission(permission="manage_templates")])
+    dao_add_user_to_service(service, pending_user, [Permission(permission="manage_settings")])
+    dao_add_user_to_service(
+        service_2,
+        active_user_service_2,
+        [Permission(permission="manage_settings"), Permission(permission="view_activity")],
+    )
+
+    users = dao_fetch_active_users_with_manage_settings_for_service(service.id)
+
+    assert len(users) == 2
+    assert {user.id for user in users} == {active_user.id, active_user_2.id}
 
 
 def test_dao_fetch_service_by_inbound_number_with_inbound_number(notify_db_session):

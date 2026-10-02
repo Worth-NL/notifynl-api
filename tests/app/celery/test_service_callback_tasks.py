@@ -1,5 +1,6 @@
 import json
 import uuid
+from contextlib import nullcontext
 from datetime import datetime, timedelta
 from unittest import mock
 
@@ -26,6 +27,7 @@ from app.constants import (
     ServiceCallbackTypes,
 )
 from app.dao.templates_messagebox_dao import get_messagebox_template
+from app.otel_metrics.service_callback import _service_callback_forward_duration
 from app.utils import DATETIME_FORMAT
 from tests.app.db import (
     create_api_key,
@@ -132,19 +134,35 @@ def _set_up_test_data_for_returned_letter_callback(template):
     return callback_api, job, notification_1
 
 
+@freeze_time("2017-06-20T12:34:56")
 @pytest.mark.parametrize("notification_type", ["email", "sms"])
-def test_send_delivery_status_to_service_sends_callback_to_service(notify_db_session, notification_type, mocker):
+@pytest.mark.parametrize("receipt_iso_timestamp", ["2017-06-20T12:34:55", None])
+@pytest.mark.parametrize("callback_successful", [False, True])
+def test_send_delivery_status_to_service_sends_callback_to_service(
+    notify_db_session, notification_type, receipt_iso_timestamp, callback_successful, mocker
+):
     callback_api, template = _set_up_test_data(notification_type, "delivery_status")
-    datestr = datetime(2017, 6, 20)
+    now = datetime.now()
 
     notification = create_notification(
-        template=template, created_at=datestr, updated_at=datestr, sent_at=datestr, status="sent"
+        template=template,
+        created_at=now - timedelta(seconds=5),
+        sent_at=now - timedelta(seconds=4),
+        updated_at=now - timedelta(seconds=2),
+        status="sent",
     )
     encoded_status_update = _set_up_data_for_status_update(callback_api, notification)
 
     send_callback_mock = mocker.patch("app.celery.service_callback_tasks._send_data_to_service_callback_api")
+    if not callback_successful:
+        send_callback_mock.side_effect = ValueError
 
-    send_delivery_status_to_service(notification.id, encoded_status_update=encoded_status_update)
+    service_callback_forward_duration_record_mock = mocker.patch.object(_service_callback_forward_duration, "record")
+
+    with nullcontext() if callback_successful else pytest.raises(ValueError):
+        send_delivery_status_to_service(
+            notification.id, encoded_status_update=encoded_status_update, receipt_iso_timestamp=receipt_iso_timestamp
+        )
 
     expected_data = {
         "id": str(notification.id),
@@ -152,9 +170,9 @@ def test_send_delivery_status_to_service_sends_callback_to_service(notify_db_ses
         "to": notification.to,
         "status": notification.status,
         "detailed_status_code": None,
-        "created_at": datestr.strftime(DATETIME_FORMAT),
-        "completed_at": datestr.strftime(DATETIME_FORMAT),
-        "sent_at": datestr.strftime(DATETIME_FORMAT),
+        "created_at": (now - timedelta(seconds=5)).strftime(DATETIME_FORMAT),
+        "sent_at": (now - timedelta(seconds=4)).strftime(DATETIME_FORMAT),
+        "completed_at": (now - timedelta(seconds=2)).strftime(DATETIME_FORMAT),
         "notification_type": notification_type,
         "template_id": str(template.id),
         "template_version": 1,
@@ -167,6 +185,21 @@ def test_send_delivery_status_to_service_sends_callback_to_service(notify_db_ses
         callback_api.bearer_token,
         expected_data["id"],
         {"notification_id": expected_data["id"]},
+    )
+    assert service_callback_forward_duration_record_mock.mock_calls == (
+        []
+        if receipt_iso_timestamp is None
+        else [
+            mocker.call(
+                1.0,
+                {
+                    "callback.type": "delivery_status",
+                    "callback.attempt": 0,
+                    "notification.type": notification_type,
+                }
+                | ({} if callback_successful else {"error.type": "builtins.ValueError"}),
+            ),
+        ]
     )
 
 
@@ -267,20 +300,24 @@ def test_send_complaint_to_service_sends_callback_to_service(notify_db_session, 
         )
 
 
-def test_send_inbound_sms_to_service_sends_callback_to_service(notify_api, sample_service, mocker):
-    create_service_callback_api(
-        callback_type=ServiceCallbackTypes.inbound_sms.value,
-        service=sample_service,
-        url="https://some.service.gov.uk/",
-        bearer_token="something_unique",
-    )
-    inbound_sms = create_inbound_sms(
-        service=sample_service,
-        notify_number="0751421",
-        user_number="447700900111",
-        provider_date=datetime(2017, 6, 20),
-        content="Here is some content",
-    )
+@freeze_time("2017-06-20T12:34:56")
+@pytest.mark.parametrize("callback_successful", [False, True])
+def test_send_inbound_sms_to_service_sends_callback_to_service(notify_api, sample_service, callback_successful, mocker):
+    with freeze_time("2017-06-20T12:34:56"):
+        create_service_callback_api(
+            callback_type=ServiceCallbackTypes.inbound_sms.value,
+            service=sample_service,
+            url="https://some.service.gov.uk/",
+            bearer_token="something_unique",
+        )
+        inbound_sms = create_inbound_sms(
+            service=sample_service,
+            notify_number="0751421",
+            user_number="447700900111",
+            provider_date=datetime(2017, 6, 20, 12, 30),
+            content="Here is some content",
+        )
+
     data = {
         "id": str(inbound_sms.id),
         "source_number": inbound_sms.user_number,
@@ -290,11 +327,29 @@ def test_send_inbound_sms_to_service_sends_callback_to_service(notify_api, sampl
     }
 
     send_callback_mock = mocker.patch("app.celery.service_callback_tasks._send_data_to_service_callback_api")
+    if not callback_successful:
+        send_callback_mock.side_effect = ValueError
 
-    send_inbound_sms_to_service(inbound_sms.id, inbound_sms.service_id)
+    service_callback_forward_duration_record_mock = mocker.patch.object(_service_callback_forward_duration, "record")
+
+    with freeze_time("2017-06-20T12:34:59"):
+        with nullcontext() if callback_successful else pytest.raises(ValueError):
+            send_inbound_sms_to_service(inbound_sms.id, inbound_sms.service_id)
+
     send_callback_mock.assert_called_once_with(
         mock.ANY, data, "https://some.service.gov.uk/", "something_unique", data["id"], {"inbound_sms_id": data["id"]}
     )
+
+    assert service_callback_forward_duration_record_mock.mock_calls == [
+        mocker.call(
+            3.0,
+            {
+                "callback.type": "inbound_sms",
+                "callback.attempt": 0,
+            }
+            | ({} if callback_successful else {"error.type": "builtins.ValueError"}),
+        ),
+    ]
 
 
 def test_send_inbound_sms_to_service_does_not_send_callback_when_inbound_sms_does_not_exist(
@@ -302,14 +357,17 @@ def test_send_inbound_sms_to_service_does_not_send_callback_when_inbound_sms_doe
 ):
     create_service_callback_api(service=sample_service, callback_type=ServiceCallbackTypes.inbound_sms.value)
     send_callback_mock = mocker.patch("app.celery.service_callback_tasks._send_data_to_service_callback_api")
+    service_callback_forward_duration_record_mock = mocker.patch.object(_service_callback_forward_duration, "record")
 
     with pytest.raises(SQLAlchemyError):
         send_inbound_sms_to_service(inbound_sms_id=uuid.uuid4(), service_id=sample_service.id)
 
     assert send_callback_mock.call_count == 0
+    # we didn't actually make a callback attempt, so we shouldn't record a metric for doing so
+    assert service_callback_forward_duration_record_mock.mock_calls == []
 
 
-def test_send_inbound_sms_to_service_does_not_sent_callback_when_inbound_api_does_not_exist(
+def test_send_inbound_sms_to_service_does_not_send_callback_when_inbound_api_does_not_exist(
     notify_api, sample_service, mocker
 ):
     inbound_sms = create_inbound_sms(
@@ -320,9 +378,13 @@ def test_send_inbound_sms_to_service_does_not_sent_callback_when_inbound_api_doe
         content="Here is some content",
     )
     send_callback_mock = mocker.patch("app.celery.service_callback_tasks._send_data_to_service_callback_api")
+    service_callback_forward_duration_record_mock = mocker.patch.object(_service_callback_forward_duration, "record")
+
     send_inbound_sms_to_service(inbound_sms.id, inbound_sms.service_id)
 
     assert send_callback_mock.call_count == 0
+    # again, we didn't actually make a callback attempt, so we shouldn't record a metric for doing so
+    assert service_callback_forward_duration_record_mock.mock_calls == []
 
 
 def test_send_returned_letter_to_service_sends_callback_to_service(

@@ -161,7 +161,7 @@ def messagebox_deliver(self, notification_id: str):
         return
 
     try:
-        envelope_message_id = ebms_adapter_client.send_messagebox(str(notification.id))
+        envelope_message_id = ebms_adapter_client.send_messagebox(str(notification.id))  # type: ignore[attr-defined]
     except MessageboxClientNonRetryableException as e:
         current_app.logger.exception(
             "Messagebox notification %s failed: %s", notification_id, e, extra={"notification_id": notification_id}

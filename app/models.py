@@ -5,7 +5,7 @@ import uuid
 from flask import current_app, url_for
 from jsonschema import ValidationError, validate
 from notifications_utils.insensitive_dict import InsensitiveDict
-from notifications_utils.letter_timings import get_letter_timings
+from notifications_utils.letter_timings import LetterTimings
 from notifications_utils.recipient_validation.email_address import validate_email_address
 from notifications_utils.recipient_validation.errors import InvalidRecipientError
 from notifications_utils.recipient_validation.notifynl.phone_number import PhoneNumber
@@ -106,6 +106,7 @@ from app.models_types import (
     SerializedServiceSmsSender,
     SerializedTemplateEmailFile,
     SerializedTemplateFolder,
+    SerializedTemplateNoDetail,
     SerializedUnsubscribeRequestReport,
     SerializedUser,
     SerializedUserForList,
@@ -619,6 +620,7 @@ class Service(db.Model, Versioned):
     go_live_user = db.relationship("User", foreign_keys=[go_live_user_id])
     go_live_at = db.Column(db.DateTime, nullable=True)
     has_active_go_live_request = db.Column(db.Boolean, default=False, nullable=False)
+    confirmed_service_name = db.Column(db.Boolean, default=False, nullable=False)
     confirmed_unique = db.Column(db.Boolean, default=False, nullable=False)
 
     organisation_id = db.Column(UUID(as_uuid=True), db.ForeignKey("organisation.id"), index=True, nullable=True)
@@ -1269,6 +1271,15 @@ class Template(TemplateBase):
         fields["folder"] = folder
         return cls(**fields)
 
+    def serialize_no_detail(self) -> SerializedTemplateNoDetail:
+        return SerializedTemplateNoDetail(
+            folder=str(self.folder.id) if self.folder else None,
+            id=str(self.id),
+            is_precompiled_letter=self.is_precompiled_letter,
+            name=self.name,
+            template_type=self.template_type,
+        )
+
 
 class TemplateRedacted(db.Model):
     __tablename__ = "template_redacted"
@@ -1391,6 +1402,7 @@ class ProviderDetails(db.Model):
     updated_at = db.Column(db.DateTime, nullable=True, onupdate=datetime.datetime.utcnow)
     created_by_id = db.Column(UUID(as_uuid=True), db.ForeignKey("users.id"), index=True, nullable=True)
     created_by = db.relationship("User")
+    reason = db.Column(db.String, nullable=True)
     supports_international = db.Column(db.Boolean, nullable=False, default=False)
 
     def serialize(self):
@@ -1414,6 +1426,7 @@ class ProviderDetailsHistory(db.Model):
     updated_at = db.Column(db.DateTime, nullable=True, onupdate=datetime.datetime.utcnow)
     created_by_id = db.Column(UUID(as_uuid=True), db.ForeignKey("users.id"), index=True, nullable=True)
     created_by = db.relationship("User")
+    reason = db.Column(db.String, nullable=True)
     supports_international = db.Column(db.Boolean, nullable=False, default=False)
 
     @classmethod
@@ -1853,7 +1866,7 @@ class Notification(db.Model):
                 serialized["postcode"],
             ) = (personalisation.get(line) for line in address_lines_1_to_5_and_postcode_keys)
 
-            serialized["estimated_delivery"] = get_letter_timings(
+            serialized["estimated_delivery"] = LetterTimings(
                 serialized["created_at"], postage=self.postage
             ).latest_delivery.strftime(DATETIME_FORMAT)
 

@@ -449,6 +449,7 @@ def test_set_user_permissions_remove_old(admin_request, sample_user, sample_serv
     assert query.first().permission == MANAGE_SETTINGS
 
 
+@pytest.mark.skip(reason="[NOTIFYNL] gov.uk emails aren't on the Dutch gov domain list, see test_users_dao_nl.py")
 def test_set_user_permissions_when_permissions_cannot_be_changed(admin_request, sample_user, sample_service):
     data = {"permissions": [{"permission": MANAGE_TEMPLATES}]}
 

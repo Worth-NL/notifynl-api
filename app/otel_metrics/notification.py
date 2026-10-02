@@ -1,6 +1,8 @@
 import json
+from collections.abc import Sequence
+from datetime import timedelta
 
-from notifications_utils.semconv import TASK_DURATION_HISTOGRAM_BUCKETS, set_error_type
+from notifications_utils.semconv import set_error_type
 from opentelemetry.metrics import get_meter
 from opentelemetry.util.types import AttributeValue
 
@@ -15,33 +17,47 @@ _international_sms = _meter.create_counter(
     ),
 )
 
+# Buckets ranging from 50 milliseconds to 10 minutes
+SEND_DURATION_HISTOGRAM_BUCKETS = [
+    0.05,
+    0.1,
+    0.2,
+    0.5,
+    1,
+    2,
+    5,
+    10,
+    30,
+    60,
+    120,
+    300,
+    600,
+]
+
 _send_duration = _meter.create_histogram(
     "notification.send.duration",
     unit="s",
     description="Elapsed time between notification creation and sending to provider",
-    explicit_bucket_boundaries_advisory=TASK_DURATION_HISTOGRAM_BUCKETS,
+    explicit_bucket_boundaries_advisory=SEND_DURATION_HISTOGRAM_BUCKETS,
 )
 
 # Buckets ranging from 1 second to 30 hours
 DELIVER_DURATION_HISTOGRAM_BUCKETS = [
     1,
     2,
-    4,
-    8,
-    15,
+    5,
+    10,
     30,
-    60,
-    120,
-    240,
-    480,
-    900,
-    1800,
-    3600,
-    7200,
-    14400,
-    28800,
-    54000,
-    108000,
+    60 * 1,
+    60 * 2,
+    60 * 5,
+    60 * 10,
+    60 * 30,
+    60 * 60 * 1,
+    60 * 60 * 2,
+    60 * 60 * 5,
+    60 * 60 * 10,
+    60 * 60 * 30,
 ]
 
 _callback_duration = _meter.create_histogram(
@@ -62,6 +78,32 @@ _deliver_duration = _meter.create_histogram(
         "might be recorded multiple times per notification as it changes status from pending to delivered/failure"
     ),
     explicit_bucket_boundaries_advisory=DELIVER_DURATION_HISTOGRAM_BUCKETS,
+)
+
+# Buckets ranging from 5 seconds to 15 minutes
+UNDELIVERED_NOTIFICATION_AGE_HISTOGRAM_BUCKETS = [
+    5,
+    10,
+    20,
+    40,
+    60 * 1,
+    60 * 2,
+    60 * 5,
+    60 * 8,
+    60 * 12,
+    60 * 15,
+]
+
+# this should really be a "gauge histogram", but such metrics aren't yet ratified in the otel standard
+# let alone supported in the python sdk. so for now it's just a regular gauge which we manually manage
+# the `le` label values for.
+_undelivered_notification_age = _meter.create_gauge(
+    "notification.undelivered.age",
+    unit="{notification}",
+    description=(
+        "Number of notifications sent less than or equal to `le` seconds ago for which we're still awaiting a "
+        "delivery receipt."
+    ),
 )
 
 
@@ -106,10 +148,11 @@ def record_deliver_duration(
     notification_status: str,
     notification_type: str,
     provider_name: str,
-    sms_international: bool | None = None,
+    notification_sms_international: bool | None = None,
 ) -> None:
     """
-    Records a sample with the given `duration` and attributes for histogram metric `notification.deliver.duration`.
+    Records samples with the given duration and attributes for histogram metrics `notification.callback.duration` and
+    `notification.deliver.duration`.
     """
 
     attrs = {
@@ -119,11 +162,38 @@ def record_deliver_duration(
         "provider.name": provider_name,
     }
 
-    if sms_international is not None:
+    if notification_sms_international is not None:
         # OTel semconv specifically dictates JSON encoding for booleans
-        attrs["notification.sms.international"] = json.dumps(sms_international)
+        attrs["notification.sms.international"] = json.dumps(notification_sms_international)
 
     if callback_duration is not None:
         _callback_duration.record(callback_duration, attrs)
     if deliver_duration is not None:
         _deliver_duration.record(deliver_duration, attrs)
+
+
+def record_undelivered_notification_ages(
+    counts: Sequence[tuple[timedelta, int]],
+    provider_name: str,
+    notification_type: str,
+    key_type: str,
+) -> None:
+    """
+    Records, for each entry in `counts`, the current number of undelivered notifications newer-than (-or-as-new-as) the
+    accompanying timedelta, in the pseudo-histogram gauge `notification.undelivered.age`.
+    """
+    attrs: dict[str, AttributeValue] = {
+        "key.type": key_type,
+        "notification.type": notification_type,
+        "provider.name": provider_name,
+        "time_window.evaluation": max(td for td, _ in counts).total_seconds(),
+    }
+
+    for le_timedelta, count in counts:
+        _undelivered_notification_age.set(
+            count,
+            {
+                **attrs,
+                "le": le_timedelta.total_seconds(),
+            },
+        )

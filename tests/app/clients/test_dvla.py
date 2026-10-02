@@ -5,7 +5,6 @@ import sys
 import time
 from collections import namedtuple
 from datetime import UTC, datetime
-from unittest.mock import Mock
 
 import boto3
 import freezegun
@@ -54,7 +53,7 @@ def ssm():
 
 @pytest.fixture
 def dvla_client(notify_api, client, ssm):
-    dvla_client = DVLAClient(notify_api, statsd_client=Mock())
+    dvla_client = DVLAClient(notify_api)
     yield dvla_client
 
 
@@ -959,10 +958,7 @@ class TestDVLAApiClientRestrictedCiphers:
             method="GET",
         ).respond_with_data("OK")
 
-        dvla_client = DVLAClient(
-            fake_app,
-            statsd_client=mocker.Mock(),
-        )
+        dvla_client = DVLAClient(fake_app)
 
         with ca.cert_pem.tempfile() as ca_temp_path:
             response = dvla_client.session.get(
@@ -975,7 +971,7 @@ class TestDVLAApiClientRestrictedCiphers:
     def test_invalid_ciphers(self, mocker, server_base_url, fake_app):
         with pytest.raises(ssl.SSLError) as e:
             fake_app.config["DVLA_API_TLS_CIPHERS"] = "not-a-valid-cipher"
-            DVLAClient(fake_app, statsd_client=mocker.Mock())
+            DVLAClient(fake_app)
 
         assert "No cipher can be selected." in e.value.args
 
@@ -991,10 +987,7 @@ class TestDVLAApiClientRestrictedCiphers:
         fake_app,
     ):
         fake_app.config["DVLA_API_TLS_CIPHERS"] = ":".join(cipherlist.allowlist)
-        dvla_client = DVLAClient(
-            fake_app,
-            statsd_client=mocker.Mock(),
-        )
+        dvla_client = DVLAClient(fake_app)
 
         httpserver.expect_request(
             "/test",
@@ -1021,10 +1014,7 @@ class TestDVLAApiClientRestrictedCiphers:
         fake_app,
     ):
         fake_app.config["DVLA_API_TLS_CIPHERS"] = ":".join(cipherlist.blocklist)
-        dvla_client = DVLAClient(
-            fake_app,
-            statsd_client=mocker.Mock(),
-        )
+        dvla_client = DVLAClient(fake_app)
 
         httpserver.expect_request(
             "/test",

@@ -10,6 +10,7 @@ from app.dao.inbound_sms_dao import dao_create_inbound_sms
 from app.dao.invited_org_user_dao import save_invited_org_user
 from app.dao.invited_user_dao import save_invited_user
 from app.dao.jobs_dao import dao_create_job
+from app.dao.letter_attachment_dao import dao_archive_letter_attachment
 from app.dao.notifications_dao import dao_create_notification
 from app.dao.organisation_dao import (
     dao_add_service_to_organisation,
@@ -25,7 +26,11 @@ from app.dao.service_sms_sender_dao import (
     update_existing_sms_sender_with_inbound_number,
 )
 from app.dao.services_dao import dao_add_user_to_service, dao_create_service
-from app.dao.template_email_files_dao import dao_create_pending_template_email_file, dao_create_template_email_file
+from app.dao.template_email_files_dao import (
+    dao_archive_template_email_file,
+    dao_create_pending_template_email_file,
+    dao_create_template_email_file,
+)
 from app.dao.templates_dao import dao_create_template, dao_update_template
 from app.dao.unsubscribe_request_dao import create_unsubscribe_request_dao, create_unsubscribe_request_reports_dao
 from app.dao.users_dao import save_model_user
@@ -165,11 +170,13 @@ def create_service(
     return service
 
 
-def create_service_with_inbound_number(inbound_number="1234567", *args, **kwargs):
+def create_service_with_inbound_number(inbound_number="1234567", provider="mmg", number_active=True, *args, **kwargs):
     service = create_service(*args, **kwargs)
 
     sms_sender = ServiceSmsSender.query.filter_by(service_id=service.id).first()
-    inbound = create_inbound_number(number=inbound_number, service_id=service.id)
+    inbound = create_inbound_number(
+        number=inbound_number, service_id=service.id, provider=provider, active=number_active
+    )
     update_existing_sms_sender_with_inbound_number(
         service_sms_sender=sms_sender, sms_sender=inbound_number, inbound_number_id=inbound.id
     )
@@ -191,11 +198,14 @@ def create_service_with_defined_sms_sender(sms_sender_value="1234567", *args, **
 def create_template_email_file(
     template_id,
     created_by_id,
+    created_at=None,
     filename="example.pdf",
     link_text="follow this link",
     retention_period=90,
     validate_users_email=True,
     pending=False,
+    version=0,
+    archived_at=None,
 ):
     data = {
         "filename": filename,
@@ -204,13 +214,33 @@ def create_template_email_file(
         "validate_users_email": validate_users_email,
         "template_id": template_id,
         "created_by_id": created_by_id,
+        "created_at": created_at if created_at is not None else datetime.utcnow(),
         "pending": pending,
+        "version": version,
+        "archived_at": archived_at,
     }
     template_email_file = TemplateEmailFile(**data)
     if pending:
         dao_create_pending_template_email_file(template_email_file)
     else:
         dao_create_template_email_file(template_email_file)
+    return template_email_file
+
+
+def create_archived_template_email_file(template, archived_at, filename):
+    template_email_file = create_template_email_file(
+        template_id=template.id,
+        created_by_id=template.created_by_id,
+        filename=filename,
+    )
+    dao_archive_template_email_file(
+        template_email_file,
+        template.created_by_id,
+        template_version=template.version + 1,
+    )
+    template_email_file.archived_at = archived_at
+    db.session.add(template_email_file)
+    db.session.commit()
     return template_email_file
 
 
@@ -1196,6 +1226,16 @@ def create_letter_attachment(created_by_id):
     db.session.add(letter_attachment)
     db.session.commit()
     return letter_attachment
+
+
+def create_archived_letter_attachment(template):
+    attachment = LetterAttachment(
+        created_by_id=template.created_by_id, original_filename="abc.pdf", page_count=1, template=template
+    )
+    dao_update_template(template)
+
+    dao_archive_letter_attachment(attachment, template, template.created_by_id)
+    return attachment
 
 
 def create_unsubscribe_request(
