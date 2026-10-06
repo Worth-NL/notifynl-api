@@ -1049,6 +1049,14 @@ class DevNL(ConfigNL):
 
     LETTER_ENDPOINT_ALLOW_INSECURE = True
 
+    # Pingen points at the devcontainer's Mockoon stub (meta-repo .devcontainer/config/mockoon) rather than Pingen's
+    # real staging environment, unless the env says otherwise.
+    PINGEN_API_URL = os.getenv("PINGEN_API_URL", "http://localhost:6300/pingen/api")
+    PINGEN_IDENTITY_URL = os.getenv("PINGEN_IDENTITY_URL", "http://localhost:6300/pingen/identity")
+    PINGEN_CLIENT_ID = os.getenv("PINGEN_CLIENT_ID", "stub")
+    PINGEN_CLIENT_SECRET = os.getenv("PINGEN_CLIENT_SECRET", "stub")
+    PINGEN_ORGANISATION_ID = os.getenv("PINGEN_ORGANISATION_ID", "00000000-0000-0000-0000-000000000000")
+
     CELERY_WORKER_LOG_LEVEL = "INFO"
 
     # kombu's SQS transport builds its boto3 endpoint_url straight from broker_url +
