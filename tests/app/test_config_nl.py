@@ -14,6 +14,7 @@ STUBBED_ENV_VARS = (
     "PINGEN_CLIENT_ID",
     "PINGEN_CLIENT_SECRET",
     "PINGEN_ORGANISATION_ID",
+    "LETTER_DELIVERY_VIA_PROVIDERS",
 )
 
 DVLA_TASKS = {
@@ -72,6 +73,22 @@ def test_local_development_sends_third_party_calls_to_the_local_stub(config_with
     assert dev.PINGEN_CLIENT_ID
     assert dev.PINGEN_CLIENT_SECRET
     assert dev.PINGEN_ORGANISATION_ID
+
+
+def test_local_development_delivers_letters_through_the_print_providers(config_without_stub_env):
+    dev = config_without_stub_env.DevNL
+    schedule = dev.CELERY["beat_schedule"]
+
+    assert dev.LETTER_DELIVERY_VIA_PROVIDERS
+    assert PROVIDER_TASKS <= set(schedule)
+    assert not DVLA_TASKS & set(schedule)
+    assert "messagebox-process-unprocessed" in schedule
+
+
+def test_deployed_environments_keep_letters_on_the_dvla_path_by_default(config_without_stub_env):
+    for config in (config_without_stub_env.TestNL, config_without_stub_env.AccNL, config_without_stub_env.ProdNL):
+        assert not config.LETTER_DELIVERY_VIA_PROVIDERS
+        assert DVLA_TASKS <= set(config.CELERY["beat_schedule"])
 
 
 def test_deployed_environments_default_to_the_real_third_parties(config_without_stub_env):

@@ -1049,6 +1049,10 @@ class DevNL(ConfigNL):
 
     LETTER_ENDPOINT_ALLOW_INSECURE = True
 
+    # The devcontainer no longer runs notifynl-dvla-service, so local letters go straight to the print providers
+    # (stubbed by Mockoon below) unless the env says otherwise.
+    LETTER_DELIVERY_VIA_PROVIDERS = os.getenv("LETTER_DELIVERY_VIA_PROVIDERS", "1") == "1"
+
     # Third-party APIs point at the devcontainer's Mockoon stub (meta-repo .devcontainer/config/mockoon) rather than the
     # real SMS providers and Pingen's staging environment, unless the env says otherwise.
     MMG_URL = os.getenv("MMG_URL", "http://localhost:6300/mmg")
@@ -1067,6 +1071,10 @@ class DevNL(ConfigNL):
     # set here explicitly rather than relying on the env var like other AWS clients do.
     CELERY = {
         **ConfigNL.CELERY,
+        # ConfigNL's schedule was built for its own LETTER_DELIVERY_VIA_PROVIDERS, so rebuild it for ours
+        "beat_schedule": build_letter_beat_schedule(
+            ConfigNL.CELERY["beat_schedule"], LETTER_DELIVERY_VIA_PROVIDERS, ConfigNL.LETTER_COLLATION_FREQUENCY
+        ),
         "broker_url": os.getenv("AWS_ENDPOINT_URL", "http://ministack:4566"),
         "broker_transport_options": {
             **ConfigNL.CELERY["broker_transport_options"],
