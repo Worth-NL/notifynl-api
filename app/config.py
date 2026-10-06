@@ -1049,8 +1049,11 @@ class DevNL(ConfigNL):
 
     LETTER_ENDPOINT_ALLOW_INSECURE = True
 
-    # Pingen points at the devcontainer's Mockoon stub (meta-repo .devcontainer/config/mockoon) rather than Pingen's
-    # real staging environment, unless the env says otherwise.
+    # Third-party APIs point at the devcontainer's Mockoon stub (meta-repo .devcontainer/config/mockoon) rather than the
+    # real SMS providers and Pingen's staging environment, unless the env says otherwise.
+    MMG_URL = os.getenv("MMG_URL", "http://localhost:6300/mmg")
+    FIRETEXT_URL = os.getenv("FIRETEXT_URL", "http://localhost:6300/firetext")
+    SPRYNG_URL = os.getenv("SPRYNG_URL", "http://localhost:6300/spryng")
     PINGEN_API_URL = os.getenv("PINGEN_API_URL", "http://localhost:6300/pingen/api")
     PINGEN_IDENTITY_URL = os.getenv("PINGEN_IDENTITY_URL", "http://localhost:6300/pingen/identity")
     PINGEN_CLIENT_ID = os.getenv("PINGEN_CLIENT_ID", "stub")
