@@ -1209,7 +1209,7 @@ mypy-extensions==1.1.0 \
 notifications-python-client==12.2.0 \
     --hash=sha256:5552f83d26ca0bba2b69b8477c8db691645bfd53fd6e591421318c81fa077b7a
     # via -r requirements_nl.txt
-notifications-utils @ git+https://github.com/Worth-NL/notifynl-utils.git@95493552b9fbd5b3b61656f0dcd87451c12bbb63
+notifications-utils @ git+https://github.com/Worth-NL/notifynl-utils.git@754687eb4a4ae99354133ab3835a21f56cf9a943
     # via -r requirements_nl.txt
 opentelemetry-api==1.44.0 \
     --hash=sha256:67647e5e9566edcf421166fdf022b3537f818635daa852b289e34604dc6fb33a \
