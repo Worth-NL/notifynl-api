@@ -280,6 +280,7 @@ def register_blueprint(application):
     )
     from app.sms.rest import sms_rate_blueprint
     from app.status.healthcheck import status as status_blueprint
+    from app.status.security_txt_nl import security_txt as security_txt_blueprint
     from app.template.rest import template_blueprint
     from app.template_email_files.rest import template_email_files_blueprint
     from app.template_folder.rest import template_folder_blueprint
@@ -312,6 +313,9 @@ def register_blueprint(application):
 
     status_blueprint.before_request(requires_no_auth)
     application.register_blueprint(status_blueprint)
+
+    security_txt_blueprint.before_request(requires_no_auth)
+    application.register_blueprint(security_txt_blueprint)
 
     # delivery receipts
     sms_callback_blueprint.before_request(requires_no_auth)  # basic auth enforced at view level
