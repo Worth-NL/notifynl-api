@@ -6,7 +6,7 @@ from flask import current_app
 from notifications_utils.template import SMSMessageTemplate
 from sqlalchemy.exc import OperationalError
 
-from app import notify_celery, statsd_client
+from app import notify_celery
 from app.clients import ClientException
 from app.clients.sms.firetext import get_firetext_responses
 from app.clients.sms.mmg import get_mmg_responses
@@ -136,24 +136,15 @@ def _process_for_status(
     if not notification:
         return
 
-    statsd_client.incr(f"callback.{client_name.lower()}.{notification_status}")
-
     record_deliver_duration(
         callback_duration=(receipt_dt - notification.created_at).total_seconds() if receipt_dt else None,
         deliver_duration=(delivery_dt - notification.created_at).total_seconds() if delivery_dt else None,
         key_type=notification.key_type,
         notification_status=notification.status,
         notification_type="sms",
+        notification_sms_international=notification.international,
         provider_name=client_name.lower(),
-        sms_international=notification.international,
     )
-
-    if notification.sent_at:
-        statsd_client.timing_with_dates(
-            f"callback.{client_name.lower()}.{notification_status}.elapsed-time",
-            datetime.utcnow(),
-            notification.sent_at,
-        )
 
     if notification.billable_units == 0:
         service = notification.service
@@ -169,9 +160,8 @@ def _process_for_status(
         notifications_dao.dao_update_notification(notification)
 
     if notification_status != NOTIFICATION_PENDING:
-        check_and_queue_callback_task(notification)
+        check_and_queue_callback_task(notification, receipt_dt=receipt_dt)
         if notification.international:
-            statsd_client.incr(f"international-sms.{notification_status}.{notification.phone_prefix}")
             record_international_sms(
                 1, notification_status=notification_status, sms_country_code=notification.phone_prefix
             )

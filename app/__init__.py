@@ -9,6 +9,7 @@ from time import monotonic
 
 from celery import current_task
 from flask import (
+    Flask,
     current_app,
     g,
     has_request_context,
@@ -26,15 +27,19 @@ from notifications_utils.celery import NotifyCelery
 from notifications_utils.clients.encryption.encryption_client import Encryption
 from notifications_utils.clients.redis.redis_client import RedisClient
 from notifications_utils.clients.signing.signing_client import Signing
-from notifications_utils.clients.statsd.statsd_client import StatsdClient
 from notifications_utils.clients.zendesk.zendesk_client import ZendeskClient
 from notifications_utils.eventlet import EventletTimeout
+from notifications_utils.json import FlaskRelaxedContainerJSONProvider
 from notifications_utils.local_vars import LazyLocalGetter
 from notifications_utils.logging import flask as utils_logging
 from sqlalchemy import event
 from sqlalchemy.orm import declarative_base
 from werkzeug.exceptions import HTTPException as WerkzeugHTTPException
 from werkzeug.local import LocalProxy
+
+# things up here must be declared before rest of app is imported to satisfy circular import
+# ruff: noqa: E402
+memo_resetters: list[Callable] = []
 
 from app.clients import NotificationProviderClients
 from app.clients.document_download import DocumentDownloadClient
@@ -58,7 +63,6 @@ ma = Marshmallow()
 notify_celery = NotifyCelery()
 signing = Signing()
 encryption = Encryption()
-statsd_client = StatsdClient()
 redis_store = RedisClient()
 metrics = GDSMetrics()
 
@@ -70,8 +74,6 @@ CONCURRENT_REQUESTS = Gauge(
     "How many concurrent requests are currently being served",
 )
 
-memo_resetters: list[Callable] = []
-
 #
 # "clients" that need thread-local copies
 #
@@ -79,7 +81,7 @@ memo_resetters: list[Callable] = []
 _firetext_client_context_var: ContextVar[FiretextClient] = ContextVar("firetext_client")
 get_firetext_client: LazyLocalGetter[FiretextClient] = LazyLocalGetter(
     _firetext_client_context_var,
-    lambda: FiretextClient(current_app, statsd_client=statsd_client),
+    lambda: FiretextClient(current_app),
     expected_type=FiretextClient,
 )
 memo_resetters.append(lambda: get_firetext_client.clear())
@@ -88,7 +90,7 @@ firetext_client = LocalProxy(get_firetext_client)
 _mmg_client_context_var: ContextVar[MMGClient] = ContextVar("mmg_client")
 get_mmg_client: LazyLocalGetter[MMGClient] = LazyLocalGetter(
     _mmg_client_context_var,
-    lambda: MMGClient(current_app, statsd_client=statsd_client),
+    lambda: MMGClient(current_app),
     expected_type=MMGClient,
 )
 memo_resetters.append(lambda: get_mmg_client.clear())
@@ -97,7 +99,7 @@ mmg_client = LocalProxy(get_mmg_client)
 _spryng_client_context_var: ContextVar[SpryngClient] = ContextVar("spryng_client")
 get_spryng_client: LazyLocalGetter[SpryngClient] = LazyLocalGetter(
     _spryng_client_context_var,
-    lambda: SpryngClient(current_app, statsd_client=statsd_client),
+    lambda: SpryngClient(current_app),
     expected_type=SpryngClient,
 )
 memo_resetters.append(lambda: get_spryng_client.clear())
@@ -106,7 +108,7 @@ spryng_client = LocalProxy(get_spryng_client)
 _aws_ses_client_context_var: ContextVar[AwsSesClient] = ContextVar("aws_ses_client")
 get_aws_ses_client: LazyLocalGetter[AwsSesClient] = LazyLocalGetter(
     _aws_ses_client_context_var,
-    lambda: AwsSesClient(current_app.config["AWS_REGION"], statsd_client=statsd_client),
+    lambda: AwsSesClient(current_app.config["AWS_REGION"]),
     expected_type=AwsSesClient,
 )
 memo_resetters.append(lambda: get_aws_ses_client.clear())
@@ -117,7 +119,6 @@ get_aws_ses_stub_client: LazyLocalGetter[AwsSesStubClient] = LazyLocalGetter(
     _aws_ses_stub_client_context_var,
     lambda: AwsSesStubClient(
         current_app.config["AWS_REGION"],
-        statsd_client=statsd_client,
         stub_url=current_app.config["SES_STUB_URL"],
     ),
     expected_type=AwsSesStubClient,
@@ -128,7 +129,7 @@ aws_ses_stub_client = LocalProxy(get_aws_ses_stub_client)
 _ebms_adapter_client_context_var: ContextVar[EbmsAdapterClient] = ContextVar("ebms_adapter_client")
 get_ebms_adapter_client: LazyLocalGetter[EbmsAdapterClient] = LazyLocalGetter(
     _ebms_adapter_client_context_var,
-    lambda: EbmsAdapterClient(current_app, statsd_client=statsd_client),
+    lambda: EbmsAdapterClient(current_app),
     expected_type=EbmsAdapterClient,
 )
 memo_resetters.append(lambda: get_ebms_adapter_client.clear())
@@ -159,7 +160,7 @@ notification_provider_clients = LocalProxy(get_notification_provider_clients)
 _dvla_client_context_var: ContextVar[DVLAClient] = ContextVar("dvla_client")
 get_dvla_client: LazyLocalGetter[DVLAClient] = LazyLocalGetter(
     _dvla_client_context_var,
-    lambda: DVLAClient(current_app, statsd_client=statsd_client),
+    lambda: DVLAClient(current_app),
 )
 memo_resetters.append(lambda: get_dvla_client.clear())
 dvla_client = LocalProxy(get_dvla_client)
@@ -181,8 +182,10 @@ memo_resetters.append(lambda: get_zendesk_client.clear())
 zendesk_client = LocalProxy(get_zendesk_client)
 
 
-def create_app(application):
+def create_app(application: Flask) -> Flask:
     from app.config import Config, configs
+
+    application.json_provider_class = FlaskRelaxedContainerJSONProvider
 
     notify_environment = os.environ["NOTIFY_ENVIRONMENT"]
 
@@ -200,8 +203,7 @@ def create_app(application):
     db.init_app(application)
     migrate.init_app(application, db=db)
     ma.init_app(application)
-    statsd_client.init_app(application)
-    utils_logging.init_app(application, statsd_client)
+    utils_logging.init_app(application)
 
     notify_celery.init_app(application)
     signing.init_app(application)
@@ -278,6 +280,7 @@ def register_blueprint(application):
     )
     from app.sms.rest import sms_rate_blueprint
     from app.status.healthcheck import status as status_blueprint
+    from app.status.security_txt_nl import security_txt as security_txt_blueprint
     from app.template.rest import template_blueprint
     from app.template_email_files.rest import template_email_files_blueprint
     from app.template_folder.rest import template_folder_blueprint
@@ -311,8 +314,11 @@ def register_blueprint(application):
     status_blueprint.before_request(requires_no_auth)
     application.register_blueprint(status_blueprint)
 
+    security_txt_blueprint.before_request(requires_no_auth)
+    application.register_blueprint(security_txt_blueprint)
+
     # delivery receipts
-    sms_callback_blueprint.before_request(requires_no_auth)
+    sms_callback_blueprint.before_request(requires_no_auth)  # basic auth enforced at view level
     application.register_blueprint(sms_callback_blueprint)
 
     # delivery receipts messagebox

@@ -25,6 +25,10 @@ def dao_get_organisations():
     return Organisation.query.order_by(Organisation.active.desc(), Organisation.name.asc()).all()
 
 
+def dao_get_organisation_domains():
+    return db.session.scalars(db.session.query(Domain.domain)).all()
+
+
 def dao_count_organisations_with_live_services():
     return (
         db.session.query(Organisation.id)

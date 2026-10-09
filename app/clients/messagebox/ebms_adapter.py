@@ -11,6 +11,7 @@ from ebms_adapter_client.client import EbmsAdapterClient as EbmsCoreClient
 from ebms_adapter_client.exceptions import BerichtenboxValidationError, EbmsAdapterError, EbmsBadRequestError
 
 from app.clients.messagebox import MessageboxClient, MessageboxClientException, MessageboxClientNonRetryableException
+from app.otel_metrics.provider import record_request_duration
 
 logger = logging.getLogger(__name__)
 
@@ -70,8 +71,8 @@ class EbmsAdapterClient(MessageboxClient):
 
     name = "ebms-adapter"
 
-    def __init__(self, current_app, statsd_client):
-        super().__init__(current_app, statsd_client)
+    def __init__(self, current_app):
+        super().__init__(current_app)
 
         self.url = self.current_app.config.get("EBMS_ADAPTER_URL")
         self._contract = BerichtenboxContractConfig(
@@ -80,6 +81,7 @@ class EbmsAdapterClient(MessageboxClient):
         )
         self._message_type = self.current_app.config.get("EBMS_BERICHTENBOX_MESSAGE_TYPE", "bericht")
 
+    @record_request_duration(notification_type="messagebox", provider_name="ebms-adapter")
     def try_send_messagebox(self, notification_id: str) -> str:
         """Sends a messagebox notification to the ebms-adapter. Returns the
         ebms-core envelope message_id."""

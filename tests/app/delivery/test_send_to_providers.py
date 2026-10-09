@@ -324,13 +324,12 @@ def test_should_not_send_to_provider_when_status_is_not_created(sample_template,
 
 
 @pytest.mark.skip(reason="[NOTIFYNL] Requires mocked Spryng client")
-def test_should_send_sms_with_downgraded_content(notify_db_session, mocker):
+def test_should_send_sms_with_encoded_content(notify_db_session, mocker):
     # é, o, and u are in GSM.
-    # ī, grapes, tabs, zero width space and ellipsis are not
-    # ó isn't in GSM, but it is in the welsh alphabet so will still be sent
+    # ī, ó, grapes, tabs, zero width space and ellipsis are not
     msg = "a é ī o u 🍇 foo\tbar\u200bbaz((misc))…"
     placeholder = "∆∆∆abc"
-    gsm_message = "Lódz Housing Service: a é i o u ? foo barbaz???abc..."
+    encoded_message = "Łódź Housing Service: a é ī o u 🍇 foo barbaz∆∆∆abc..."
     service = create_service(service_name="Łódź Housing Service")
     template = create_template(service, content=msg)
     db_notification = create_notification(template=template, personalisation={"misc": placeholder})
@@ -340,8 +339,45 @@ def test_should_send_sms_with_downgraded_content(notify_db_session, mocker):
     send_to_providers.send_sms_to_provider(db_notification)
 
     mmg_client.send_sms.assert_called_once_with(
-        to=ANY, content=gsm_message, reference=ANY, sender=ANY, international=False
+        to=ANY, content=encoded_message, reference=ANY, sender=ANY, international=False
     )
+
+
+@pytest.mark.skip(reason="[NOTIFYNL] Requires mocked Spryng client")
+def test_should_log_sms_sent_with_downgraded_content(mocker, caplog):
+    service = create_service(service_name="Unicode test")
+    template = create_template(service, content="Hello ((name))")
+    db_notification = create_notification(
+        template=template,
+        personalisation={
+            " Name": (
+                "Ŵ"  # Welsh, sent as-is
+                "Ł"  # Polish Ł, sent as-is
+                "🍍🍍🍌🥝"  # 3 other non-GSM characters
+            )
+        },
+    )
+
+    mocker.patch("app.mmg_client.send_sms")
+
+    send_to_providers.send_sms_to_provider(db_notification)
+
+    mmg_client.send_sms.assert_called_once_with(
+        to=ANY,
+        content="Unicode test: Hello ŴŁ🍍🍍🍌🥝",
+        reference=ANY,
+        sender=ANY,
+        international=False,
+    )
+
+    assert (
+        "test",
+        20,
+        (
+            f"5 character(s) caused UTF-16 encoding in SMS content for service {db_notification.service_id} "
+            f"and notification {db_notification.id}"
+        ),
+    ) in caplog.record_tuples
 
 
 @pytest.mark.skip(reason="[NOTIFYNL] Requires mocked Spryng client")

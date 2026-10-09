@@ -5,6 +5,7 @@ import botocore
 from flask import Blueprint, current_app, jsonify, request
 from flask.ctx import has_request_context
 from notifications_utils import SMS_CHAR_COUNT_LIMIT
+from notifications_utils.json import RelaxedContainerJSONEncoder as RCJSONEncoder
 from notifications_utils.pdf import extract_page_from_pdf
 from notifications_utils.template import (
     LetterPreviewTemplate,
@@ -43,7 +44,6 @@ from app.schema_validation import validate
 from app.schemas import (
     template_history_schema,
     template_schema,
-    template_schema_no_detail,
 )
 from app.template.template_schemas import (
     post_create_template_schema,
@@ -167,7 +167,11 @@ def update_template(service_id, template_id):  # noqa: C901
         file_ids_to_archive = data.get("archive_email_file_ids")
     if file_ids_to_archive:
         for file_id in file_ids_to_archive:
-            file_to_archive = dao_get_template_email_file_by_id(file_id)
+            file_to_archive = dao_get_template_email_file_by_id(
+                service_id=service_id,
+                template_id=template_id,
+                template_email_file_id=file_id,
+            )
             dao_archive_template_email_file(
                 file_to_archive=file_to_archive,
                 archived_by_id=data.get("created_by"),
@@ -188,7 +192,7 @@ def get_precompiled_template_for_service(service_id):
 @template_blueprint.route("", methods=["GET"])
 def get_all_templates_for_service(service_id):
     templates = dao_get_all_templates_for_service(service_id=service_id, no_detail=True)
-    data = template_schema_no_detail.dump(templates, many=True)
+    data = [template.serialize_no_detail() for template in templates]
     return jsonify(data=data)
 
 
@@ -349,7 +353,14 @@ def _get_png_preview_or_overlaid_pdf(url, data, notification_id, json=True):
         headers.update(request.get_onwards_request_headers())
 
     if json:
-        resp = requests_post(url, json=data, headers=headers)
+        resp = requests_post(
+            url,
+            data=RCJSONEncoder().encode(data),
+            headers={
+                "Content-Type": "application/json",
+                **headers,
+            },
+        )
     else:
         resp = requests_post(url, data=data, headers=headers)
 

@@ -1,8 +1,8 @@
 import uuid
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
-from itertools import groupby
+from itertools import chain, groupby, product
 from operator import attrgetter
 
 from botocore.exceptions import ClientError
@@ -43,6 +43,7 @@ from app.constants import (
     NOTIFICATION_STATUS_TYPES,
     NOTIFICATION_STATUS_TYPES_COMPLETED,
     NOTIFICATION_STATUS_TYPES_DEPRECATED,
+    NOTIFICATION_TECHNICAL_FAILURE,
     NOTIFICATION_TEMPORARY_FAILURE,
     SMS_TYPE,
 )
@@ -50,6 +51,7 @@ from app.dao.dao_utils import autocommit
 from app.letters.utils import LetterPDFNotFound, find_letter_pdf_in_s3
 from app.models import (
     FactNotificationStatus,
+    KeyTypes,
     LetterCostThreshold,
     Notification,
     NotificationHistory,
@@ -668,16 +670,6 @@ class SlowProviderDeliveryReport:
 def get_slow_text_message_delivery_reports_by_provider(
     created_within_minutes, delivered_within_minutes
 ) -> list[SlowProviderDeliveryReport]:
-    """
-    Returns a dict of providers with the ratio of their messages sent in the
-    last `created_within_minutes` minutes that took over
-    `delivered_within_minutes` minutes to be delivered
-
-    {
-        'mmg': 0.4,
-        'firetext': 0.12
-    }
-    """
     created_since = datetime.utcnow() - timedelta(minutes=created_within_minutes)
     delivery_time = timedelta(minutes=delivered_within_minutes)
     slow_notification_counts = (
@@ -724,6 +716,164 @@ def get_slow_text_message_delivery_reports_by_provider(
         )
 
     return providers_slow_delivery_reports
+
+
+@dataclass
+class BandedSlowProviderDeliveryReport:
+    provider: str
+    slow_ratio: float
+    slow_notifications: int
+    total_notifications: int
+    sent_after_ago: timedelta
+    delivered_within: timedelta
+
+
+@retryable_query()
+def get_banded_slow_text_message_delivery_reports_by_provider(
+    bands: Sequence[tuple[timedelta, timedelta]],
+    *,
+    created_sent_difference_allowance: timedelta = timedelta(minutes=15),
+    session: Session | scoped_session = db.session,
+) -> Mapping[str, Sequence[BandedSlowProviderDeliveryReport]]:
+    for delivered_within, sent_after_ago in bands:
+        if sent_after_ago <= delivered_within:
+            raise ValueError("sent_after_ago must be greater than delivered_within")
+
+    uniform_now = datetime.utcnow()
+
+    created_after = uniform_now - (
+        max(sent_after_ago for delivered_within, sent_after_ago in bands) + created_sent_difference_allowance
+    )
+
+    # created_at can't be after sent_at so no allowance needed here
+    created_before = uniform_now - min(delivered_within for delivered_within, sent_after_ago in bands)
+
+    band_terms = tuple(
+        chain.from_iterable(
+            (
+                func.count()
+                .filter(
+                    and_(
+                        Notification.sent_at >= uniform_now - sent_after_ago,
+                        Notification.sent_at < uniform_now - delivered_within,
+                        or_(
+                            Notification.status != NOTIFICATION_DELIVERED,
+                            Notification.updated_at - Notification.sent_at >= delivered_within,
+                        ),
+                    )
+                )
+                .label(f"count_slow_band_{i}"),
+                func.count()
+                .filter(
+                    and_(
+                        Notification.sent_at >= uniform_now - sent_after_ago,
+                        Notification.sent_at < uniform_now - delivered_within,
+                    )
+                )
+                .label(f"count_total_band_{i}"),
+            )
+            for i, (delivered_within, sent_after_ago) in enumerate(bands)
+        )
+    )
+
+    # all bands collected in a single query using multiple count() aggregations each with
+    # different FILTER clauses corresponding to their bands. this is because a lot of the
+    # retrieved notifications will overlap due to the significant
+    # created_sent_difference_allowance and this way we can calculate all bands in a single
+    # pass.
+    slow_notification_counts = (
+        session.query(
+            ProviderDetails.identifier.label("provider_identifier"),
+            *band_terms,
+        )
+        .select_from(ProviderDetails)
+        .outerjoin(
+            Notification,
+            and_(
+                Notification.notification_type == SMS_TYPE,
+                Notification.sent_by == ProviderDetails.identifier,
+                # filtering by created_at has the additional benefit of being able to use created_at's index
+                Notification.created_at >= created_after,
+                Notification.created_at < created_before,
+                Notification.status.in_([NOTIFICATION_DELIVERED, NOTIFICATION_PENDING, NOTIFICATION_SENDING]),
+                Notification.key_type != KEY_TYPE_TEST,
+            ),
+        )
+        .filter(ProviderDetails.notification_type == "sms", ProviderDetails.active)
+        .group_by(ProviderDetails.identifier)
+    )
+
+    return {
+        row.provider_identifier: tuple(
+            BandedSlowProviderDeliveryReport(
+                provider=row.provider_identifier,
+                slow_ratio=getattr(row, f"count_slow_band_{i}") / (getattr(row, f"count_total_band_{i}") or 1),
+                slow_notifications=getattr(row, f"count_slow_band_{i}"),
+                total_notifications=getattr(row, f"count_total_band_{i}"),
+                sent_after_ago=sent_after_ago,
+                delivered_within=delivered_within,
+            )
+            for i, (delivered_within, sent_after_ago) in enumerate(bands)
+        )
+        for row in slow_notification_counts
+    }
+
+
+@retryable_query()
+def get_recent_undelivered_notification_ages(
+    age_le_buckets: Sequence[timedelta],
+    *,
+    created_sent_difference_allowance: timedelta = timedelta(minutes=15),
+    session: Session | scoped_session = db.session,
+) -> Mapping[tuple[str, str, str], Sequence[int]]:
+    uniform_now = datetime.utcnow()
+    sent_after = uniform_now - max(age_le_buckets)
+    created_after = sent_after - created_sent_difference_allowance
+
+    # can't just rely on whatever rows are present in the aggregation because we need
+    # to fill in holes with zeros so the gauge doesn't just propagate a bin's value
+    # from a previous time period when it did have a value
+    providers = session.query(ProviderDetails).all()
+    key_types = session.query(KeyTypes).all()
+
+    # start with zero-values for all valid series
+    series_map: dict[tuple[str, str, str], Sequence[int]] = {
+        (provider.identifier, provider.notification_type, key_type.name): (0,) * len(age_le_buckets)
+        for provider, key_type in product(providers, key_types)
+    }
+
+    # all buckets collected in a single query using multiple count() aggregations each with
+    # different FILTER clauses corresponding to their limits. this is because a lot of the
+    # retrieved notifications will overlap due to the significant
+    # created_sent_difference_allowance and this way we can calculate all buckets in a single
+    # pass.
+    for provider, notification_type, key_type, *counts in (
+        session.query(
+            Notification.sent_by,
+            Notification.notification_type,
+            Notification.key_type,
+            *(
+                func.count().filter(uniform_now - Notification.sent_at <= age_le).label(f"age_le_count_{i}")
+                for i, age_le in enumerate(age_le_buckets)
+            ),
+        )
+        .filter(
+            Notification.sent_at >= sent_after,
+            Notification.sent_at < uniform_now,
+            # filtering against created_at allows us to use its index
+            Notification.created_at >= created_after,
+            Notification.status.in_([NOTIFICATION_PENDING, NOTIFICATION_SENDING]),
+        )
+        .group_by(
+            Notification.notification_type,
+            Notification.sent_by,
+            Notification.key_type,
+        )
+        .all()
+    ):
+        series_map[(provider, notification_type, key_type)] = tuple(counts)
+
+    return series_map
 
 
 @autocommit
@@ -988,6 +1138,23 @@ def dao_old_letters_with_created_status():
 
 
 @retryable_query()
+def dao_letters_in_technical_failure(session: Session | scoped_session = db.session):
+    start_dt = datetime.utcnow() - timedelta(days=3)
+    end_dt = datetime.utcnow()
+    return (
+        session.query(Notification)
+        .filter(
+            Notification.notification_type == LETTER_TYPE,
+            Notification.status == NOTIFICATION_TECHNICAL_FAILURE,
+            Notification.created_at >= start_dt,
+            Notification.created_at < end_dt,
+        )
+        .order_by(Notification.created_at)
+        .all()
+    )
+
+
+@retryable_query()
 def _letters_missing_from_sending_bucket_inner(
     start_dt: datetime,
     end_dt: datetime,
@@ -1035,14 +1202,17 @@ def letters_missing_from_sending_bucket(
     return notifications
 
 
-def dao_precompiled_letters_still_pending_virus_check(max_minutes_ago_to_check):
+def dao_precompiled_letters_still_pending_virus_check(
+    max_minutes_ago_to_check: int,
+    min_minutes_ago_to_check: int = 10,
+):
     earliest_timestamp_to_check = datetime.utcnow() - timedelta(minutes=max_minutes_ago_to_check)
-    ten_minutes_ago = datetime.utcnow() - timedelta(minutes=10)
+    latest_timestamp_to_check = datetime.utcnow() - timedelta(minutes=min_minutes_ago_to_check)
 
     notifications = (
         Notification.query.filter(
-            Notification.created_at > earliest_timestamp_to_check,
-            Notification.created_at < ten_minutes_ago,
+            Notification.created_at >= earliest_timestamp_to_check,
+            Notification.created_at < latest_timestamp_to_check,
             Notification.status == NOTIFICATION_PENDING_VIRUS_CHECK,
             Notification.notification_type == LETTER_TYPE,
         )

@@ -37,20 +37,18 @@ def messagebox_notification(notify_db_session, notify_user):
     return notification
 
 
-def _client(app, statsd_client=None):
+def _client(app):
     app.config["EBMS_BERICHTENBOX_CPA_ID"] = "MIJNOVERHEID-EBMS-BB-2-0_example"
     app.config["EBMS_BERICHTENBOX_FROM_PARTY_ID"] = FROM_PARTY_ID
     app.config["EBMS_BERICHTENBOX_TO_PARTY_ID"] = TO_PARTY_ID
     app.config["EBMS_BERICHTENBOX_MESSAGE_TYPE"] = "test-123"
     app.config.setdefault("EBMS_ADAPTER_URL", "http://localhost:8080")
-    return EbmsAdapterClient(app, statsd_client)
+    return EbmsAdapterClient(app)
 
 
-def test_init_accepts_current_app_and_statsd_client(mocker):
-    statsd_client = mocker.Mock()
-    client = _client(current_app._get_current_object(), statsd_client)
+def test_init_accepts_current_app(mocker):
+    client = _client(current_app._get_current_object())
     assert client.current_app is current_app._get_current_object()
-    assert client.statsd_client is statsd_client
     assert client.url == "http://localhost:8080"
 
 
@@ -62,7 +60,7 @@ def test_try_send_messagebox_builds_and_sends_message_request(mocker, messagebox
     mock_core_client.__exit__ = mocker.Mock(return_value=False)
     mocker.patch("app.clients.messagebox.ebms_adapter.EbmsCoreClient", return_value=mock_core_client)
 
-    client = _client(current_app._get_current_object(), mocker.Mock())
+    client = _client(current_app._get_current_object())
 
     result = client.try_send_messagebox(str(messagebox_notification.id))
 
@@ -116,7 +114,7 @@ def test_try_send_messagebox_uses_personalisation_message_type_override(mocker, 
         status="created",
     )
 
-    client = _client(current_app._get_current_object(), mocker.Mock())
+    client = _client(current_app._get_current_object())
     client.try_send_messagebox(str(notification.id))
 
     message_request = mock_core_client.send_message.call_args[0][0]
@@ -134,7 +132,7 @@ def test_try_send_messagebox_wraps_bad_request_as_non_retryable(mocker, messageb
     mock_core_client.__exit__ = mocker.Mock(return_value=False)
     mocker.patch("app.clients.messagebox.ebms_adapter.EbmsCoreClient", return_value=mock_core_client)
 
-    client = _client(current_app._get_current_object(), mocker.Mock())
+    client = _client(current_app._get_current_object())
 
     with pytest.raises(MessageboxClientNonRetryableException):
         client.try_send_messagebox(str(messagebox_notification.id))
@@ -148,7 +146,7 @@ def test_try_send_messagebox_wraps_server_error_as_retryable(mocker, messagebox_
     mock_core_client.__exit__ = mocker.Mock(return_value=False)
     mocker.patch("app.clients.messagebox.ebms_adapter.EbmsCoreClient", return_value=mock_core_client)
 
-    client = _client(current_app._get_current_object(), mocker.Mock())
+    client = _client(current_app._get_current_object())
 
     with pytest.raises(MessageboxClientException):
         client.try_send_messagebox(str(messagebox_notification.id))
