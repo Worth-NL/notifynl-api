@@ -5,8 +5,10 @@ import pytest
 
 from app import db
 from app.clients.letter.pingen import PingenClient
-from app.commands import register_pingen_webhook, sync_org_boundaries_geojson
-from tests.app.db import create_organisation
+from app.commands import register_pingen_webhook, register_stub_service_callbacks, sync_org_boundaries_geojson
+from app.constants import ServiceCallbackTypes
+from app.models import ServiceCallbackApi
+from tests.app.db import create_organisation, create_service_callback_api
 from tests.conftest import set_config_values
 
 
@@ -155,3 +157,72 @@ def test_register_pingen_webhook_reports_pingen_errors(notify_api, pingen):
 
     assert result.exit_code == 1
     assert "403" in result.output
+
+
+STUB_CALLBACK_URL = "http://localhost:6300/service-callback"
+
+
+@pytest.fixture
+def local_development(notify_api):
+    with set_config_values(notify_api, {"NOTIFY_ENVIRONMENT": "development"}):
+        yield
+
+
+def _register_stub_callbacks(notify_api, service, *args):
+    return notify_api.test_cli_runner().invoke(
+        register_stub_service_callbacks, ["--service-id", str(service.id), *args]
+    )
+
+
+def test_register_stub_service_callbacks_registers_every_callback_type(notify_api, sample_service, local_development):
+    result = _register_stub_callbacks(notify_api, sample_service)
+
+    assert result.exit_code == 0, result.output
+    callbacks = ServiceCallbackApi.query.filter_by(service_id=sample_service.id).all()
+    assert sorted(callback.callback_type for callback in callbacks) == sorted(ServiceCallbackTypes)
+    for callback in callbacks:
+        assert callback.url == STUB_CALLBACK_URL
+        assert callback.bearer_token == "stub-callback-token"
+        assert callback.updated_by_id == sample_service.created_by_id
+
+
+def test_register_stub_service_callbacks_repoints_existing_callbacks(notify_api, sample_service, local_development):
+    existing = create_service_callback_api(ServiceCallbackTypes.delivery_status, sample_service)
+
+    result = _register_stub_callbacks(
+        notify_api, sample_service, "--callback-type", "delivery_status", "--bearer-token", "stub-callback-fail"
+    )
+
+    assert result.exit_code == 0, result.output
+    assert ServiceCallbackApi.query.filter_by(service_id=sample_service.id).all() == [existing]
+    assert existing.url == STUB_CALLBACK_URL
+    assert existing.bearer_token == "stub-callback-fail"
+
+
+def test_register_stub_service_callbacks_only_registers_the_given_types(notify_api, sample_service, local_development):
+    result = _register_stub_callbacks(notify_api, sample_service, "-c", "delivery_status", "-c", "returned_letter")
+
+    assert result.exit_code == 0, result.output
+    assert sorted(
+        callback.callback_type for callback in ServiceCallbackApi.query.filter_by(service_id=sample_service.id)
+    ) == ["delivery_status", "returned_letter"]
+
+
+@pytest.mark.parametrize("environment", ["test", "acceptance", "production"])
+def test_register_stub_service_callbacks_is_for_local_development_only(notify_api, sample_service, environment):
+    with set_config_values(notify_api, {"NOTIFY_ENVIRONMENT": environment}):
+        result = _register_stub_callbacks(notify_api, sample_service)
+
+    assert result.exit_code == 1
+    assert "local development only" in result.output
+    assert ServiceCallbackApi.query.count() == 0
+
+
+def test_register_stub_service_callbacks_needs_an_existing_service(notify_api, notify_db_session, local_development):
+    result = notify_api.test_cli_runner().invoke(
+        register_stub_service_callbacks, ["--service-id", "00000000-0000-0000-0000-000000000000"]
+    )
+
+    assert result.exit_code == 1
+    assert "not found" in result.output
+    assert ServiceCallbackApi.query.count() == 0

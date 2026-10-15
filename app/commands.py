@@ -32,7 +32,15 @@ from app.celery.letters_pdf_tasks import (
 from app.celery.tasks import get_id_task_args_kwargs_for_job_row, process_job_row
 from app.clients.letter import LetterClientException
 from app.config import QueueNames
-from app.constants import DEFAULT_POSTAGE, KEY_TYPE_TEST, NETHERLANDS, NOTIFICATION_CREATED, POSTAGE_TYPES, SMS_TYPE
+from app.constants import (
+    DEFAULT_POSTAGE,
+    KEY_TYPE_TEST,
+    NETHERLANDS,
+    NOTIFICATION_CREATED,
+    POSTAGE_TYPES,
+    SMS_TYPE,
+    ServiceCallbackTypes,
+)
 from app.dao.annual_billing_dao import (
     dao_create_or_update_annual_billing_for_year,
     set_default_free_allowance_for_service,
@@ -49,6 +57,11 @@ from app.dao.organisation_dao import (
     dao_add_service_to_organisation,
     dao_get_organisation_by_email_address,
     dao_get_organisation_by_id,
+)
+from app.dao.service_callback_api_dao import (
+    get_service_callback_api_by_callback_type,
+    reset_service_callback_api,
+    save_service_callback_api,
 )
 from app.dao.services_dao import (
     dao_create_service,
@@ -74,6 +87,7 @@ from app.models import (
     Notification,
     Organisation,
     Service,
+    ServiceCallbackApi,
     Template,
     User,
 )
@@ -1328,3 +1342,57 @@ def register_pingen_webhook(url):
             f"These webhooks for {url} are signed with another key, so their requests would be rejected: "
             f"{', '.join(other_signing_key)}. Delete them in Pingen and run this command again."
         )
+
+
+@notify_command(name="register-stub-service-callbacks")
+@click.option("-s", "--service-id", required=True, type=click.UUID, help="ID of the service")
+@click.option(
+    "-u",
+    "--url",
+    default="http://localhost:6300/service-callback",
+    show_default=True,
+    help="The stub's service callback route (meta-repo .devcontainer/config/mockoon)",
+)
+@click.option(
+    "-t",
+    "--bearer-token",
+    default="stub-callback-token",
+    show_default=True,
+    help="The stub accepts stub-callback-token, responds 500 to stub-callback-fail and 401 to anything else",
+)
+@click.option(
+    "-c",
+    "--callback-type",
+    "callback_types",
+    multiple=True,
+    type=click.Choice([callback_type.value for callback_type in ServiceCallbackTypes]),
+    help="Only register these callback types (default: all of them)",
+)
+def register_stub_service_callbacks(service_id, url, bearer_token, callback_types):
+    """
+    Local development only: point a service's callbacks at the devcontainer's stub, which admin can't do because
+    callback URLs must be https. Safe to run again: existing callbacks are repointed.
+    """
+    if current_app.config["NOTIFY_ENVIRONMENT"] != "development":
+        raise click.ClickException("This command is for local development only")
+    try:
+        service = dao_fetch_service_by_id(service_id)
+    except NoResultFound as e:
+        raise click.ClickException(f"Service {service_id} not found") from e
+
+    for callback_type in callback_types or [callback_type.value for callback_type in ServiceCallbackTypes]:
+        callback_api = get_service_callback_api_by_callback_type(service.id, callback_type)
+        if callback_api:
+            reset_service_callback_api(callback_api, service.created_by_id, url=url, bearer_token=bearer_token)
+            print(f"Pointed the {callback_type} callback of {service.name} at {url}")
+        else:
+            save_service_callback_api(
+                ServiceCallbackApi(
+                    service_id=service.id,
+                    url=url,
+                    bearer_token=bearer_token,
+                    updated_by_id=service.created_by_id,
+                    callback_type=callback_type,
+                )
+            )
+            print(f"Registered the {callback_type} callback of {service.name} at {url}")
