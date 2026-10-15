@@ -521,13 +521,28 @@ def test_check_letters_stuck_sending_without_stuck_letters(notify_api, letter_te
 def test_process_letter_provider_status_delivered(letter_template, mock_callback, from_status):
     notification = create_notification(template=letter_template, status=from_status)
 
-    process_letter_provider_status(str(notification.id), "pingen", "delivered")
+    process_letter_provider_status(
+        str(notification.id), "pingen", "delivered", receipt_iso_timestamp="2026-09-29T11:59:58.500000"
+    )
 
     notification = Notification.query.get(notification.id)
     assert notification.status == "delivered"
     despatch = NotificationLetterDespatch.query.get(notification.id)
     assert (despatch.despatched_on, despatch.cost_threshold) == (date(2026, 9, 29), LetterCostThreshold.unsorted)
-    mock_callback.assert_called_once_with(notification)
+    mock_callback.assert_called_once_with(notification, receipt_dt=datetime(2026, 9, 29, 11, 59, 58, 500000))
+
+
+@pytest.mark.parametrize("receipt_iso_timestamp", [None, "not a timestamp"])
+def test_process_letter_provider_status_without_a_usable_receipt_time(
+    letter_template, mock_callback, receipt_iso_timestamp
+):
+    notification = create_notification(template=letter_template, status="sent")
+
+    process_letter_provider_status(
+        str(notification.id), "pingen", "delivered", receipt_iso_timestamp=receipt_iso_timestamp
+    )
+
+    mock_callback.assert_called_once_with(notification, receipt_dt=None)
 
 
 @freeze_time("2026-09-29 12:00")

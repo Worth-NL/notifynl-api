@@ -5,6 +5,7 @@ from hashlib import sha256
 
 import pytest
 from flask import url_for
+from freezegun import freeze_time
 
 from app import signing
 from app.celery.letter_provider_tasks import process_letter_provider_status
@@ -33,6 +34,7 @@ def _post_status(client, token, data):
     )
 
 
+@freeze_time("2026-09-29 12:00:00.123456")
 @pytest.mark.parametrize("status", ["delivered", "permanent-failure", "technical-failure", "returned-letter"])
 def test_letter_provider_callback_queues_the_status_update(client, mock_status_task, status):
     notification_id = str(uuid.uuid4())
@@ -41,7 +43,13 @@ def test_letter_provider_callback_queues_the_status_update(client, mock_status_t
 
     assert response.status_code == 204
     mock_status_task.assert_called_once_with(
-        kwargs={"notification_id": notification_id, "provider": "rest-endpoint", "status": status, "reason": "because"},
+        kwargs={
+            "notification_id": notification_id,
+            "provider": "rest-endpoint",
+            "status": status,
+            "reason": "because",
+            "receipt_iso_timestamp": "2026-09-29T12:00:00.123456",
+        },
         queue="letter-callbacks",
     )
 
@@ -98,6 +106,7 @@ def _post_pingen(client, payload, signature=None):
     )
 
 
+@freeze_time("2026-09-29 12:00:00.123456")
 @pytest.mark.parametrize(
     "webhook_type, status, reason",
     [
@@ -117,7 +126,13 @@ def test_pingen_webhook_queues_the_status_update(
 
     assert response.status_code == 200
     mock_status_task.assert_called_once_with(
-        kwargs={"notification_id": str(notification_id), "provider": "pingen", "status": status, "reason": reason},
+        kwargs={
+            "notification_id": str(notification_id),
+            "provider": "pingen",
+            "status": status,
+            "reason": reason,
+            "receipt_iso_timestamp": "2026-09-29T12:00:00.123456",
+        },
         queue="letter-callbacks",
     )
 

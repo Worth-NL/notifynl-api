@@ -44,7 +44,6 @@ from app.letters_nl.constants import LETTER_PROVIDER_CALLBACK_PATH
 from app.letters_nl.provider import resolve_letter_provider
 from app.models import LetterCostThreshold
 from app.notifications.notifications_ses_callback import check_and_queue_callback_task
-from app.otel_metrics.notification import record_send_duration
 
 # 55 retries 3 minutes apart: a print provider can be unavailable for up to ~2h45m before a letter fails
 DELIVERY_MAX_RETRIES = 55
@@ -153,15 +152,7 @@ def _deliver_claimed_letter(task, notification):
     )
 
     try:
-        try:
-            result = client.send_letter(letter, letter_provider)
-        finally:
-            record_send_duration(
-                (datetime.utcnow() - notification.created_at).total_seconds(),
-                key_type=notification.key_type,
-                notification_type=LETTER_TYPE,
-                provider_name=client.name,
-            )
+        result = client.send_letter(letter, letter_provider)
     except LetterClientRetryableException:
         current_app.logger.exception(
             "RETRY: letter %s could not be sent with %s",
@@ -291,8 +282,15 @@ PROVIDER_DETAILED_STATUS_CODES = {
 
 
 @notify_celery.task(name=TaskNamesNL.PROCESS_LETTER_PROVIDER_STATUS)
-def process_letter_provider_status(notification_id, provider, status, reason=None):
+def process_letter_provider_status(notification_id, provider, status, reason=None, receipt_iso_timestamp=None):
     """A print provider reported back on a letter it accepted (REST endpoint callback or Pingen webhook)."""
+    receipt_dt = None
+    if receipt_iso_timestamp is not None:
+        try:
+            receipt_dt = datetime.fromisoformat(receipt_iso_timestamp)
+        except ValueError:
+            pass  # None it is, then
+
     # providers can report back after the letter moved to notification_history
     notification = dao_get_notification_or_history_by_id(notification_id)
     if not notification:
@@ -348,4 +346,4 @@ def process_letter_provider_status(notification_id, provider, status, reason=Non
         dao_record_letter_despatched_on_by_id(
             notification.id, convert_utc_to_bst(datetime.utcnow()).date(), LetterCostThreshold.unsorted
         )
-    check_and_queue_callback_task(notification)
+    check_and_queue_callback_task(notification, receipt_dt=receipt_dt)

@@ -1,5 +1,6 @@
 import hmac
 import json
+from datetime import datetime
 from hashlib import sha256
 
 from flask import Blueprint, current_app, jsonify, request
@@ -115,6 +116,12 @@ def _queue_status_update(notification_id, provider, status, reason):
         extra={"notification_id": notification_id, "provider_name": provider, "notification_status": status},
     )
     process_letter_provider_status.apply_async(
-        kwargs={"notification_id": notification_id, "provider": provider, "status": status, "reason": reason},
+        kwargs={
+            "notification_id": notification_id,
+            "provider": provider,
+            "status": status,
+            "reason": reason,
+            "receipt_iso_timestamp": datetime.utcnow().isoformat(),
+        },
         queue=QueueNames.LETTER_CALLBACKS,
     )
