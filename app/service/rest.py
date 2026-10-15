@@ -642,15 +642,13 @@ def cancel_notification_for_service(service_id, notification_id):
             )
         raise InvalidRequest(message, status_code=400)
 
-    ### [NotifyNL] ####################################################################################################
-    # The letter may have been handed to the print provider since the check above, so only cancel it if it is
+    # [NotifyNL] The letter may have been handed to the print provider since the check above, so only cancel it if it is
     # still cancellable at write time.
     updated_notification = notifications_dao.dao_cancel_letter_if_still_cancellable(notification_id)
     if not updated_notification:
         raise InvalidRequest(
             "We could not cancel this letter. It has already been sent to the print provider.", status_code=400
         )
-    ####################################################################################################################
     adjust_daily_service_limits_for_cancelled_letters(service_id, 1, notification.created_at)
 
     return jsonify(notification_with_template_schema.dump(updated_notification)), 200

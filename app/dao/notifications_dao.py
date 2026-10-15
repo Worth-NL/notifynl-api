@@ -258,7 +258,7 @@ def update_notification_status_by_id(
     )
 
 
-### [NotifyNL] #########################################################################################################
+# [NotifyNL] print provider letter delivery: cancelling, claiming, marking sent and finding stranded or stuck letters
 @autocommit
 def dao_cancel_letter_if_still_cancellable(notification_id):
     """
@@ -355,9 +355,6 @@ def dao_get_letters_stuck_sending(cutoff_time):
         .order_by(Notification.created_at)
         .all()
     )
-
-
-########################################################################################################################
 
 
 @autocommit
