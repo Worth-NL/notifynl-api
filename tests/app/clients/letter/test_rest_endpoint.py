@@ -14,8 +14,8 @@ TOKEN_URL = "https://idp.example.com/token"
 
 
 @pytest.fixture
-def client(notify_api, statsd_client, public_dns):
-    return RestEndpointLetterClient(notify_api, statsd_client)
+def client(notify_api, public_dns):
+    return RestEndpointLetterClient(notify_api)
 
 
 def _letter_provider(auth_method="api_key", auth_config=None, endpoint_url=ENDPOINT_URL):

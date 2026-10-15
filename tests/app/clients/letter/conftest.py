@@ -1,14 +1,8 @@
 import socket
-from unittest import mock
 
 import pytest
 
 from app.clients.letter import Letter
-
-
-@pytest.fixture
-def statsd_client():
-    return mock.Mock()
 
 
 @pytest.fixture

@@ -52,10 +52,9 @@ class LetterClient(Client):
     printing and posting happen afterwards and are reported back through a callback, if the provider supports it.
     """
 
-    def __init__(self, current_app, statsd_client):
+    def __init__(self, current_app):
         super().__init__()
         self.current_app = current_app
-        self.statsd_client = statsd_client
 
         self.requests_session = requests.Session()
         if platform.system() == "Linux":
@@ -75,10 +74,8 @@ class LetterClient(Client):
         extra = {"notification_id": notification_id, "provider_name": self.name}
         if success:
             self.current_app.logger.info("Provider request for %s succeeded", self.name, extra=extra)
-            self.statsd_client.incr(f"clients.{self.name}.success")
         else:
             self.current_app.logger.warning("Provider request for %s failed", self.name, extra=extra)
-            self.statsd_client.incr(f"clients.{self.name}.error")
 
     def send_letter(self, letter: Letter, letter_provider) -> LetterSendResult:
         start_time = monotonic()
@@ -91,7 +88,6 @@ class LetterClient(Client):
             raise
         finally:
             elapsed_time = monotonic() - start_time
-            self.statsd_client.timing(f"clients.{self.name}.request-time", elapsed_time)
             self.current_app.logger.info(
                 "%s request for %s finished in %s",
                 self.name,

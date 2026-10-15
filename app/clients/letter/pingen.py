@@ -9,7 +9,9 @@ from app.clients.letter import (
     LetterClientRetryableException,
     LetterSendResult,
 )
+from app.constants import LETTER_TYPE
 from app.letters_nl.constants import LETTER_PROVIDER_PINGEN
+from app.otel_metrics.provider import record_request_duration
 
 # Pingen API v2, see https://api.pingen.com/documentation
 JSON_API = "application/vnd.api+json"
@@ -33,11 +35,12 @@ class PingenClient(LetterClient):
 
     name = LETTER_PROVIDER_PINGEN
 
-    def __init__(self, current_app, statsd_client):
-        super().__init__(current_app, statsd_client)
+    def __init__(self, current_app):
+        super().__init__(current_app)
         # scope -> (access_token, expires_at as monotonic time)
         self._access_tokens: dict[str, tuple[str, float]] = {}
 
+    @record_request_duration(notification_type=LETTER_TYPE, provider_name=LETTER_PROVIDER_PINGEN)
     def try_send_letter(self, letter: Letter, letter_provider) -> LetterSendResult:
         file_url, file_url_signature = self._request_file_upload()
         self._upload_file(file_url, letter.pdf)

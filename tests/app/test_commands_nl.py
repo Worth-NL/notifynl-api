@@ -68,7 +68,7 @@ def pingen(notify_api, mocker, rmock):
             "PINGEN_WEBHOOK_SIGNING_KEY": SIGNING_KEY,
         },
     ):
-        mocker.patch("app.commands.get_pingen_client", return_value=PingenClient(notify_api, mocker.Mock()))
+        mocker.patch("app.commands.get_pingen_client", return_value=PingenClient(notify_api))
         rmock.post(
             "https://identity-staging.pingen.com/auth/access-tokens", json={"expires_in": 43200, "access_token": "t"}
         )

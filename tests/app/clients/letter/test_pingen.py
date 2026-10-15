@@ -32,8 +32,8 @@ def pingen_config(notify_api):
 
 
 @pytest.fixture
-def client(notify_api, statsd_client, pingen_config):
-    return PingenClient(notify_api, statsd_client)
+def client(notify_api, pingen_config):
+    return PingenClient(notify_api)
 
 
 @pytest.fixture

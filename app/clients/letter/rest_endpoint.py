@@ -11,6 +11,7 @@ from app.clients.letter import (
     LetterClientRetryableException,
     LetterSendResult,
 )
+from app.constants import LETTER_TYPE
 from app.letters_nl.constants import (
     AUTH_METHOD_API_KEY,
     AUTH_METHOD_BASIC,
@@ -18,6 +19,7 @@ from app.letters_nl.constants import (
     LETTER_PROVIDER_REST_ENDPOINT,
 )
 from app.letters_nl.url_validation import InvalidLetterEndpointUrl, validate_letter_endpoint_url
+from app.otel_metrics.provider import record_request_duration
 from app.utils_nl import get_client_certificate_path
 
 # (connect, read) - the read timeout allows for endpoints that take a while to accept a multi-page PDF
@@ -35,11 +37,12 @@ class RestEndpointLetterClient(LetterClient):
 
     name = LETTER_PROVIDER_REST_ENDPOINT
 
-    def __init__(self, current_app, statsd_client):
-        super().__init__(current_app, statsd_client)
+    def __init__(self, current_app):
+        super().__init__(current_app)
         # (token_endpoint, client_id) -> (access_token, expires_at as monotonic time)
         self._oauth_tokens: dict[tuple[str, str], tuple[str, float]] = {}
 
+    @record_request_duration(notification_type=LETTER_TYPE, provider_name=LETTER_PROVIDER_REST_ENDPOINT)
     def try_send_letter(self, letter: Letter, letter_provider) -> LetterSendResult:
         endpoint_url = letter_provider.endpoint_url
         self._validate_url(endpoint_url)
