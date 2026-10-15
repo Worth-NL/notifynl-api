@@ -1,5 +1,6 @@
 import importlib.util
 
+import bcrypt
 import pytest
 
 import app.config
@@ -15,6 +16,10 @@ STUBBED_ENV_VARS = (
     "PINGEN_CLIENT_SECRET",
     "PINGEN_ORGANISATION_ID",
     "LETTER_DELIVERY_VIA_PROVIDERS",
+    "MMG_DELIVERY_STATUS_CALLBACK_ALLOWED_BASIC_AUTH_CREDENTIALS",
+    "FIRETEXT_DELIVERY_STATUS_CALLBACK_ALLOWED_BASIC_AUTH_CREDENTIALS",
+    "RESEARCH_MODE_SELF_CALLBACK_MMG_BASIC_AUTH_CREDENTIALS",
+    "RESEARCH_MODE_SELF_CALLBACK_FIRETEXT_BASIC_AUTH_CREDENTIALS",
 )
 
 DVLA_TASKS = {
@@ -74,6 +79,23 @@ def test_local_development_sends_third_party_calls_to_the_local_stub(config_with
     assert dev.PINGEN_CLIENT_ID
     assert dev.PINGEN_CLIENT_SECRET
     assert dev.PINGEN_ORGANISATION_ID
+
+
+def test_local_development_accepts_the_local_stubs_sms_receipts(config_without_stub_env):
+    dev = config_without_stub_env.DevNL
+
+    for allowed, (username, password) in (
+        (
+            dev.MMG_DELIVERY_STATUS_CALLBACK_ALLOWED_BASIC_AUTH_CREDENTIALS,
+            dev.RESEARCH_MODE_SELF_CALLBACK_MMG_BASIC_AUTH_CREDENTIALS,
+        ),
+        (
+            dev.FIRETEXT_DELIVERY_STATUS_CALLBACK_ALLOWED_BASIC_AUTH_CREDENTIALS,
+            dev.RESEARCH_MODE_SELF_CALLBACK_FIRETEXT_BASIC_AUTH_CREDENTIALS,
+        ),
+    ):
+        assert (username, password) == ("notify", "testkey")
+        assert bcrypt.checkpw(password.encode(), allowed[username].encode())
 
 
 def test_local_development_delivers_letters_through_the_print_providers(config_without_stub_env):

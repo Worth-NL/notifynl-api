@@ -1066,6 +1066,22 @@ class DevNL(ConfigNL):
     PINGEN_CLIENT_SECRET = os.getenv("PINGEN_CLIENT_SECRET", "stub")
     PINGEN_ORGANISATION_ID = os.getenv("PINGEN_ORGANISATION_ID", "00000000-0000-0000-0000-000000000000")
 
+    # Mockoon's MMG and Firetext delivery receipts (and research mode's own) authenticate as notify:testkey
+    MMG_DELIVERY_STATUS_CALLBACK_ALLOWED_BASIC_AUTH_CREDENTIALS = json.loads(
+        os.getenv("MMG_DELIVERY_STATUS_CALLBACK_ALLOWED_BASIC_AUTH_CREDENTIALS")
+        or '{"notify": "$2b$04$JqCB477L3RTbIiENavb2EOPyv9dkWdL0XjSSCftcw7wynETJa/HgO"}'
+    )
+    FIRETEXT_DELIVERY_STATUS_CALLBACK_ALLOWED_BASIC_AUTH_CREDENTIALS = json.loads(
+        os.getenv("FIRETEXT_DELIVERY_STATUS_CALLBACK_ALLOWED_BASIC_AUTH_CREDENTIALS")
+        or '{"notify": "$2b$04$JqCB477L3RTbIiENavb2EOPyv9dkWdL0XjSSCftcw7wynETJa/HgO"}'
+    )
+    RESEARCH_MODE_SELF_CALLBACK_MMG_BASIC_AUTH_CREDENTIALS = json.loads(
+        os.getenv("RESEARCH_MODE_SELF_CALLBACK_MMG_BASIC_AUTH_CREDENTIALS") or '["notify", "testkey"]'
+    )
+    RESEARCH_MODE_SELF_CALLBACK_FIRETEXT_BASIC_AUTH_CREDENTIALS = json.loads(
+        os.getenv("RESEARCH_MODE_SELF_CALLBACK_FIRETEXT_BASIC_AUTH_CREDENTIALS") or '["notify", "testkey"]'
+    )
+
     CELERY_WORKER_LOG_LEVEL = "INFO"
 
     # kombu's SQS transport builds its boto3 endpoint_url straight from broker_url +
