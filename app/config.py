@@ -861,12 +861,14 @@ class TaskNamesNL(TaskNames):
     PROCESS_VIRUS_SCAN_ERROR_LETTER_ATTACHMENTS = "process-virus-scan-error-letter-attachments"
 
 
-# Beat tasks that only make sense when letters are delivered through notifynl-dvla-service
+# Beat tasks that only make sense when letters are delivered through notifynl-dvla-service. Print provider letters
+# have their own alert (check-letters-stuck-sending) instead of the DVLA-runbook technical-failure one.
 DVLA_LETTER_BEAT_TASKS = (
     "check-time-to-collate-letters",
     "change-dvla-api-key",
     "change-dvla-password",
     "raise-alert-if-letter-notifications-still-sending",
+    "check-if-letters-in-technical-failure",
 )
 
 

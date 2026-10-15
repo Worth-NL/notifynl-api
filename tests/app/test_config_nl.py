@@ -22,6 +22,7 @@ DVLA_TASKS = {
     "change-dvla-api-key",
     "change-dvla-password",
     "raise-alert-if-letter-notifications-still-sending",
+    "check-if-letters-in-technical-failure",
 }
 PROVIDER_TASKS = {"dispatch-stranded-letters", "check-letters-stuck-sending"}
 
