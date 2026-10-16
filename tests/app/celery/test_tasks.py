@@ -2167,7 +2167,6 @@ def test_save_letter_saves_letter_to_database_with_correct_postage(
     assert notification_db.international == expected_international
 
 
-@pytest.mark.skip(reason="[NOTIFYNL] Dutch postal address implementation - now on test_tasks_nl")
 def test_save_letter_saves_letter_to_database_with_formatted_postcode(mocker, mock_celery_task, notify_db_session):
     service = create_service(service_permissions=[LETTER_TYPE])
     template = create_template(service=service, template_type=LETTER_TYPE)
