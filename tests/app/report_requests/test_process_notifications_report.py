@@ -512,7 +512,6 @@ def test_process_report_request_should_return_correct_rows(
         assert status_counter == expected_rows - 1  # exclude header
 
 
-@pytest.mark.skip(reason="[NOTIFYNL] CSV report issues")
 @pytest.mark.parametrize(
     ("page_size,notification_type,notification_report_request_status,"),
     [
@@ -586,7 +585,9 @@ def test_process_report_request_should_contain_job_notification(
         processor = ReportRequestProcessor(service.id, report_request.id)
         processor.process()
 
-        original_pdf_object = get_s3_object(report_bucket, f"notifications_report/{report_request.id}.csv")
+        original_pdf_object = get_s3_object(
+            current_app.config["S3_BUCKET_REPORT_REQUESTS_DOWNLOAD"], f"notifications_report/{report_request.id}.csv"
+        )
         content = original_pdf_object.get()["Body"].read().decode("utf-8")
         line_count = sum(1 for line in content.strip().splitlines() if line.strip())
         assert line_count == 3  # two rows + header

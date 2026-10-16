@@ -623,7 +623,6 @@ def test_post_letter_notification_is_delivered_but_still_creates_pdf_if_in_trial
     )
 
 
-@pytest.mark.skip(reason="[NOTIFYNL] PostalAddress issue")
 def test_post_letter_notification_is_delivered_and_has_pdf_uploaded_to_test_letters_bucket_using_test_key(
     api_client_request, mocker
 ):

@@ -2319,7 +2319,6 @@ def test_search_for_notification_by_to_field_for_letter(
     assert notifications[0]["id"] == str(letter_notification.id)
 
 
-@pytest.mark.skip(reason="[NOTIFYNL] ")
 def test_update_service_calls_send_notification_as_service_becomes_live(notify_db_session, admin_request, mocker):
     send_notification_mock = mocker.patch("app.service.rest.send_notification_to_service_users")
 
