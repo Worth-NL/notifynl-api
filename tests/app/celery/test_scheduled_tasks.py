@@ -267,7 +267,7 @@ def test_switch_current_sms_provider_on_slow_delivery_does_nothing_if_no_need(
         ),
     ),
 )
-@pytest.mark.skip(reason="[NOTIFYNL] results also include Spryng, see test_provider_stats_nl.py")
+@pytest.mark.skip(reason="[NOTIFYNL] results also include Spryng, see test_scheduled_tasks_nl.py")
 def test_generate_sms_delivery_stats(slow_delivery_config_option, expect_check_slow_delivery, notify_api, mocker):
     undelivered_notification_age_metric_set_mock = mocker.patch.object(
         notification_undelivered_notification_age_metric, "set"

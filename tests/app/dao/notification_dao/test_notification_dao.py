@@ -1265,7 +1265,7 @@ def _tds(s):
     ids=("default", "bulk"),
 )
 @freeze_time()
-@pytest.mark.skip(reason="[NOTIFYNL] results also include Spryng, see test_provider_stats_nl.py")
+@pytest.mark.skip(reason="[NOTIFYNL] results also include Spryng, see test_notification_dao_nl.py")
 def test_get_recent_undelivered_notification_ages(
     notify_db_session, sample_template, notifications, session, expected_result, expected_bind_key
 ):
@@ -1475,7 +1475,7 @@ def test_get_recent_undelivered_notification_ages(
     ids=("default", "bulk"),
 )
 @freeze_time()
-@pytest.mark.skip(reason="[NOTIFYNL] results also include Spryng, see test_provider_stats_nl.py")
+@pytest.mark.skip(reason="[NOTIFYNL] results also include Spryng, see test_notification_dao_nl.py")
 def test_get_banded_slow_text_message_delivery_reports_by_provider(
     notify_db_session, sample_template, bands, notifications, session, expected_result, expected_bind_key
 ):
@@ -1633,7 +1633,7 @@ def test_get_banded_slow_text_message_delivery_reports_by_provider(
     ids=("default", "bulk"),
 )
 @freeze_time()
-@pytest.mark.skip(reason="[NOTIFYNL] results also include Spryng, see test_provider_stats_nl.py")
+@pytest.mark.skip(reason="[NOTIFYNL] results also include Spryng, see test_notification_dao_nl.py")
 def test_get_banded_slow_text_message_delivery_reports_by_provider_created_at_sent_at(
     notify_db_session, sample_template, bands, notifications, session, expected_result, expected_bind_key
 ):
