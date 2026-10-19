@@ -433,9 +433,10 @@ def populate_notification_postage(start_date):
         # process in ten day chunks
         end_date = start_date + timedelta(days=10)
 
+        # [NotifyNL] 'netherlands' is our domestic postage; upstream's UK 'second' is invalid here
         sql = """
             UPDATE {}
-            SET postage = 'second'
+            SET postage = 'netherlands'
             WHERE notification_type = 'letter' AND
             postage IS NULL AND
             created_at BETWEEN :start AND :end
