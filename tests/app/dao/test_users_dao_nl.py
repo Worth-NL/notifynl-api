@@ -21,7 +21,7 @@ def test_is_gov_user_nl(notify_db_session, email_address, expected):
     assert is_gov_user(email_address, dao_get_organisation_domains()) is expected
 
 
-def test_user_cannot_be_archived_if_there_are_not_enough_dutch_gov_users(sample_service, notify_db_session):
+def test_user_cannot_be_archived_if_there_are_not_enough_gov_users(sample_service, notify_db_session):
     gov_user = create_user(email="1@amsterdam.nl")
     non_gov_user = create_user(email="2@example.com")
     another_non_gov_user = create_user(email="3@gov.uk")
