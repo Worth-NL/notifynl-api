@@ -350,7 +350,6 @@ def test_users_permissions_can_be_changed_when_user_is_not_a_government_user(
         (6, 1, 0, True),
     ],
 )
-@pytest.mark.skip(reason="[NOTIFYNL] gov.uk emails aren't on the Dutch gov domain list, see test_users_dao_nl.py")
 def test_users_permissions_can_be_changed_when_removing_manage_settings_from_user_of_live_service(
     sample_service,
     notify_db_session,
@@ -399,7 +398,6 @@ def test_users_permissions_can_be_changed_when_removing_manage_settings_from_use
         (3, 2, 2, False, True),
     ],
 )
-@pytest.mark.skip(reason="[NOTIFYNL] gov.uk emails aren't on the Dutch gov domain list, see test_users_dao_nl.py")
 def test_users_permissions_can_be_changed_when_removing_manage_settings_from_user_of_trial_mode_service(
     sample_service,
     notify_db_session,
@@ -543,7 +541,6 @@ def test_user_can_be_removed_from_service_when_user_is_not_a_government_user(
         (3, 1, 2, False, True),
     ],
 )
-@pytest.mark.skip(reason="[NOTIFYNL] gov.uk emails aren't on the Dutch gov domain list, see test_users_dao_nl.py")
 def test_user_can_be_removed_from_service_when_service_is_trial_mode_and_user_is_gov_user_with_manage_settings(
     sample_service,
     notify_db_session,
@@ -588,7 +585,6 @@ def test_user_can_be_removed_from_service_when_service_is_trial_mode_and_user_is
         (6, 1, 0, True),
     ],
 )
-@pytest.mark.skip(reason="[NOTIFYNL] gov.uk emails aren't on the Dutch gov domain list, see test_users_dao_nl.py")
 def test_user_can_be_removed_from_service_when_service_is_live_and_user_is_gov_user_with_manage_settings(
     sample_service,
     notify_db_session,
@@ -663,7 +659,6 @@ def test_user_cannot_be_archived_if_they_belong_to_a_service_with_no_other_activ
     assert not user_can_be_archived(active_user)
 
 
-@pytest.mark.skip(reason="[NOTIFYNL] gov.uk emails aren't on the Dutch gov domain list, see test_users_dao_nl.py")
 def test_user_cannot_be_archived_if_the_other_service_members_do_not_have_the_manage_setting_permission(
     sample_service,
 ):
@@ -681,7 +676,6 @@ def test_user_cannot_be_archived_if_the_other_service_members_do_not_have_the_ma
     assert not user_can_be_archived(active_user)
 
 
-@pytest.mark.skip(reason="[NOTIFYNL] gov.uk emails aren't on the Dutch gov domain list, see test_users_dao_nl.py")
 def test_user_cannot_be_archived_if_there_are_not_enough_gov_users(sample_service, notify_db_session):
     gov_user = create_user(email="1@gov.uk")
     another_gov_user = create_user(email="2@gov.com")
@@ -698,7 +692,6 @@ def test_user_cannot_be_archived_if_there_are_not_enough_gov_users(sample_servic
     assert not user_can_be_archived(gov_user)
 
 
-@pytest.mark.skip(reason="[NOTIFYNL] gov.uk emails aren't on the Dutch gov domain list, see test_users_dao_nl.py")
 def test_user_cannot_be_archived_unless_they_can_be_removed_from_every_service(sample_service, notify_db_session):
     user_to_archive = create_user(email="1@gov.uk")
     user_two = create_user(email="2@gov.uk")
@@ -883,7 +876,6 @@ def test_get_users_list_multiple_filters(
         "user@other.com",  # email address linked to an org
     ],
 )
-@pytest.mark.skip(reason="[NOTIFYNL] gov.uk emails aren't on the Dutch gov domain list, see test_users_dao_nl.py")
 def test_is_gov_user(notify_db_session, email_address):
     create_organisation(domains=["other.com"])
 

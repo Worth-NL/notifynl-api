@@ -91,7 +91,6 @@ def test_provider_to_use_should_only_call_database_once(mocker, notify_db_sessio
     assert len(mock_dao.call_args_list) == 1
 
 
-@pytest.mark.skip(reason="[NOTIFYNL] Both Spryng and Firetext are marked as supporting international")
 @pytest.mark.parametrize(
     "international_provider_priority",
     (
@@ -129,7 +128,6 @@ def test_provider_to_use_should_only_return_active_providers(mocker, restore_pro
     assert ret.name == "firetext"
 
 
-@pytest.mark.skip(reason="[NOTIFYNL] Both Spryng and Firetext are marked as supporting international")
 def test_provider_to_use_raises_if_no_active_providers(mocker, restore_provider_details):
     spryng = get_provider_details_by_identifier("spryng")
     spryng.active = False
@@ -138,7 +136,6 @@ def test_provider_to_use_raises_if_no_active_providers(mocker, restore_provider_
         send_to_providers.provider_to_use("sms", international=True)
 
 
-@pytest.mark.skip(reason="[NOTIFYNL] Requires mocked Spryng client")
 def test_should_send_personalised_template_to_correct_sms_provider_and_persist(sample_sms_template_with_html, mocker):
     db_notification = create_notification(
         template=sample_sms_template_with_html,
@@ -231,7 +228,6 @@ def test_should_not_send_sms_message_when_service_is_inactive_notification_is_in
     assert Notification.query.get(sample_notification.id).status == "technical-failure"
 
 
-@pytest.mark.skip(reason="[NOTIFYNL] Requires mocked Spryng client")
 def test_send_sms_should_use_template_version_from_notification_not_latest(sample_template, mocker):
     db_notification = create_notification(
         template=sample_template,
@@ -278,7 +274,6 @@ def test_send_sms_should_use_template_version_from_notification_not_latest(sampl
     assert not persisted_notification.personalisation
 
 
-@pytest.mark.skip(reason="[NOTIFYNL] Requires mocked Spryng client")
 def test_should_call_send_sms_response_task_if_test_api_key(notify_db_session, sample_notification, mocker):
     mocker.patch("app.mmg_client.send_sms")
     mocker.patch("app.delivery.send_to_providers.send_sms_response")
@@ -323,7 +318,6 @@ def test_should_not_send_to_provider_when_status_is_not_created(sample_template,
     response_mock.assert_not_called()
 
 
-@pytest.mark.skip(reason="[NOTIFYNL] Requires mocked Spryng client")
 def test_should_send_sms_with_encoded_content(notify_db_session, mocker):
     # é, o, and u are in GSM.
     # ī, ó, grapes, tabs, zero width space and ellipsis are not
@@ -343,7 +337,6 @@ def test_should_send_sms_with_encoded_content(notify_db_session, mocker):
     )
 
 
-@pytest.mark.skip(reason="[NOTIFYNL] Requires mocked Spryng client")
 def test_should_log_sms_sent_with_downgraded_content(mocker, caplog):
     service = create_service(service_name="Unicode test")
     template = create_template(service, content="Hello ((name))")
@@ -380,7 +373,6 @@ def test_should_log_sms_sent_with_downgraded_content(mocker, caplog):
     ) in caplog.record_tuples
 
 
-@pytest.mark.skip(reason="[NOTIFYNL] Requires mocked Spryng client")
 def test_send_sms_should_use_service_sms_sender(sample_service, sample_template, mocker):
     mocker.patch("app.mmg_client.send_sms")
 
@@ -623,7 +615,6 @@ def __update_notification(notification_to_update, expected_status):
         notification_to_update.status = expected_status
 
 
-@pytest.mark.skip(reason="[NOTIFYNL] Requires mocked Spryng client")
 @pytest.mark.parametrize(
     "key_type, billable_units, expected_status",
     [
@@ -647,7 +638,6 @@ def test_should_update_billable_units_and_status_according_to_and_key_type(
     assert notification.status == expected_status
 
 
-@pytest.mark.skip(reason="[NOTIFYNL] Requires mocked Spryng client")
 @freeze_time("2034-03-26 23:01")
 def test_should_set_notification_billable_units_if_sending_to_provider_fails_and_error_rate_limit_not_exceeded(
     sample_notification,
@@ -668,7 +658,6 @@ def test_should_set_notification_billable_units_if_sending_to_provider_fails_and
     mock_redis.assert_called_once_with("mmg-error-rate", SMS_PROVIDER_ERROR_THRESHOLD, SMS_PROVIDER_ERROR_INTERVAL)
 
 
-@pytest.mark.skip(reason="[NOTIFYNL] Requires mocked Spryng client")
 @freeze_time("2034-03-26 23:01")
 def test_should_set_notification_billable_units_and_reduce_provider_priority_if_sending_fails_and_error_limit_exceeded(
     sample_notification,
@@ -689,7 +678,6 @@ def test_should_set_notification_billable_units_and_reduce_provider_priority_if_
     mock_redis.assert_called_once_with("mmg-error-rate", SMS_PROVIDER_ERROR_THRESHOLD, SMS_PROVIDER_ERROR_INTERVAL)
 
 
-@pytest.mark.skip(reason="[NOTIFYNL] Requires mocked Spryng client")
 def test_should_send_sms_to_international_providers(sample_template, mocker):
     add_international_sms_mock = mocker.patch.object(_international_sms, "add")
     mocker.patch("app.mmg_client.send_sms")
@@ -732,7 +720,6 @@ def test_should_send_sms_to_international_providers(sample_template, mocker):
     assert notification_international.sent_by == "mmg"
 
 
-@pytest.mark.skip(reason="[NOTIFYNL] Requires mocked Spryng client")
 def test_should_send_non_international_sms_to_default_provider(sample_template, mocker):
     mocker.patch("app.mmg_client.send_sms")
     mocker.patch("app.firetext_client.send_sms")
@@ -765,7 +752,6 @@ def test_should_send_non_international_sms_to_default_provider(sample_template, 
     assert notification_uk.sent_by == "firetext"
 
 
-@pytest.mark.skip(reason="[NOTIFYNL] Requires mocked Spryng client")
 @pytest.mark.parametrize(
     "sms_sender, expected_sender, prefix_sms, expected_content",
     [
@@ -830,7 +816,6 @@ def test_send_email_to_provider_uses_custom_email_sender_name_if_set(sample_emai
     )
 
 
-@pytest.mark.skip(reason="[NOTIFYNL] Requires mocked Spryng client")
 def test_send_sms_to_provider_should_use_normalised_to(mocker, client, sample_template):
     send_mock = mocker.patch("app.mmg_client.send_sms")
     notification = create_notification(template=sample_template, to_field="+447700900855", normalised_to="447700900855")
@@ -862,7 +847,6 @@ def test_send_email_to_provider_should_user_normalised_to(mocker, client, sample
     )
 
 
-@pytest.mark.skip(reason="[NOTIFYNL] Requires mocked Spryng client")
 def test_send_sms_to_provider_should_return_template_if_found_in_redis(mocker, client, sample_template):
     from app.schemas import service_schema, template_schema
 

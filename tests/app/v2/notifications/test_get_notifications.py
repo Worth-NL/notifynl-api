@@ -214,7 +214,6 @@ def test_get_notification_by_id_invalid_id(api_client_request, sample_notificati
     }
 
 
-@pytest.mark.skip(reason="[NOTIFYNL]  Needs further testing")
 @pytest.mark.parametrize(
     "created_at_month, postage, estimated_delivery",
     [
@@ -392,7 +391,6 @@ def test_get_all_notifications_filter_by_single_status(api_client_request, sampl
     assert json_response["notifications"][0]["status"] == "pending"
 
 
-@pytest.mark.skip(reason="[NOTIFYNL] Needs further testing PostalAddress issue")
 @pytest.mark.parametrize(
     "internal_status, filter_status, expect_num_notifications",
     (
@@ -592,7 +590,6 @@ def test_get_all_notifications_filter_multiple_query_parameters(api_client_reque
     assert json_response["notifications"][0]["id"] == str(older_notification.id)
 
 
-@pytest.mark.skip(reason="[NOTIFYNL] Needs further testing PostalAddress issue")
 def test_get_all_notifications_renames_letter_statuses(
     api_client_request,
     sample_letter_notification,
@@ -631,7 +628,6 @@ def test_get_all_notifications_returns_cost_datarmation(api_client_request, samp
     }
 
 
-@pytest.mark.skip(reason="[NOTIFYNL]  Needs further testing")
 @pytest.mark.parametrize(
     "db_status,expected_status",
     [

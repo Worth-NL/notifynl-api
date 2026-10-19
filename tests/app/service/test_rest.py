@@ -2478,7 +2478,6 @@ def test_send_one_off_notification(sample_service, admin_request, mocker):
     assert response["id"] == str(noti.id)
 
 
-@pytest.mark.skip(reason="[NOTIFYNL] Postage issue")
 def test_create_pdf_letter(mocker, sample_service_full_permissions, client, fake_uuid, notify_user):
     mocker.patch("app.service.send_notification.utils_s3download")
     mocker.patch("app.service.send_notification.get_page_count", return_value=1)
@@ -2506,7 +2505,6 @@ def test_create_pdf_letter(mocker, sample_service_full_permissions, client, fake
     assert json_resp == {"id": fake_uuid}
 
 
-@pytest.mark.skip(reason="[NOTIFYNL] Postage and PostalAddress issue")
 @pytest.mark.parametrize(
     "post_data, expected_errors",
     [

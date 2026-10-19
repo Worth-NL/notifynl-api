@@ -210,7 +210,6 @@ def test_get_sms_providers_for_update_returns_nothing_if_recent_updates(restore_
         ({"mmg": 50, "firetext": -100}, {"mmg": 40, "firetext": -90}),
     ],
 )
-@pytest.mark.xfail(reason="[NOTIFYNL] Spryng implementation breaks MMG tests")
 def test_reduce_sms_provider_priority_adjusts_provider_priorities(
     mocker,
     restore_provider_details,
@@ -264,7 +263,6 @@ def test_reduce_sms_provider_priority_does_nothing_if_there_is_only_one_active_p
     assert mock_adjust.called is False
 
 
-@pytest.mark.xfail(reason="[NOTIFYNL] Spryng implementation breaks MMG tests")
 @pytest.mark.parametrize(
     "existing_mmg, existing_firetext, new_mmg, new_firetext",
     [
@@ -294,7 +292,6 @@ def test_adjust_provider_priority_back_to_resting_points_updates_all_providers(
     mock_adjust.assert_any_call(firetext, new_firetext, reason="Adjusted back to resting point")
 
 
-@pytest.mark.xfail(reason="[NOTIFYNL] Spryng implementation breaks MMG tests")
 def test_adjust_provider_priority_back_to_resting_points_does_nothing_if_theyre_already_at_right_values(
     restore_provider_details,
     mocker,

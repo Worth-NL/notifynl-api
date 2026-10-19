@@ -299,7 +299,6 @@ def test_fetch_serialized_notifications_empty(mocker, mock_processor):
     assert result == []
 
 
-@pytest.mark.skip(reason="[NOTIFYNL] CSV report issues")
 @pytest.mark.parametrize(
     (
         "page_size,"

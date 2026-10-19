@@ -411,7 +411,6 @@ def test_persist_notification_does_not_increment_cache_if_test_key(
     assert not daily_limit_cache.called
 
 
-@pytest.mark.skip(reason="[NOTIFYNL] UK phone numbers considered international now, which adds another call")
 @pytest.mark.parametrize(
     "recipient, notification_type",
     [
@@ -462,7 +461,6 @@ def test_persist_notification_increments_cache_for_trial_or_live_service(
         ]
 
 
-@pytest.mark.skip(reason="[NOTIFYNL] UK phone numbers considered international now, which adds another call")
 @pytest.mark.parametrize("restricted_service", [True, False])
 @freeze_time("2016-01-01 11:09:00.061258")
 def test_persist_notification_sets_daily_limit_cache_if_one_does_not_exist(
@@ -529,7 +527,6 @@ def test_persist_notification_increments_cache_for_international_sms(notify_api,
         ]
 
 
-@pytest.mark.skip(reason="[NOTIFYNL] UK phone numbers considered international now, which adds another call")
 @freeze_time("2016-01-01 11:09:00.061258")
 def test_persist_notification_doesnt_increment_cache_for_international_sms_when_num_is_crown_dependency(
     notify_api, notify_db_session, mocker
@@ -633,7 +630,6 @@ def test_persist_notification_increments_cache_for_international_sms_if_the_cach
         ("+48697894064", "48697894064", "", False),  # international number
     ],
 )
-@pytest.mark.skip(reason="[NOTIFYNL] no UK OFCOM checks for Dutch numbers, see test_process_notification_nl.py")
 def test_persist_notification_logs_when_sms_sent_to_uk_number_in_ofcom_protected_range(
     notify_api,
     notify_db_session,
@@ -772,7 +768,6 @@ def test_send_notification_to_queue_throws_exception_deletes_notification(sample
         ("valid_email@test.com", EMAIL_TYPE, False),
     ],
 )
-@pytest.mark.skip(reason="[NOTIFYNL] Dutch phone number implementation breaks this test")
 def test_simulated_recipient(notify_api, to_address, notification_type, expected):
     """
     The values where the expected = 'research-mode' are listed in the config['SIMULATED_EMAIL_ADDRESSES']

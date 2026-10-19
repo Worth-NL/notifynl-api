@@ -231,7 +231,6 @@ def test_update_letter_to_sending(sample_letter_template):
     assert letter.sent_by == "dvla"
 
 
-@pytest.mark.skip(reason="[NOTIFYNL] postage issue")
 @mock_aws
 @freeze_time("2020-02-17 16:00:00")
 def test_deliver_letter(
@@ -529,7 +528,6 @@ def test_get_callback_url_returns_unique_callback_for_notification(notify_api, f
     )
 
 
-@pytest.mark.skip(reason="[NOTIFYNL] Changes from mmg to spryng")
 @freeze_time("2026-01-01 09:00:00")
 @pytest.mark.parametrize(
     "key_type, phone_number, international, country_code, should_raise",

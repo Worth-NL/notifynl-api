@@ -449,7 +449,6 @@ def test_set_user_permissions_remove_old(admin_request, sample_user, sample_serv
     assert query.first().permission == MANAGE_SETTINGS
 
 
-@pytest.mark.skip(reason="[NOTIFYNL] gov.uk emails aren't on the Dutch gov domain list, see test_users_dao_nl.py")
 def test_set_user_permissions_when_permissions_cannot_be_changed(admin_request, sample_user, sample_service):
     data = {"permissions": [{"permission": MANAGE_TEMPLATES}]}
 
@@ -1169,7 +1168,6 @@ def test_search_for_users_by_email_handles_incorrect_data_format(notify_db_sessi
         ("+20 65 3615756", "Notify"),
     ],
 )
-@pytest.mark.skip(reason="[NOTIFYNL] Dutch phone number implementation breaks this test")
 def test_get_sms_reply_to_for_notify_service(team_member_mobile_edit_template, number, expected_reply_to):
     # need to import locally to avoid db session errors,
     # if this import is with the other imports at the top of the file

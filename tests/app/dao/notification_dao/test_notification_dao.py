@@ -1265,7 +1265,6 @@ def _tds(s):
     ids=("default", "bulk"),
 )
 @freeze_time()
-@pytest.mark.skip(reason="[NOTIFYNL] results also include Spryng, see test_notification_dao_nl.py")
 def test_get_recent_undelivered_notification_ages(
     notify_db_session, sample_template, notifications, session, expected_result, expected_bind_key
 ):
@@ -1475,7 +1474,6 @@ def test_get_recent_undelivered_notification_ages(
     ids=("default", "bulk"),
 )
 @freeze_time()
-@pytest.mark.skip(reason="[NOTIFYNL] results also include Spryng, see test_notification_dao_nl.py")
 def test_get_banded_slow_text_message_delivery_reports_by_provider(
     notify_db_session, sample_template, bands, notifications, session, expected_result, expected_bind_key
 ):
@@ -1633,7 +1631,6 @@ def test_get_banded_slow_text_message_delivery_reports_by_provider(
     ids=("default", "bulk"),
 )
 @freeze_time()
-@pytest.mark.skip(reason="[NOTIFYNL] results also include Spryng, see test_notification_dao_nl.py")
 def test_get_banded_slow_text_message_delivery_reports_by_provider_created_at_sent_at(
     notify_db_session, sample_template, bands, notifications, session, expected_result, expected_bind_key
 ):
@@ -2574,7 +2571,6 @@ def test_letters_to_be_printed_returns_ids(notify_db_session):
     assert sorted(x.id for x in results) == sorted(x.id for x in printed_notifications)
 
 
-@pytest.mark.skip(reason="[NOTIFYNL] Postage issue")
 def test_dao_get_letters_and_sheets_volume_by_postage(notify_db_session):
     first_service = create_service(service_name="first service", service_id="3a5cea08-29fd-4bb9-b582-8dedd928b149")
     second_service = create_service(service_name="second service", service_id="642bf33b-54b5-45f2-8c13-942a46616704")
