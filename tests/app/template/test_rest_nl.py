@@ -203,7 +203,7 @@ def test_create_template_validates_qr_code_too_long(
 
 def test_update_should_update_a_template(client, sample_user):
     service = create_service(service_permissions=[LETTER_TYPE])
-    template = create_template(service, template_type="letter", postage="second")
+    template = create_template(service, template_type="letter", postage="netherlands")
 
     assert template.created_by == service.created_by
     assert template.created_by != sample_user
