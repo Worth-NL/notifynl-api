@@ -227,14 +227,12 @@ jobs:
         with:
           version: v4.2.2
 
-      - name: Add chart repositories
-        run: |
-          helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
-          helm repo add grafana https://grafana.github.io/helm-charts
-          helm repo add stakater https://stakater.github.io/stakater-charts
-
-      - name: Helm chart dependency build
-        run: helm dependency build
+      # `update` (unlike `build`) fetches any repository listed in
+      # notifynl-full's Chart.yaml on its own, so new chart dependencies
+      # need no `helm repo add` here. Versions there are pinned exactly, so
+      # it resolves the same charts Chart.lock records.
+      - name: Helm chart dependency update
+        run: helm dependency update
         working-directory: ${{ github.workspace }}/notifynl-full
 
       # notifynl-full pins migrations.apiUpgrade.{alphagovRevision,nlRevision}
@@ -324,7 +322,7 @@ jobs:
               issue_number: context.issue.number,
               body
             })
-  #smoke tests
+
   smoke-test:
     needs: deploy
     if: github.event.pull_request.draft == false
