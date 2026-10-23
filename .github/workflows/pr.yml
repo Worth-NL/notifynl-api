@@ -254,6 +254,8 @@ jobs:
       # (required/fail template checks included) without persisting anything
       # or scheduling any pods. Uses the exact same flags as the real deploy
       # below so it can't drift out of sync and give a false pass.
+      # stdout (the rendered manifests, Secrets included) is discarded; errors
+      # still reach the log via stderr and the exit code still gates the deploy.
       - name: Pre-flight validation (dry-run, no cluster mutation)
         id: helm-dry-run
         run: |
@@ -265,7 +267,8 @@ jobs:
           --set migrations.apiUpgrade.alphagovRevision=${{ steps.migration-revisions.outputs.alphagov-revision }} \
           --set migrations.apiUpgrade.nlRevision=${{ steps.migration-revisions.outputs.nl-revision }} \
           --rollback-on-failure \
-          --dry-run=server
+          --dry-run=server \
+          > /dev/null
 
       - name: Deploy new tag
         id: helm-deploy
