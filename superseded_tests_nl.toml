@@ -52,6 +52,11 @@ reason = "Postage issue"
 twin = ["tests/app/celery/test_reporting_tasks_nl.py::test_get_rate_for_letter_latest_if_crown_is_none"]
 
 [[test]]
+nodeid = "tests/app/celery/test_research_mode_tasks.py::test_create_fake_letter_callback_sends_letter_response"
+reason = "NL postage values in callback"
+twin = ["tests/app/celery/test_research_mode_tasks_nl.py::test_create_fake_letter_callback_sends_letter_response"]
+
+[[test]]
 nodeid = "tests/app/celery/test_scheduled_tasks.py::test_check_if_letters_still_pending_virus_check_nightly_warns_about_letters_not_in_scan_bucket"
 reason = "Postage issue"
 
@@ -154,6 +159,11 @@ twin = ["tests/app/dao/notification_dao/test_notification_dao_nl.py::test_get_ba
 nodeid = "tests/app/dao/notification_dao/test_notification_dao.py::test_get_recent_undelivered_notification_ages"
 reason = "results also include Spryng, see test_notification_dao_nl.py"
 twin = ["tests/app/dao/notification_dao/test_notification_dao_nl.py::test_get_recent_undelivered_notification_ages"]
+
+[[test]]
+nodeid = "tests/app/dao/test_fact_billing_dao.py::test_fetch_billing_data_for_day_bills_correctly_for_status"
+reason = "NL bills letters in 'sent' (accepted by the print provider)"
+counterpart = ["tests/app/dao/test_fact_billing_dao_nl.py::test_fetch_billing_data_for_day_bills_correctly_for_status"]
 
 [[test]]
 nodeid = "tests/app/dao/test_fact_billing_dao.py::test_fetch_usage_for_all_services_letter_breakdown"
