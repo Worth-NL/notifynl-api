@@ -7,6 +7,7 @@ from freezegun import freeze_time
 from app.dao.notifications_dao import (
     dao_cancel_letter_if_still_cancellable,
     dao_claim_letter_for_sending,
+    dao_get_letters_abandoned_sending,
     dao_get_letters_and_sheets_volume_by_postage,
     dao_get_letters_ready_to_send_since,
     dao_get_letters_stuck_sending,
@@ -266,3 +267,26 @@ def test_dao_get_letters_stuck_sending(sample_letter_template):
     )
 
     assert dao_get_letters_stuck_sending(datetime(2026, 9, 29, 8)) == [stuck]
+
+
+@freeze_time("2026-09-29 12:00")
+def test_dao_get_letters_abandoned_sending(sample_letter_template):
+    def letter(last_touched, **kwargs):
+        return create_notification(
+            template=sample_letter_template,
+            status=kwargs.pop("status", "sending"),
+            created_at=datetime(2026, 9, 29, 6),
+            updated_at=last_touched,
+            **kwargs,
+        )
+
+    abandoned = letter(datetime(2026, 9, 29, 11, 30))
+    letter(datetime(2026, 9, 29, 11, 57))  # a retry touched it recently
+    letter(datetime(2026, 9, 29, 7))  # left alone for too long: the stuck-sending alert's
+    letter(datetime(2026, 9, 29, 11, 30), status="sent")
+    letter(datetime(2026, 9, 29, 11, 30), key_type="test")
+    letter(datetime(2026, 9, 29, 11, 30), sent_by="dvla")
+
+    assert dao_get_letters_abandoned_sending(datetime(2026, 9, 29, 11, 45), not_before=datetime(2026, 9, 29, 8)) == [
+        abandoned.id
+    ]

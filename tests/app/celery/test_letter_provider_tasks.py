@@ -667,6 +667,95 @@ def test_dispatch_stranded_letters_queues_letters_ready_for_a_while(notify_api, 
     apply_async.assert_called_once_with([str(stranded.id)], queue="send-letter-tasks")
 
 
+@freeze_time("2026-09-29 12:00")
+def test_dispatch_stranded_letters_resumes_letters_abandoned_while_sending(notify_api, letter_template, mocker):
+    apply_async = mocker.patch("app.celery.letter_provider_tasks.deliver_letter_via_provider.apply_async")
+    abandoned, recently_touched, left_for_too_long = (
+        create_notification(
+            template=letter_template, status="sending", created_at=datetime(2026, 9, 29, 6), updated_at=last_touched
+        )
+        for last_touched in (datetime(2026, 9, 29, 11, 30), datetime(2026, 9, 29, 11, 50), datetime(2026, 9, 29, 7))
+    )
+
+    with set_config(notify_api, "LETTER_DELIVERY_VIA_PROVIDERS", True):
+        dispatch_stranded_letters()
+
+    apply_async.assert_called_once_with([str(abandoned.id)], queue="send-letter-tasks")
+
+
+def _abandoned_letter(letter_template, last_touched=datetime(2026, 9, 29, 11, 30)):
+    return create_notification(
+        template=letter_template,
+        status="sending",
+        created_at=datetime(2026, 9, 29, 11),
+        updated_at=last_touched,
+        billable_units=1,
+    )
+
+
+@freeze_time("2026-09-29 12:00")
+def test_deliver_letter_via_provider_resumes_a_letter_abandoned_while_sending(
+    letter_template, pdf_in_s3, send_with_pingen, mock_callback
+):
+    letter = _abandoned_letter(letter_template)
+
+    deliver_letter_via_provider(str(letter.id))
+
+    assert send_with_pingen.called
+    assert _status(letter) == "sent"
+
+
+@freeze_time("2026-09-29 12:00")
+def test_deliver_letter_via_provider_touches_a_resumed_letter_before_sending_it(
+    letter_template, pdf_in_s3, send_with_pingen, mock_callback
+):
+    letter = _abandoned_letter(letter_template)
+    touched_while_sending = []
+    send_with_pingen.side_effect = lambda *args: (
+        touched_while_sending.append(Notification.query.get(letter.id).updated_at)
+        or LetterSendResult(provider_reference="pingen-1")
+    )
+
+    deliver_letter_via_provider(str(letter.id))
+
+    assert touched_while_sending == [datetime(2026, 9, 29, 12, 0)]
+
+
+@freeze_time("2026-09-29 12:00")
+def test_deliver_letter_via_provider_does_not_resume_a_letter_with_a_retry_on_its_way(
+    letter_template, pdf_in_s3, send_with_pingen
+):
+    letter = _abandoned_letter(letter_template, last_touched=datetime(2026, 9, 29, 11, 55))
+
+    deliver_letter_via_provider(str(letter.id))
+
+    assert not send_with_pingen.called
+    assert _status(letter) == "sending"
+
+
+@freeze_time("2026-09-29 12:00")
+def test_deliver_letter_via_provider_does_not_resume_a_letter_another_message_resumed_already(
+    letter_template, pdf_in_s3, send_with_pingen, mocker
+):
+    letter = _abandoned_letter(letter_template)
+
+    def acquire_after_the_other_message_resumed_it():
+        # e.g. the sweep queued it twice, and the other message held the lock until it scheduled a retry
+        Notification.query.filter_by(id=letter.id).update(
+            {"updated_at": datetime(2026, 9, 29, 12)}, synchronize_session=False
+        )
+        return True
+
+    mocker.patch(
+        "app.celery.letter_provider_tasks.redis_store.get_lock"
+    ).return_value.acquire.side_effect = acquire_after_the_other_message_resumed_it
+
+    deliver_letter_via_provider(str(letter.id))
+
+    assert not send_with_pingen.called
+    assert _status(letter) == "sending"
+
+
 def test_dispatch_stranded_letters_does_nothing_while_letters_go_through_dvla(notify_api, letter_template, mocker):
     apply_async = mocker.patch("app.celery.letter_provider_tasks.deliver_letter_via_provider.apply_async")
     create_notification(template=letter_template, status="created", created_at=datetime(2020, 1, 1))

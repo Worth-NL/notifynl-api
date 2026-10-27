@@ -386,6 +386,29 @@ def dao_get_letters_stuck_sending(cutoff_time):
     )
 
 
+def dao_get_letters_abandoned_sending(cutoff_time, not_before, limit=1000):
+    """
+    Ids of letters claimed for sending that no delivery attempt touched since `cutoff_time` (every attempt and retry
+    does), e.g. because the worker died during the attempt. Letters left alone since before `not_before` are left to
+    the stuck-sending alert instead.
+    """
+    last_touched = func.coalesce(Notification.updated_at, Notification.created_at)
+    return [
+        row.id
+        for row in db.session.query(Notification.id)
+        .filter(
+            Notification.notification_type == LETTER_TYPE,
+            Notification.status == NOTIFICATION_SENDING,
+            Notification.sent_by.is_(None),
+            Notification.key_type == KEY_TYPE_NORMAL,
+            last_touched < cutoff_time,
+            last_touched >= not_before,
+        )
+        .order_by(Notification.created_at)
+        .limit(limit)
+    ]
+
+
 @autocommit
 def dao_update_notification(notification):
     notification.updated_at = datetime.utcnow()

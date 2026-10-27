@@ -34,6 +34,7 @@ from app.dao.letter_provider_reference_dao import (
 )
 from app.dao.notifications_dao import (
     dao_claim_letter_for_sending,
+    dao_get_letters_abandoned_sending,
     dao_get_letters_ready_to_send_since,
     dao_get_letters_stuck_sending,
     dao_get_notification_or_history_by_id,
@@ -58,6 +59,9 @@ DELIVERY_RETRY_DELAY = 180
 DELIVERY_LOCK_TIMEOUT = 600
 # letters ready to send for this long without being picked up (e.g. a lost message) are queued by the sweep
 STRANDED_AFTER = timedelta(minutes=15)
+# letters left sending for this long have no delivery attempt in flight (e.g. the worker died during it), as every
+# attempt touches the letter at least DELIVERY_RETRY_DELAY + DELIVERY_LOCK_TIMEOUT apart: the sweep resumes them
+ABANDONED_SENDING_AFTER = timedelta(minutes=15)
 # longer than all delivery retries together
 STUCK_SENDING_AFTER = timedelta(hours=4)
 
@@ -91,9 +95,11 @@ def deliver_letter_via_provider(self, notification_id):
         )
         return
 
+    resuming = False
     if not dao_claim_letter_for_sending(notification_id):
-        # only the delivery attempt that claimed the letter continues, on its own retries
-        if not (notification.status == NOTIFICATION_SENDING and self.request.retries > 0):
+        # only the delivery attempt that claimed the letter continues, on its own retries, unless that attempt died
+        resuming = self.request.retries == 0 and _is_abandoned(notification)
+        if not (notification.status == NOTIFICATION_SENDING and (self.request.retries > 0 or resuming)):
             current_app.logger.info(
                 "Not delivering letter %s: already %s", notification_id, notification.status, extra=extra
             )
@@ -111,14 +117,8 @@ def deliver_letter_via_provider(self, notification_id):
         current_app.logger.info("Not delivering letter %s: already being delivered", notification_id, extra=extra)
         return
     try:
-        # while this attempt waited for the lock, a duplicate message may have delivered the letter
-        db.session.refresh(notification)
-        if notification.status != NOTIFICATION_SENDING:
-            current_app.logger.info(
-                "Not delivering letter %s: already %s", notification_id, notification.status, extra=extra
-            )
-            return
-        _deliver_claimed_letter(self, notification)
+        if _still_to_deliver(notification, resuming, extra):
+            _deliver_claimed_letter(self, notification)
     except Retry:
         raise
     except Exception:
@@ -128,6 +128,40 @@ def deliver_letter_via_provider(self, notification_id):
         _retry(self, notification_id, "print-provider-error")
     finally:
         _release(lock, notification_id)
+
+
+def _still_to_deliver(notification, resuming, extra) -> bool:
+    notification_id = extra["notification_id"]
+    # while this attempt waited for the lock, a duplicate message may have delivered the letter
+    db.session.refresh(notification)
+    if notification.status != NOTIFICATION_SENDING:
+        current_app.logger.info(
+            "Not delivering letter %s: already %s", notification_id, notification.status, extra=extra
+        )
+        return False
+    if not resuming:
+        return True
+    if not _is_abandoned(notification):
+        # e.g. queued twice by the sweep: the other one resumed it while this one waited for the lock
+        current_app.logger.info(
+            "Not delivering letter %s: its delivery was resumed already", notification_id, extra=extra
+        )
+        return False
+    current_app.logger.warning(
+        "Resuming the delivery of letter %s, abandoned while sending", notification_id, extra=extra
+    )
+    # so the sweep doesn't queue it again while this attempt runs
+    dao_touch_notification(notification_id)
+    return True
+
+
+def _is_abandoned(notification):
+    last_touched = notification.updated_at or notification.created_at
+    return (
+        notification.status == NOTIFICATION_SENDING
+        and not notification.sent_by
+        and last_touched < datetime.utcnow() - ABANDONED_SENDING_AFTER
+    )
 
 
 def _release(lock, notification_id):
@@ -279,18 +313,26 @@ def _retry(task, notification_id, detailed_status_code):
 
 @notify_celery.task(name=TaskNamesNL.DISPATCH_STRANDED_LETTERS)
 def dispatch_stranded_letters():
-    """Safety net for letters that are ready to send but whose delivery was never queued (or was lost)."""
+    """
+    Safety net for letters that are ready to send but whose delivery was never queued (or was lost), and for letters
+    whose delivery attempt died while sending (e.g. a worker killed during it), which nothing would retry.
+    """
     if not current_app.config.get("LETTER_DELIVERY_VIA_PROVIDERS"):
         return
-    notification_ids = dao_get_letters_ready_to_send_since(datetime.utcnow() - STRANDED_AFTER)
-    for notification_id in notification_ids:
+    now = datetime.utcnow()
+    stranded = dao_get_letters_ready_to_send_since(now - STRANDED_AFTER)
+    # longer ago than that, the stuck-sending alert has them looked at instead
+    abandoned = dao_get_letters_abandoned_sending(now - ABANDONED_SENDING_AFTER, not_before=now - STUCK_SENDING_AFTER)
+    for notification_id in stranded + abandoned:
         deliver_letter_via_provider.apply_async([str(notification_id)], queue=QueueNames.SEND_LETTER)
-    if notification_ids:
-        current_app.logger.warning(
-            "Queued %s stranded letters for delivery",
-            len(notification_ids),
-            extra={"number_of_notifications": len(notification_ids)},
-        )
+    for description, notification_ids in (("stranded", stranded), ("abandoned sending", abandoned)):
+        if notification_ids:
+            current_app.logger.warning(
+                "Queued %s letters %s for delivery",
+                len(notification_ids),
+                description,
+                extra={"number_of_notifications": len(notification_ids)},
+            )
 
 
 @notify_celery.task(name=TaskNamesNL.CHECK_LETTERS_STUCK_SENDING)
