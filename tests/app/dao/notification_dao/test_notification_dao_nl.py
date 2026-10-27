@@ -1,3 +1,4 @@
+import uuid
 from datetime import datetime, timedelta
 
 import pytest
@@ -13,10 +14,12 @@ from app.dao.notifications_dao import (
     dao_messagebox_notifications_still_pending,
     dao_messagebox_notifications_stuck_sending,
     dao_touch_notification,
+    dao_update_letter_status_from_provider,
 )
-from app.models import Notification
+from app.models import Notification, NotificationHistory
 from tests.app.db import (
     create_notification,
+    create_notification_history,
     create_service,
     create_template,
 )
@@ -170,6 +173,55 @@ def test_dao_mark_letter_sent_only_from_sending(sample_letter_template, status):
 
     assert dao_mark_letter_sent(notification.id, "rest-endpoint") is False
     assert Notification.query.get(notification.id).status == status
+
+
+@freeze_time("2026-09-29 12:00")
+def test_dao_update_letter_status_from_provider(sample_letter_template):
+    notification = create_notification(template=sample_letter_template, status="sending")
+
+    assert dao_update_letter_status_from_provider(
+        notification.id, "technical-failure", {"sending", "sent"}, "pingen", detailed_status_code="print-provider-issue"
+    )
+
+    notification = Notification.query.get(notification.id)
+    assert (notification.status, notification.detailed_status_code) == ("technical-failure", "print-provider-issue")
+    assert (notification.sent_by, notification.sent_at) == ("pingen", datetime(2026, 9, 29, 12, 0))
+    assert notification.updated_at == datetime(2026, 9, 29, 12, 0)
+
+
+def test_dao_update_letter_status_from_provider_keeps_the_send_details(sample_letter_template):
+    notification = create_notification(
+        template=sample_letter_template, status="sent", sent_by="rest-endpoint", sent_at=datetime(2026, 9, 29, 9, 0)
+    )
+
+    assert dao_update_letter_status_from_provider(notification.id, "delivered", {"sending", "sent"}, "pingen")
+
+    notification = Notification.query.get(notification.id)
+    assert (notification.status, notification.detailed_status_code) == ("delivered", None)
+    assert (notification.sent_by, notification.sent_at) == ("rest-endpoint", datetime(2026, 9, 29, 9, 0))
+
+
+def test_dao_update_letter_status_from_provider_only_from_the_given_statuses(sample_letter_template):
+    notification = create_notification(template=sample_letter_template, status="delivered")
+
+    assert not dao_update_letter_status_from_provider(notification.id, "delivered", {"sending", "sent"}, "pingen")
+    assert Notification.query.get(notification.id).status == "delivered"
+
+
+@pytest.mark.parametrize("from_status, expected_status", [("sent", "delivered"), ("permanent-failure", None)])
+def test_dao_update_letter_status_from_provider_in_notification_history(
+    sample_letter_template, from_status, expected_status
+):
+    notification = create_notification_history(template=sample_letter_template, status=from_status)
+
+    updated = dao_update_letter_status_from_provider(notification.id, "delivered", {"sending", "sent"}, "pingen")
+
+    assert updated is (expected_status is not None)
+    assert NotificationHistory.query.get(notification.id).status == (expected_status or from_status)
+
+
+def test_dao_update_letter_status_from_provider_for_an_unknown_letter(notify_db_session):
+    assert not dao_update_letter_status_from_provider(uuid.uuid4(), "delivered", {"sending", "sent"}, "pingen")
 
 
 def test_dao_touch_notification(sample_letter_template):

@@ -36,7 +36,7 @@ from app.dao.notifications_dao import (
     dao_mark_letter_sent,
     dao_record_letter_despatched_on_by_id,
     dao_touch_notification,
-    dao_update_notification,
+    dao_update_letter_status_from_provider,
     get_notification_by_id,
     update_notification_status_by_id,
 )
@@ -331,7 +331,14 @@ def process_letter_provider_status(notification_id, provider, status, reason=Non
         "notification_status_new": status,
         "reason": reason,
     }
-    if notification.status not in PROVIDER_STATUS_TRANSITIONS[status]:
+    # checked as part of the update: another report for this letter can be processed at the same time
+    if not dao_update_letter_status_from_provider(
+        notification_id,
+        status,
+        PROVIDER_STATUS_TRANSITIONS[status],
+        provider,
+        detailed_status_code=PROVIDER_DETAILED_STATUS_CODES.get(status),
+    ):
         current_app.logger.info(
             "Ignoring %s status %s for letter %s, which is %s",
             provider,
@@ -344,25 +351,14 @@ def process_letter_provider_status(notification_id, provider, status, reason=Non
 
     current_app.logger.info("Letter %s is %s according to %s", notification_id, status, provider, extra=extra)
 
-    if notification.status == NOTIFICATION_SENDING and not notification.sent_by:
-        # the provider reported back before the delivery task got to mark the letter sent (which it then won't)
-        notification.sent_by = provider
-        notification.sent_at = datetime.utcnow()
-
     if status == NOTIFICATION_RETURNED_LETTER:
         from app.celery.tasks import process_returned_letters_list
-
-        dao_update_notification(notification)
 
         # also records the returned letter for the service's report and sends the returned letter callback
         process_returned_letters_list([notification.reference])
         return
 
-    notification.status = status
-    if status in PROVIDER_DETAILED_STATUS_CODES:
-        notification.detailed_status_code = PROVIDER_DETAILED_STATUS_CODES[status]
-    dao_update_notification(notification)
-
+    db.session.refresh(notification)
     if status == NOTIFICATION_DELIVERED:
         dao_record_letter_despatched_on_by_id(
             notification.id, convert_utc_to_bst(datetime.utcnow()).date(), LetterCostThreshold.unsorted

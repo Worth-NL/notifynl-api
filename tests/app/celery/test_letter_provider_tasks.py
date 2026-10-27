@@ -23,6 +23,7 @@ from app.clients.letter import (
 from app.clients.letter.pingen import PingenClient
 from app.clients.letter.rest_endpoint import RestEndpointLetterClient
 from app.dao.letter_provider_reference_dao import dao_get_letter_provider_reference
+from app.dao.notifications_dao import dao_get_notification_or_history_by_id
 from app.letters.utils import LetterPDFNotFound
 from app.models import LetterCostThreshold, Notification, NotificationHistory, NotificationLetterDespatch
 from tests.app.db import (
@@ -657,6 +658,37 @@ def test_process_letter_provider_status_never_moves_a_letter_backwards(
     assert not returned.called
 
 
+@pytest.mark.parametrize(
+    "status, other_status",
+    [
+        ("delivered", "technical-failure"),
+        ("technical-failure", "delivered"),
+        ("returned-letter", "returned-letter"),
+    ],
+)
+def test_process_letter_provider_status_loses_to_a_report_processed_at_the_same_time(
+    letter_template, mock_callback, mocker, status, other_status
+):
+    returned = mocker.patch("app.celery.tasks.process_returned_letters_list")
+    notification = create_notification(template=letter_template, status="sent")
+
+    def read_before_the_other_report_is_applied(notification_id):
+        letter = dao_get_notification_or_history_by_id(notification_id)
+        Notification.query.filter_by(id=notification_id).update({"status": other_status}, synchronize_session=False)
+        return letter
+
+    mocker.patch(
+        "app.celery.letter_provider_tasks.dao_get_notification_or_history_by_id",
+        side_effect=read_before_the_other_report_is_applied,
+    )
+
+    process_letter_provider_status(str(notification.id), "pingen", status)
+
+    assert _status(notification) == other_status
+    assert not mock_callback.called
+    assert not returned.called
+
+
 @pytest.mark.parametrize("from_status", ["sent", "delivered"])
 def test_process_letter_provider_status_returned_letter(letter_template, mock_callback, mocker, from_status):
     returned = mocker.patch("app.celery.tasks.process_returned_letters_list")
@@ -676,3 +708,14 @@ def test_process_letter_provider_status_for_a_letter_in_notification_history(let
 
     assert NotificationHistory.query.get(notification.id).status == "delivered"
     assert mock_callback.called
+
+
+def test_process_letter_provider_status_never_moves_a_letter_in_notification_history_backwards(
+    letter_template, mock_callback
+):
+    notification = create_notification_history(template=letter_template, status="permanent-failure")
+
+    process_letter_provider_status(str(notification.id), "pingen", "delivered")
+
+    assert NotificationHistory.query.get(notification.id).status == "permanent-failure"
+    assert not mock_callback.called
