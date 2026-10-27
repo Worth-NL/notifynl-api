@@ -4,6 +4,8 @@ from unittest import mock
 import pytest
 from celery.exceptions import MaxRetriesExceededError, Retry
 from freezegun import freeze_time
+from redis.exceptions import ConnectionError as RedisConnectionError
+from redis.exceptions import LockNotOwnedError
 
 from app import signing
 from app.celery.letter_provider_tasks import (
@@ -204,6 +206,49 @@ def test_deliver_letter_via_provider_skips_a_letter_being_delivered_under_the_lo
     deliver_letter_via_provider(str(letter_notification.id))
 
     assert not send_with_pingen.called
+
+
+def test_deliver_letter_via_provider_retries_when_the_lock_cannot_be_taken(
+    letter_notification, pdf_in_s3, send_with_pingen, mocker
+):
+    lock = mocker.patch("app.celery.letter_provider_tasks.redis_store.get_lock").return_value
+    lock.acquire.side_effect = RedisConnectionError("redis is down")
+    retry = mocker.patch.object(deliver_letter_via_provider, "retry", side_effect=Retry)
+
+    with pytest.raises(Retry):
+        deliver_letter_via_provider(str(letter_notification.id))
+
+    assert retry.called
+    assert not send_with_pingen.called
+    assert not lock.release.called
+    # claimed before the lock, and only the retry will pick it up again
+    assert _status(letter_notification) == "sending"
+
+
+@pytest.mark.parametrize("error", [RedisConnectionError("redis is down"), LockNotOwnedError("lock expired")])
+def test_deliver_letter_via_provider_keeps_the_outcome_when_the_lock_cannot_be_released(
+    letter_notification, pdf_in_s3, send_with_pingen, mock_callback, mocker, error
+):
+    lock = mocker.patch("app.celery.letter_provider_tasks.redis_store.get_lock").return_value
+    lock.release.side_effect = error
+
+    deliver_letter_via_provider(str(letter_notification.id))
+
+    assert lock.release.called
+    assert _status(letter_notification) == "sent"
+
+
+def test_deliver_letter_via_provider_still_retries_when_the_lock_cannot_be_released(
+    letter_notification, pdf_in_s3, send_with_pingen, mocker
+):
+    mocker.patch(
+        "app.celery.letter_provider_tasks.redis_store.get_lock"
+    ).return_value.release.side_effect = RedisConnectionError("redis is down")
+    send_with_pingen.side_effect = LetterClientRetryableException("down")
+    mocker.patch.object(deliver_letter_via_provider, "retry", side_effect=Retry)
+
+    with pytest.raises(Retry):
+        deliver_letter_via_provider(str(letter_notification.id))
 
 
 @pytest.mark.parametrize("key_type", ["test", "team"])

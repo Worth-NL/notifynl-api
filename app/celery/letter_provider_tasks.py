@@ -5,6 +5,7 @@ from celery.exceptions import Retry
 from flask import current_app
 from notifications_utils.clients.zendesk.zendesk_client import NotifySupportTicket, NotifyTicketType
 from notifications_utils.timezones import convert_utc_to_bst
+from redis.exceptions import RedisError
 
 from app import db, notify_celery, redis_store, signing, zendesk_client
 from app.clients.letter import (
@@ -94,7 +95,14 @@ def deliver_letter_via_provider(self, notification_id):
             return
 
     lock = redis_store.get_lock(f"deliver-letter-{notification_id}", timeout=DELIVERY_LOCK_TIMEOUT, blocking=False)
-    if not lock.acquire():
+    try:
+        acquired = lock.acquire()
+    except RedisError:
+        # the letter is already claimed, so without a retry nothing would pick it up again
+        current_app.logger.exception("RETRY: could not lock letter %s for delivery", notification_id, extra=extra)
+        _retry(self, notification_id, "print-provider-error")
+        return
+    if not acquired:
         current_app.logger.info("Not delivering letter %s: already being delivered", notification_id, extra=extra)
         return
     try:
@@ -114,7 +122,20 @@ def deliver_letter_via_provider(self, notification_id):
         db.session.rollback()
         _retry(self, notification_id, "print-provider-error")
     finally:
+        _release(lock, notification_id)
+
+
+def _release(lock, notification_id):
+    # the lock expires by itself, so failing to release it (Redis down, or already expired) mustn't change the outcome
+    try:
         lock.release()
+    except RedisError:
+        current_app.logger.warning(
+            "Could not release the delivery lock of letter %s",
+            notification_id,
+            exc_info=True,
+            extra={"notification_id": notification_id},
+        )
 
 
 def _deliver_claimed_letter(task, notification):
