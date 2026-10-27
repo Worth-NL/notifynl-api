@@ -42,7 +42,7 @@ def test_send_letter_posts_the_letter_to_the_endpoint(client, letter, rmock):
     assert request.headers["X-Api-Key"] == "secret-key"
     assert request.headers["User-Agent"] == "NotifyNL"
     assert request.headers["Idempotency-Key"] == letter.notification_id
-    assert request.timeout == (10, 60)
+    assert request.timeout == (10, 120)
     assert request.cert is None
 
 

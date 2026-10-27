@@ -22,8 +22,10 @@ from app.letters_nl.url_validation import InvalidLetterEndpointUrl, validate_let
 from app.otel_metrics.provider import record_request_duration
 from app.utils_nl import get_client_certificate_path
 
-# (connect, read) - the read timeout allows for endpoints that take a while to accept a multi-page PDF
-TIMEOUT = (10, 60)
+# (connect, read) - the read timeout allows for endpoints that take a while to accept a multi-page PDF, as a timed out
+# send may still have been accepted. A token request plus the letter POST must stay well within the delivery lock's
+# DELIVERY_LOCK_TIMEOUT (10 minutes).
+TIMEOUT = (10, 120)
 # refresh OAuth tokens this many seconds before they expire
 OAUTH_TOKEN_EXPIRY_MARGIN = 60
 
