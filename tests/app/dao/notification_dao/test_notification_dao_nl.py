@@ -1,12 +1,26 @@
+import uuid
 from datetime import datetime, timedelta
 
+import pytest
+from freezegun import freeze_time
+
 from app.dao.notifications_dao import (
+    dao_cancel_letter_if_still_cancellable,
+    dao_claim_letter_for_sending,
+    dao_get_letters_abandoned_sending,
     dao_get_letters_and_sheets_volume_by_postage,
+    dao_get_letters_ready_to_send_since,
+    dao_get_letters_stuck_sending,
+    dao_mark_letter_sent,
     dao_messagebox_notifications_still_pending,
     dao_messagebox_notifications_stuck_sending,
+    dao_touch_notification,
+    dao_update_letter_status_from_provider,
 )
+from app.models import Notification, NotificationHistory
 from tests.app.db import (
     create_notification,
+    create_notification_history,
     create_service,
     create_template,
 )
@@ -100,3 +114,179 @@ def test_dao_messagebox_notifications_stuck_sending(notify_db_session):
     results = dao_messagebox_notifications_stuck_sending(cutoff_time)
 
     assert {n.id for n in results} == {stuck_sending.id}
+
+
+@pytest.mark.parametrize("status", ["created", "pending-virus-check"])
+def test_dao_cancel_letter_if_still_cancellable_cancels_letter(sample_letter_template, status):
+    notification = create_notification(template=sample_letter_template, status=status)
+
+    cancelled = dao_cancel_letter_if_still_cancellable(notification.id)
+
+    assert cancelled.id == notification.id
+    assert cancelled.status == "cancelled"
+
+
+@pytest.mark.parametrize("status", ["sending", "sent", "delivered", "technical-failure", "cancelled"])
+def test_dao_cancel_letter_if_still_cancellable_leaves_letter_already_past_cancelling(sample_letter_template, status):
+    notification = create_notification(template=sample_letter_template, status=status)
+
+    assert dao_cancel_letter_if_still_cancellable(notification.id) is None
+    assert notification.status == status
+
+
+def test_dao_claim_letter_for_sending_claims_a_letter_only_once(sample_letter_template):
+    notification = create_notification(template=sample_letter_template, status="created")
+
+    assert dao_claim_letter_for_sending(notification.id) is True
+    assert dao_claim_letter_for_sending(notification.id) is False
+    assert Notification.query.get(notification.id).status == "sending"
+
+
+@pytest.mark.parametrize("status", ["pending-virus-check", "sending", "sent", "cancelled", "technical-failure"])
+def test_dao_claim_letter_for_sending_only_claims_created_letters(sample_letter_template, status):
+    notification = create_notification(template=sample_letter_template, status=status)
+
+    assert dao_claim_letter_for_sending(notification.id) is False
+    assert Notification.query.get(notification.id).status == status
+
+
+def test_dao_claim_letter_for_sending_only_claims_letters(sample_email_template):
+    notification = create_notification(template=sample_email_template, status="created")
+
+    assert dao_claim_letter_for_sending(notification.id) is False
+
+
+@freeze_time("2026-09-29 12:00")
+def test_dao_mark_letter_sent(sample_letter_template):
+    notification = create_notification(template=sample_letter_template, status="sending")
+
+    assert dao_mark_letter_sent(notification.id, "pingen") is True
+
+    notification = Notification.query.get(notification.id)
+    assert (notification.status, notification.sent_by) == ("sent", "pingen")
+    assert notification.sent_at == datetime(2026, 9, 29, 12, 0)
+
+
+@pytest.mark.parametrize("status", ["created", "delivered", "technical-failure"])
+def test_dao_mark_letter_sent_only_from_sending(sample_letter_template, status):
+    # e.g. a provider that reports back before our delivery task gets to mark the letter sent
+    notification = create_notification(template=sample_letter_template, status=status)
+
+    assert dao_mark_letter_sent(notification.id, "rest-endpoint") is False
+    assert Notification.query.get(notification.id).status == status
+
+
+@freeze_time("2026-09-29 12:00")
+def test_dao_update_letter_status_from_provider(sample_letter_template):
+    notification = create_notification(template=sample_letter_template, status="sending")
+
+    assert dao_update_letter_status_from_provider(
+        notification.id, "technical-failure", {"sending", "sent"}, "pingen", detailed_status_code="print-provider-issue"
+    )
+
+    notification = Notification.query.get(notification.id)
+    assert (notification.status, notification.detailed_status_code) == ("technical-failure", "print-provider-issue")
+    assert (notification.sent_by, notification.sent_at) == ("pingen", datetime(2026, 9, 29, 12, 0))
+    assert notification.updated_at == datetime(2026, 9, 29, 12, 0)
+
+
+def test_dao_update_letter_status_from_provider_keeps_the_send_details(sample_letter_template):
+    notification = create_notification(
+        template=sample_letter_template, status="sent", sent_by="rest-endpoint", sent_at=datetime(2026, 9, 29, 9, 0)
+    )
+
+    assert dao_update_letter_status_from_provider(notification.id, "delivered", {"sending", "sent"}, "pingen")
+
+    notification = Notification.query.get(notification.id)
+    assert (notification.status, notification.detailed_status_code) == ("delivered", None)
+    assert (notification.sent_by, notification.sent_at) == ("rest-endpoint", datetime(2026, 9, 29, 9, 0))
+
+
+def test_dao_update_letter_status_from_provider_only_from_the_given_statuses(sample_letter_template):
+    notification = create_notification(template=sample_letter_template, status="delivered")
+
+    assert not dao_update_letter_status_from_provider(notification.id, "delivered", {"sending", "sent"}, "pingen")
+    assert Notification.query.get(notification.id).status == "delivered"
+
+
+@pytest.mark.parametrize("from_status, expected_status", [("sent", "delivered"), ("permanent-failure", None)])
+def test_dao_update_letter_status_from_provider_in_notification_history(
+    sample_letter_template, from_status, expected_status
+):
+    notification = create_notification_history(template=sample_letter_template, status=from_status)
+
+    updated = dao_update_letter_status_from_provider(notification.id, "delivered", {"sending", "sent"}, "pingen")
+
+    assert updated is (expected_status is not None)
+    assert NotificationHistory.query.get(notification.id).status == (expected_status or from_status)
+
+
+def test_dao_update_letter_status_from_provider_for_an_unknown_letter(notify_db_session):
+    assert not dao_update_letter_status_from_provider(uuid.uuid4(), "delivered", {"sending", "sent"}, "pingen")
+
+
+def test_dao_touch_notification(sample_letter_template):
+    notification = create_notification(template=sample_letter_template, status="sending")
+
+    with freeze_time("2026-09-29 13:00"):
+        dao_touch_notification(notification.id)
+
+    assert Notification.query.get(notification.id).updated_at == datetime(2026, 9, 29, 13, 0)
+
+
+@freeze_time("2026-09-29 12:00")
+def test_dao_get_letters_ready_to_send_since(sample_letter_template, sample_email_template):
+    old = datetime(2026, 9, 29, 11, 30)
+    ready = create_notification(template=sample_letter_template, status="created", created_at=old, billable_units=1)
+    create_notification(template=sample_letter_template, status="created", created_at=datetime(2026, 9, 29, 11, 55))
+    create_notification(template=sample_letter_template, status="created", created_at=old, billable_units=0)
+    create_notification(template=sample_letter_template, status="created", created_at=old, key_type="test")
+    create_notification(template=sample_letter_template, status="sending", created_at=old, billable_units=1)
+    create_notification(template=sample_email_template, status="created", created_at=old)
+    recently_updated = create_notification(template=sample_letter_template, status="created", created_at=old)
+    recently_updated.updated_at = datetime(2026, 9, 29, 11, 50)
+
+    assert dao_get_letters_ready_to_send_since(datetime(2026, 9, 29, 11, 45)) == [ready.id]
+
+
+@freeze_time("2026-09-29 12:00")
+def test_dao_get_letters_stuck_sending(sample_letter_template):
+    six_am = datetime(2026, 9, 29, 6)
+    stuck = create_notification(template=sample_letter_template, status="sending", created_at=six_am, updated_at=six_am)
+    # a retry touched it recently
+    create_notification(
+        template=sample_letter_template, status="sending", created_at=six_am, updated_at=datetime(2026, 9, 29, 11, 57)
+    )
+    create_notification(template=sample_letter_template, status="sent", created_at=six_am, updated_at=six_am)
+    create_notification(
+        template=sample_letter_template, status="sending", created_at=six_am, updated_at=six_am, key_type="test"
+    )
+    # sent through notifynl-dvla-service, whose alerts cover it
+    create_notification(
+        template=sample_letter_template, status="sending", created_at=six_am, updated_at=six_am, sent_by="dvla"
+    )
+
+    assert dao_get_letters_stuck_sending(datetime(2026, 9, 29, 8)) == [stuck]
+
+
+@freeze_time("2026-09-29 12:00")
+def test_dao_get_letters_abandoned_sending(sample_letter_template):
+    def letter(last_touched, **kwargs):
+        return create_notification(
+            template=sample_letter_template,
+            status=kwargs.pop("status", "sending"),
+            created_at=datetime(2026, 9, 29, 6),
+            updated_at=last_touched,
+            **kwargs,
+        )
+
+    abandoned = letter(datetime(2026, 9, 29, 11, 30))
+    letter(datetime(2026, 9, 29, 11, 57))  # a retry touched it recently
+    letter(datetime(2026, 9, 29, 7))  # left alone for too long: the stuck-sending alert's
+    letter(datetime(2026, 9, 29, 11, 30), status="sent")
+    letter(datetime(2026, 9, 29, 11, 30), key_type="test")
+    letter(datetime(2026, 9, 29, 11, 30), sent_by="dvla")
+
+    assert dao_get_letters_abandoned_sending(datetime(2026, 9, 29, 11, 45), not_before=datetime(2026, 9, 29, 8)) == [
+        abandoned.id
+    ]

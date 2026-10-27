@@ -33,6 +33,7 @@ from app.constants import (
     LETTER_TYPE,
     MESSAGEBOX_TERMINAL_STATUSES,
     MESSAGEBOX_TYPE,
+    NOTIFICATION_CANCELLED,
     NOTIFICATION_CREATED,
     NOTIFICATION_DELIVERED,
     NOTIFICATION_PENDING,
@@ -255,6 +256,157 @@ def update_notification_status_by_id(
         detailed_status_code=detailed_status_code,
         messagebox_stadium=messagebox_stadium,
     )
+
+
+# [NotifyNL] print provider letter delivery: cancelling, claiming, marking sent and finding stranded or stuck letters
+@autocommit
+def dao_cancel_letter_if_still_cancellable(notification_id):
+    """
+    Cancel a letter only if it is still cancellable at write time, under a row lock. A letter can be handed to the
+    print provider (created -> sending) between a caller's letter_can_be_cancelled() check and this update, and a
+    letter that has already been sent must never be marked cancelled. Returns None if nothing was cancelled.
+    """
+    notification = (
+        Notification.query.with_for_update()
+        .filter(
+            Notification.id == notification_id,
+            Notification.status.in_([NOTIFICATION_CREATED, NOTIFICATION_PENDING_VIRUS_CHECK]),
+        )
+        .first()
+    )
+    if not notification:
+        return None
+
+    notification.status = NOTIFICATION_CANCELLED
+    dao_update_notification(notification)
+    return notification
+
+
+@autocommit
+def dao_claim_letter_for_sending(notification_id) -> bool:
+    """
+    Atomically move a letter from created to sending, so only one delivery attempt can hand it to the print provider.
+    Returns whether this caller claimed it.
+    """
+    return (
+        Notification.query.filter(
+            Notification.id == notification_id,
+            Notification.notification_type == LETTER_TYPE,
+            Notification.status == NOTIFICATION_CREATED,
+        ).update({"status": NOTIFICATION_SENDING, "updated_at": datetime.utcnow()}, synchronize_session=False)
+        == 1
+    )
+
+
+@autocommit
+def dao_mark_letter_sent(notification_id, sent_by) -> bool:
+    """A letter claimed for sending was accepted by its print provider. Returns whether it was still sending."""
+    now = datetime.utcnow()
+    return (
+        Notification.query.filter(
+            Notification.id == notification_id,
+            Notification.status == NOTIFICATION_SENDING,
+        ).update(
+            {"status": NOTIFICATION_SENT, "sent_by": sent_by, "sent_at": now, "updated_at": now},
+            synchronize_session=False,
+        )
+        == 1
+    )
+
+
+@autocommit
+def dao_update_letter_status_from_provider(
+    notification_id, status, from_statuses, provider, detailed_status_code=None
+) -> bool:
+    """
+    Apply a print provider's report on a letter if it is still in one of `from_statuses`. The status is checked in the
+    update itself, so of two reports processed at the same time only one gets through. Letters can be reported on
+    after they moved to notification_history. Returns whether the letter was updated.
+    """
+    now = datetime.utcnow()
+    for model in (Notification, NotificationHistory):
+        values = {
+            "status": status,
+            # the provider can report back before the delivery task marked the letter sent (which it then won't)
+            "sent_by": func.coalesce(model.sent_by, provider),
+            "sent_at": func.coalesce(model.sent_at, now),
+            "updated_at": now,
+        }
+        if detailed_status_code:
+            values["detailed_status_code"] = detailed_status_code
+        if model.query.filter(model.id == notification_id, model.status.in_(from_statuses)).update(
+            values, synchronize_session=False
+        ):
+            return True
+        if db.session.query(model.query.filter(model.id == notification_id).exists()).scalar():
+            return False
+    return False
+
+
+@autocommit
+def dao_touch_notification(notification_id):
+    Notification.query.filter(Notification.id == notification_id).update(
+        {"updated_at": datetime.utcnow()}, synchronize_session=False
+    )
+
+
+def dao_get_letters_ready_to_send_since(cutoff_time, limit=1000):
+    """Ids of letters ready to hand to a print provider that haven't changed since `cutoff_time`."""
+    return [
+        row.id
+        for row in db.session.query(Notification.id)
+        .filter(
+            Notification.notification_type == LETTER_TYPE,
+            Notification.status == NOTIFICATION_CREATED,
+            Notification.key_type == KEY_TYPE_NORMAL,
+            Notification.billable_units > 0,
+            func.coalesce(Notification.updated_at, Notification.created_at) < cutoff_time,
+        )
+        .order_by(Notification.created_at)
+        .limit(limit)
+    ]
+
+
+def dao_get_letters_stuck_sending(cutoff_time):
+    """
+    Letters claimed for sending that haven't been accepted by their print provider nor failed by `cutoff_time`. Only
+    letters going straight to a print provider: those have no sent_by until the provider accepts them, while letters
+    that went through notifynl-dvla-service got sent_by "dvla" when they became `sending`.
+    """
+    return (
+        Notification.query.filter(
+            Notification.notification_type == LETTER_TYPE,
+            Notification.status == NOTIFICATION_SENDING,
+            Notification.sent_by.is_(None),
+            Notification.key_type == KEY_TYPE_NORMAL,
+            func.coalesce(Notification.updated_at, Notification.created_at) < cutoff_time,
+        )
+        .order_by(Notification.created_at)
+        .all()
+    )
+
+
+def dao_get_letters_abandoned_sending(cutoff_time, not_before, limit=1000):
+    """
+    Ids of letters claimed for sending that no delivery attempt touched since `cutoff_time` (every attempt and retry
+    does), e.g. because the worker died during the attempt. Letters left alone since before `not_before` are left to
+    the stuck-sending alert instead.
+    """
+    last_touched = func.coalesce(Notification.updated_at, Notification.created_at)
+    return [
+        row.id
+        for row in db.session.query(Notification.id)
+        .filter(
+            Notification.notification_type == LETTER_TYPE,
+            Notification.status == NOTIFICATION_SENDING,
+            Notification.sent_by.is_(None),
+            Notification.key_type == KEY_TYPE_NORMAL,
+            last_touched < cutoff_time,
+            last_touched >= not_before,
+        )
+        .order_by(Notification.created_at)
+        .limit(limit)
+    ]
 
 
 @autocommit

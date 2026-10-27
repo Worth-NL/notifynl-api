@@ -24,6 +24,7 @@ from app.celery.letters_pdf_tasks import (
     resanitise_pdf,
     sanitise_letter_parts,
     send_letters_volume_email_to_dvla,
+    update_billable_units_for_letter,
 )
 from app.celery.provider_tasks import deliver_email
 from app.config import QueueNames, TaskNames, TaskNamesNL
@@ -629,3 +630,100 @@ def test_process_virus_scan_error_letter_parts_moves_all_parts(sample_letter_not
         mocker.call(filenames[1], ScanErrorType.ERROR),
     ]
     assert sample_letter_notification.status == NOTIFICATION_TECHNICAL_FAILURE
+
+
+@pytest.mark.parametrize("key_type, expected_queued", [(KEY_TYPE_NORMAL, True), (KEY_TYPE_TEST, False)])
+def test_update_billable_units_for_letter_hands_the_letter_to_its_print_provider(
+    sample_letter_notification, mocker, key_type, expected_queued
+):
+    queue = mocker.patch("app.celery.letters_pdf_tasks.queue_letter_for_delivery")
+    sample_letter_notification.key_type = key_type
+
+    update_billable_units_for_letter(sample_letter_notification.id, 4)
+
+    if expected_queued:
+        queue.assert_called_once_with(sample_letter_notification)
+    else:
+        assert not queue.called
+
+
+def _sanitised_letter_in_s3(notification, validation_status):
+    filename = "NOTIFY.FOO.D.2.C.20180701120000.PDF"
+    conn = boto3.resource("s3", region_name="eu-west-1")
+    for bucket in (
+        "S3_BUCKET_LETTERS_SCAN",
+        "S3_BUCKET_LETTER_SANITISE",
+        "S3_BUCKET_LETTERS_PDF",
+        "S3_BUCKET_INVALID_PDF",
+    ):
+        conn.create_bucket(
+            Bucket=current_app.config[bucket], CreateBucketConfiguration={"LocationConstraint": "eu-west-1"}
+        )
+    s3 = boto3.client("s3", region_name="eu-west-1")
+    s3.put_object(Bucket=current_app.config["S3_BUCKET_LETTERS_SCAN"], Key=filename, Body=b"original")
+    s3.put_object(Bucket=current_app.config["S3_BUCKET_LETTER_SANITISE"], Key=filename, Body=b"sanitised")
+
+    notification.status = NOTIFICATION_PENDING_VIRUS_CHECK
+    notification.billable_units = 1
+    notification.created_at = datetime(2018, 7, 1, 12)
+    return signing.encode(
+        {
+            "page_count": 2,
+            "message": None if validation_status == "passed" else "content-outside-printable-area",
+            "invalid_pages": None if validation_status == "passed" else [1],
+            "validation_status": validation_status,
+            "filename": filename,
+            "notification_id": str(notification.id),
+            "address": "A. User\nThe house on the corner",
+        }
+    )
+
+
+@mock_aws
+def test_process_sanitised_letter_hands_a_valid_letter_to_its_print_provider(sample_letter_notification, mocker):
+    queue = mocker.patch("app.celery.letters_pdf_tasks.queue_letter_for_delivery")
+    encoded_data = _sanitised_letter_in_s3(sample_letter_notification, "passed")
+
+    process_sanitised_letter(encoded_data)
+
+    queue.assert_called_once_with(sample_letter_notification)
+    assert list(
+        boto3.resource("s3", region_name="eu-west-1").Bucket(current_app.config["S3_BUCKET_LETTERS_PDF"]).objects.all()
+    )
+
+
+@mock_aws
+def test_process_sanitised_letter_does_not_hand_an_invalid_letter_to_a_print_provider(
+    sample_letter_notification, mocker
+):
+    mocker.patch("app.celery.letters_pdf_tasks.check_and_queue_callback_task")
+    queue = mocker.patch("app.celery.letters_pdf_tasks.queue_letter_for_delivery")
+    encoded_data = _sanitised_letter_in_s3(sample_letter_notification, "failed")
+
+    process_sanitised_letter(encoded_data)
+
+    assert not queue.called
+
+
+def test_process_sanitised_letter_does_not_hand_over_a_letter_it_retries(sample_letter_notification, mocker):
+    mocker.patch("app.celery.letters_pdf_tasks.s3.get_s3_object")
+    mocker.patch("app.celery.letters_pdf_tasks.update_letter_pdf_status", side_effect=Exception("db down"))
+    mocker.patch("app.celery.letters_pdf_tasks.process_sanitised_letter.retry", side_effect=MaxRetriesExceededError)
+    queue = mocker.patch("app.celery.letters_pdf_tasks.queue_letter_for_delivery")
+    sample_letter_notification.status = NOTIFICATION_PENDING_VIRUS_CHECK
+    encoded_data = signing.encode(
+        {
+            "page_count": 2,
+            "message": None,
+            "invalid_pages": None,
+            "validation_status": "passed",
+            "filename": "NOTIFY.FOO.D.2.C.20180701120000.PDF",
+            "notification_id": str(sample_letter_notification.id),
+            "address": "A. User\nThe house on the corner",
+        }
+    )
+
+    with pytest.raises(Exception):  # noqa: B017
+        process_sanitised_letter(encoded_data)
+
+    assert not queue.called

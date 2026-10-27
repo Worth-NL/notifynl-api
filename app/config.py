@@ -838,6 +838,11 @@ class TaskNamesNL(TaskNames):
     MESSAGEBOX_VIRUS_SCAN_FAILED = "messagebox.virus-scan-failed"
     MESSAGEBOX_PROCESS_UNPROCESSED = "messagebox.process-unprocessed"
     MESSAGEBOX_CHECK_STILL_PENDING = "messagebox.check-still-pending"
+    DELIVER_LETTER_VIA_PROVIDER = "deliver-letter-via-provider"
+    DISPATCH_STRANDED_LETTERS = "dispatch-stranded-letters"
+    CHECK_LETTERS_STUCK_SENDING = "check-letters-stuck-sending"
+    CHECK_PROVIDER_LETTERS_IN_TECHNICAL_FAILURE = "check-provider-letters-in-technical-failure"
+    PROCESS_LETTER_PROVIDER_STATUS = "process-letter-provider-status"
     # Precompiled letters submitted as multiple PDFs, merged into one letter before delivery -
     # own dedicated task flow, parallel to (and independent of) the single-PDF SCAN_FILE/
     # SANITISE_LETTER/PROCESS_VIRUS_SCAN_* flow above.
@@ -855,6 +860,50 @@ class TaskNamesNL(TaskNames):
     PROCESS_VIRUS_SCAN_SUCCESS_LETTER_ATTACHMENTS = "process-virus-scan-success-letter-attachments"
     PROCESS_VIRUS_SCAN_FAILED_LETTER_ATTACHMENTS = "process-virus-scan-failed-letter-attachments"
     PROCESS_VIRUS_SCAN_ERROR_LETTER_ATTACHMENTS = "process-virus-scan-error-letter-attachments"
+
+
+# Beat tasks that only make sense when letters are delivered through notifynl-dvla-service. Print provider letters
+# have their own alerts (check-letters-stuck-sending, check-provider-letters-in-technical-failure) instead of the
+# DVLA-runbook ones.
+DVLA_LETTER_BEAT_TASKS = (
+    "check-time-to-collate-letters",
+    "change-dvla-api-key",
+    "change-dvla-password",
+    "raise-alert-if-letter-notifications-still-sending",
+    "check-if-letters-in-technical-failure",
+)
+
+
+def build_letter_beat_schedule(beat_schedule, delivery_via_providers, collation_frequency):
+    """
+    Letters go either through notifynl-dvla-service (DVLA collation) or straight to each organisation's print
+    provider (app/celery/letter_provider_tasks.py), never both, depending on LETTER_DELIVERY_VIA_PROVIDERS.
+    """
+    schedule = {key: value for key, value in beat_schedule.items() if key not in DVLA_LETTER_BEAT_TASKS}
+    if delivery_via_providers:
+        schedule[TaskNamesNL.DISPATCH_STRANDED_LETTERS] = {
+            "task": TaskNamesNL.DISPATCH_STRANDED_LETTERS,
+            "schedule": crontab(minute="*/5"),
+            "options": {"queue": QueueNamesNL.PERIODIC},
+        }
+        schedule[TaskNamesNL.CHECK_LETTERS_STUCK_SENDING] = {
+            "task": TaskNamesNL.CHECK_LETTERS_STUCK_SENDING,
+            "schedule": crontab(hour=9, minute=15),
+            "options": {"queue": QueueNamesNL.PERIODIC},
+        }
+        schedule[TaskNamesNL.CHECK_PROVIDER_LETTERS_IN_TECHNICAL_FAILURE] = {
+            "task": TaskNamesNL.CHECK_PROVIDER_LETTERS_IN_TECHNICAL_FAILURE,
+            "schedule": crontab(hour=7, minute=0),
+            "options": {"queue": QueueNamesNL.PERIODIC},
+        }
+    else:
+        schedule |= {key: value for key, value in beat_schedule.items() if key in DVLA_LETTER_BEAT_TASKS}
+        schedule["check-time-to-collate-letters"] = {
+            "task": "check-time-to-collate-letters",
+            "schedule": crontab(minute=collation_frequency),
+            "options": {"queue": QueueNamesNL.PERIODIC},
+        }
+    return schedule
 
 
 class ConfigNL(Config):
@@ -885,17 +934,14 @@ class ConfigNL(Config):
         key: value for key, value in Config.CELERY["broker_transport_options"].items() if key != "predefined_queues"
     }
 
-    BEAT_SCHEDULE = {
-        key: value for key, value in Config.CELERY["beat_schedule"].items() if key != "check-time-to-collate-letters"
-    }
-
+    # Deliver letters straight to each organisation's print provider (Pingen or its own REST endpoint) instead of
+    # through notifynl-dvla-service. Off until an environment's letter providers are configured.
+    LETTER_DELIVERY_VIA_PROVIDERS = os.getenv("LETTER_DELIVERY_VIA_PROVIDERS", "0") == "1"
     LETTER_COLLATION_FREQUENCY = os.getenv("LETTER_COLLATION_FREQUENCY", "*/5")
 
-    BEAT_SCHEDULE["check-time-to-collate-letters"] = {
-        "task": "check-time-to-collate-letters",
-        "schedule": crontab(minute=LETTER_COLLATION_FREQUENCY),  # every 5 minutes, adjust as needed
-        "options": {"queue": QueueNamesNL.PERIODIC},
-    }
+    BEAT_SCHEDULE = build_letter_beat_schedule(
+        Config.CELERY["beat_schedule"], LETTER_DELIVERY_VIA_PROVIDERS, LETTER_COLLATION_FREQUENCY
+    )
 
     # The ebms-adapter has no true push callback -- delivery status is retrieved by polling the ebms-adapter for
     # unprocessed messages. 5 minutes matches the existing tend-providers-back-to-middle cadence and balances adapter
@@ -914,7 +960,11 @@ class ConfigNL(Config):
         "options": {"queue": QueueNamesNL.PERIODIC},
     }
 
-    CELERY_IMPORTS = Config.CELERY["imports"] + ["app.celery.messagebox_tasks", "app.celery.messagebox_scheduled_tasks"]
+    CELERY_IMPORTS = Config.CELERY["imports"] + [
+        "app.celery.messagebox_tasks",
+        "app.celery.messagebox_scheduled_tasks",
+        "app.celery.letter_provider_tasks",
+    ]
 
     CELERY = {
         **Config.CELERY,
@@ -922,6 +972,23 @@ class ConfigNL(Config):
         "beat_schedule": BEAT_SCHEDULE,
         "imports": CELERY_IMPORTS,
     }
+
+    # Letter providers: organisation admins configure their own REST endpoint, so only https URLs resolving to
+    # public addresses are allowed (see app/letters_nl/url_validation.py). Local development only: allow http and
+    # private hosts, for the local letter endpoint stub.
+    LETTER_ENDPOINT_ALLOW_INSECURE = False
+
+    # Pingen, the default letter provider (app/clients/letter/pingen.py). Staging unless configured otherwise: letters
+    # sent to Pingen's staging environment are never printed.
+    PINGEN_API_URL = os.getenv("PINGEN_API_URL", "https://api-staging.pingen.com")
+    PINGEN_IDENTITY_URL = os.getenv("PINGEN_IDENTITY_URL", "https://identity-staging.pingen.com")
+    PINGEN_CLIENT_ID = os.getenv("PINGEN_CLIENT_ID")
+    PINGEN_CLIENT_SECRET = os.getenv("PINGEN_CLIENT_SECRET")
+    PINGEN_ORGANISATION_ID = os.getenv("PINGEN_ORGANISATION_ID")
+    PINGEN_WEBHOOK_SIGNING_KEY = os.getenv("PINGEN_WEBHOOK_SIGNING_KEY")
+    PINGEN_DELIVERY_PRODUCT = os.getenv("PINGEN_DELIVERY_PRODUCT", "cheap")
+    PINGEN_PRINT_MODE = os.getenv("PINGEN_PRINT_MODE", "simplex")
+    PINGEN_PRINT_SPECTRUM = os.getenv("PINGEN_PRINT_SPECTRUM", "color")
 
     # Client-side SSL setup
     # NOTE: For mTLS setup, trusted certificates should be added to the system certificates.
@@ -989,6 +1056,39 @@ class DevNL(ConfigNL):
     DEBUG = True
     SQLALCHEMY_ECHO = False
 
+    LETTER_ENDPOINT_ALLOW_INSECURE = True
+
+    # The devcontainer no longer runs notifynl-dvla-service, so local letters go straight to the print providers
+    # (stubbed by Mockoon below) unless the env says otherwise.
+    LETTER_DELIVERY_VIA_PROVIDERS = os.getenv("LETTER_DELIVERY_VIA_PROVIDERS", "1") == "1"
+
+    # Third-party APIs point at the devcontainer's Mockoon stub (meta-repo .devcontainer/config/mockoon) rather than the
+    # real SMS providers and Pingen's staging environment, unless the env says otherwise.
+    MMG_URL = os.getenv("MMG_URL", "http://localhost:6300/mmg")
+    FIRETEXT_URL = os.getenv("FIRETEXT_URL", "http://localhost:6300/firetext")
+    SPRYNG_URL = os.getenv("SPRYNG_URL", "http://localhost:6300/spryng")
+    PINGEN_API_URL = os.getenv("PINGEN_API_URL", "http://localhost:6300/pingen/api")
+    PINGEN_IDENTITY_URL = os.getenv("PINGEN_IDENTITY_URL", "http://localhost:6300/pingen/identity")
+    PINGEN_CLIENT_ID = os.getenv("PINGEN_CLIENT_ID", "stub")
+    PINGEN_CLIENT_SECRET = os.getenv("PINGEN_CLIENT_SECRET", "stub")
+    PINGEN_ORGANISATION_ID = os.getenv("PINGEN_ORGANISATION_ID", "00000000-0000-0000-0000-000000000000")
+
+    # Mockoon's MMG and Firetext delivery receipts (and research mode's own) authenticate as notify:testkey
+    MMG_DELIVERY_STATUS_CALLBACK_ALLOWED_BASIC_AUTH_CREDENTIALS = json.loads(
+        os.getenv("MMG_DELIVERY_STATUS_CALLBACK_ALLOWED_BASIC_AUTH_CREDENTIALS")
+        or '{"notify": "$2b$04$JqCB477L3RTbIiENavb2EOPyv9dkWdL0XjSSCftcw7wynETJa/HgO"}'
+    )
+    FIRETEXT_DELIVERY_STATUS_CALLBACK_ALLOWED_BASIC_AUTH_CREDENTIALS = json.loads(
+        os.getenv("FIRETEXT_DELIVERY_STATUS_CALLBACK_ALLOWED_BASIC_AUTH_CREDENTIALS")
+        or '{"notify": "$2b$04$JqCB477L3RTbIiENavb2EOPyv9dkWdL0XjSSCftcw7wynETJa/HgO"}'
+    )
+    RESEARCH_MODE_SELF_CALLBACK_MMG_BASIC_AUTH_CREDENTIALS = json.loads(
+        os.getenv("RESEARCH_MODE_SELF_CALLBACK_MMG_BASIC_AUTH_CREDENTIALS") or '["notify", "testkey"]'
+    )
+    RESEARCH_MODE_SELF_CALLBACK_FIRETEXT_BASIC_AUTH_CREDENTIALS = json.loads(
+        os.getenv("RESEARCH_MODE_SELF_CALLBACK_FIRETEXT_BASIC_AUTH_CREDENTIALS") or '["notify", "testkey"]'
+    )
+
     CELERY_WORKER_LOG_LEVEL = "INFO"
 
     # kombu's SQS transport builds its boto3 endpoint_url straight from broker_url +
@@ -996,6 +1096,10 @@ class DevNL(ConfigNL):
     # set here explicitly rather than relying on the env var like other AWS clients do.
     CELERY = {
         **ConfigNL.CELERY,
+        # ConfigNL's schedule was built for its own LETTER_DELIVERY_VIA_PROVIDERS, so rebuild it for ours
+        "beat_schedule": build_letter_beat_schedule(
+            ConfigNL.CELERY["beat_schedule"], LETTER_DELIVERY_VIA_PROVIDERS, ConfigNL.LETTER_COLLATION_FREQUENCY
+        ),
         "broker_url": os.getenv("AWS_ENDPOINT_URL", "http://ministack:4566"),
         "broker_transport_options": {
             **ConfigNL.CELERY["broker_transport_options"],
@@ -1113,6 +1217,9 @@ class AccNL(ConfigNL):
 
 class ProdNL(ConfigNL):
     DEBUG = False
+
+    PINGEN_API_URL = os.getenv("PINGEN_API_URL", "https://api.pingen.com")
+    PINGEN_IDENTITY_URL = os.getenv("PINGEN_IDENTITY_URL", "https://identity.pingen.com")
 
     NOTIFY_EMAIL_DOMAIN = "notifynl.nl"
     FROM_NUMBER = "NOTIFYNL"

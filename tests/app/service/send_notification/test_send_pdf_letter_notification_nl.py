@@ -49,3 +49,21 @@ def test_send_pdf_letter_notification_creates_notification_and_moves_letter(
         f"service-{sample_service_full_permissions.id}/{file_id}.pdf",
         f"2019-08-02/NOTIFY.{notification.reference}.D.1.C.20190802110000.PDF",
     )
+
+
+def test_send_pdf_letter_notification_hands_the_letter_to_its_print_provider(
+    mocker, sample_service_full_permissions, notify_user, post_data
+):
+    mocker.patch("app.service.send_notification.utils_s3download")
+    mocker.patch("app.service.send_notification.get_page_count", return_value=1)
+    move = mocker.patch("app.service.send_notification.move_uploaded_pdf_to_letters_bucket")
+    queue = mocker.patch("app.service.send_notification.queue_letter_for_delivery")
+    calls = mocker.Mock()
+    calls.attach_mock(move, "move")
+    calls.attach_mock(queue, "queue")
+
+    send_pdf_letter_notification(sample_service_full_permissions.id, post_data)
+
+    # only once the PDF is in the letters bucket
+    assert [call[0] for call in calls.mock_calls] == ["move", "queue"]
+    assert str(queue.call_args.args[0].id) == post_data["file_id"]

@@ -9,6 +9,7 @@ from notifications_utils.timezones import convert_bst_to_utc, convert_utc_to_bst
 
 from app import notify_celery, signing
 from app.aws import s3
+from app.celery.letter_provider_tasks import queue_letter_for_delivery
 from app.celery.provider_tasks import deliver_letter
 from app.config import QueueNames, TaskNames, TaskNamesNL
 from app.constants import (
@@ -88,7 +89,7 @@ def get_pdf_for_templated_letter(self, notification_id):
             },
             "values": notification.personalisation,
             "logo_filename": notification.service.letter_branding and notification.service.letter_branding.filename,
-            "letter_address_placement": notification.service.letter_address_placement,
+            "letter_address_placement": notification.service.effective_letter_address_placement,
             "letter_filename": letter_filename,
             "notification_id": str(notification_id),
             "key_type": notification.key_type,
@@ -135,6 +136,8 @@ def update_billable_units_for_letter(self, notification_id, page_count):
     if notification.key_type != KEY_TYPE_TEST:
         notification.billable_units = billable_units
         dao_update_notification(notification)
+        # [NotifyNL] the letter's PDF is ready: hand it to its print provider
+        queue_letter_for_delivery(notification)
 
         extra = {
             "notification_id": notification_id,
@@ -385,7 +388,7 @@ def sanitise_letter(self, filename):
                 "notification_id": str(notification.id),
                 "filename": filename,
                 "allow_international_letters": notification.service.has_permission(INTERNATIONAL_LETTERS),
-                "letter_address_placement": notification.service.letter_address_placement,
+                "letter_address_placement": notification.service.effective_letter_address_placement,
             },
             queue=QueueNames.SANITISE_LETTERS,
             MessageGroupId=self.message_group_id,
@@ -436,7 +439,7 @@ def sanitise_letter_parts(self, filenames):
                 "notification_id": str(notification.id),
                 "filenames": filenames,
                 "allow_international_letters": notification.service.has_permission(INTERNATIONAL_LETTERS),
-                "letter_address_placement": notification.service.letter_address_placement,
+                "letter_address_placement": notification.service.effective_letter_address_placement,
             },
             queue=QueueNames.SANITISE_LETTERS,
         )
@@ -578,6 +581,9 @@ def process_sanitised_letter(self, sanitise_data):
             )
             update_notification_status_by_id(notification.id, NOTIFICATION_TECHNICAL_FAILURE)
             raise NotificationTechnicalFailureException(message) from e
+
+    # [NotifyNL] the sanitised PDF is in the letters bucket: hand the letter to its print provider
+    queue_letter_for_delivery(notification)
 
 
 def _move_invalid_letter_and_update_status(
@@ -773,7 +779,7 @@ def resanitise_pdf(self, notification_id):
             "notification_id": str(notification.id),
             "file_location": f"{folder_name}{filename}",
             "allow_international_letters": notification.service.has_permission(INTERNATIONAL_LETTERS),
-            "letter_address_placement": notification.service.letter_address_placement,
+            "letter_address_placement": notification.service.effective_letter_address_placement,
         },
         queue=QueueNames.SANITISE_LETTERS,
         MessageGroupId=self.message_group_id if self.message_group_id is not None else str(notification.service_id),

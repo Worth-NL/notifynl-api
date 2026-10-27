@@ -227,13 +227,12 @@ jobs:
         with:
           version: v4.2.2
 
-      - name: Add chart repositories
-        run: |
-          helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
-          helm repo add grafana https://grafana.github.io/helm-charts
-
-      - name: Helm chart dependency build
-        run: helm dependency build
+      # `update` (unlike `build`) fetches any repository listed in
+      # notifynl-full's Chart.yaml on its own, so new chart dependencies
+      # need no `helm repo add` here. Versions there are pinned exactly, so
+      # it resolves the same charts Chart.lock records.
+      - name: Helm chart dependency update
+        run: helm dependency update
         working-directory: ${{ github.workspace }}/notifynl-full
 
       # notifynl-full pins migrations.apiUpgrade.{alphagovRevision,nlRevision}
@@ -255,6 +254,8 @@ jobs:
       # (required/fail template checks included) without persisting anything
       # or scheduling any pods. Uses the exact same flags as the real deploy
       # below so it can't drift out of sync and give a false pass.
+      # stdout (the rendered manifests, Secrets included) is discarded; errors
+      # still reach the log via stderr and the exit code still gates the deploy.
       - name: Pre-flight validation (dry-run, no cluster mutation)
         id: helm-dry-run
         run: |
@@ -266,7 +267,8 @@ jobs:
           --set migrations.apiUpgrade.alphagovRevision=${{ steps.migration-revisions.outputs.alphagov-revision }} \
           --set migrations.apiUpgrade.nlRevision=${{ steps.migration-revisions.outputs.nl-revision }} \
           --rollback-on-failure \
-          --dry-run=server
+          --dry-run=server \
+          > /dev/null
 
       - name: Deploy new tag
         id: helm-deploy
@@ -323,7 +325,7 @@ jobs:
               issue_number: context.issue.number,
               body
             })
-  #smoke tests
+
   smoke-test:
     needs: deploy
     if: github.event.pull_request.draft == false
