@@ -841,6 +841,7 @@ class TaskNamesNL(TaskNames):
     DELIVER_LETTER_VIA_PROVIDER = "deliver-letter-via-provider"
     DISPATCH_STRANDED_LETTERS = "dispatch-stranded-letters"
     CHECK_LETTERS_STUCK_SENDING = "check-letters-stuck-sending"
+    CHECK_PROVIDER_LETTERS_IN_TECHNICAL_FAILURE = "check-provider-letters-in-technical-failure"
     PROCESS_LETTER_PROVIDER_STATUS = "process-letter-provider-status"
     # Precompiled letters submitted as multiple PDFs, merged into one letter before delivery -
     # own dedicated task flow, parallel to (and independent of) the single-PDF SCAN_FILE/
@@ -862,7 +863,8 @@ class TaskNamesNL(TaskNames):
 
 
 # Beat tasks that only make sense when letters are delivered through notifynl-dvla-service. Print provider letters
-# have their own alert (check-letters-stuck-sending) instead of the DVLA-runbook technical-failure one.
+# have their own alerts (check-letters-stuck-sending, check-provider-letters-in-technical-failure) instead of the
+# DVLA-runbook ones.
 DVLA_LETTER_BEAT_TASKS = (
     "check-time-to-collate-letters",
     "change-dvla-api-key",
@@ -887,6 +889,11 @@ def build_letter_beat_schedule(beat_schedule, delivery_via_providers, collation_
         schedule[TaskNamesNL.CHECK_LETTERS_STUCK_SENDING] = {
             "task": TaskNamesNL.CHECK_LETTERS_STUCK_SENDING,
             "schedule": crontab(hour=9, minute=15),
+            "options": {"queue": QueueNamesNL.PERIODIC},
+        }
+        schedule[TaskNamesNL.CHECK_PROVIDER_LETTERS_IN_TECHNICAL_FAILURE] = {
+            "task": TaskNamesNL.CHECK_PROVIDER_LETTERS_IN_TECHNICAL_FAILURE,
+            "schedule": crontab(hour=7, minute=0),
             "options": {"queue": QueueNamesNL.PERIODIC},
         }
     else:

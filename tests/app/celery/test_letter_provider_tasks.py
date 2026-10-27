@@ -10,6 +10,7 @@ from redis.exceptions import LockNotOwnedError
 from app import signing
 from app.celery.letter_provider_tasks import (
     check_letters_stuck_sending,
+    check_provider_letters_in_technical_failure,
     deliver_letter_via_provider,
     dispatch_stranded_letters,
     process_letter_provider_status,
@@ -560,6 +561,51 @@ def test_check_letters_stuck_sending_without_stuck_letters(notify_api, letter_te
     check_letters_stuck_sending()
 
     assert not send_ticket.called
+
+
+@freeze_time("2026-09-29 12:00")
+@pytest.mark.parametrize("zendesk_alerts", [True, False])
+def test_check_provider_letters_in_technical_failure(notify_api, letter_template, mocker, zendesk_alerts):
+    send_ticket = mocker.patch("app.celery.letter_provider_tasks.zendesk_client.send_ticket_to_zendesk")
+    log_error = mocker.patch("app.celery.letter_provider_tasks.current_app.logger.error")
+    failed = []
+    for detailed_status_code in ("pingen-http-404", "pingen-http-404", "print-provider-unavailable"):
+        notification = create_notification(
+            template=letter_template, status="technical-failure", created_at=datetime(2026, 9, 28, 10)
+        )
+        notification.detailed_status_code = detailed_status_code
+        failed.append(notification)
+    # too old, or not failed
+    create_notification(template=letter_template, status="technical-failure", created_at=datetime(2026, 9, 25, 10))
+    create_notification(template=letter_template, status="permanent-failure", created_at=datetime(2026, 9, 28, 10))
+
+    with set_config_values(notify_api, {"NOTIFY_ENVIRONMENT": "test", "SEND_ZENDESK_ALERTS_ENABLED": zendesk_alerts}):
+        check_provider_letters_in_technical_failure()
+
+    # logged even without Zendesk, so it can be alerted on from the logs
+    extra = log_error.call_args.kwargs["extra"]
+    assert extra["number_of_notifications"] == 3
+    assert extra["detailed_status_codes"] == {"pingen-http-404": 2, "print-provider-unavailable": 1}
+    assert send_ticket.called is zendesk_alerts
+    if zendesk_alerts:
+        ticket = send_ticket.call_args.args[0]
+        assert ticket.subject == "[test] Letters in 'technical-failure' status"
+        assert "{'pingen-http-404': 2, 'print-provider-unavailable': 1}" in ticket.message
+        assert "notifications-manuals" not in ticket.message
+        for notification in failed:
+            assert str(notification.id) in ticket.message
+
+
+def test_check_provider_letters_in_technical_failure_without_failed_letters(notify_api, letter_template, mocker):
+    send_ticket = mocker.patch("app.celery.letter_provider_tasks.zendesk_client.send_ticket_to_zendesk")
+    log_error = mocker.patch("app.celery.letter_provider_tasks.current_app.logger.error")
+    create_notification(template=letter_template, status="delivered")
+
+    with set_config(notify_api, "SEND_ZENDESK_ALERTS_ENABLED", True):
+        check_provider_letters_in_technical_failure()
+
+    assert not send_ticket.called
+    assert not log_error.called
 
 
 @freeze_time("2026-09-29 12:00")

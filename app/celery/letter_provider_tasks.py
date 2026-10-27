@@ -1,3 +1,4 @@
+from collections import Counter
 from datetime import datetime, timedelta
 
 from botocore.exceptions import ClientError as BotoClientError
@@ -33,6 +34,7 @@ from app.dao.notifications_dao import (
     dao_get_letters_ready_to_send_since,
     dao_get_letters_stuck_sending,
     dao_get_notification_or_history_by_id,
+    dao_letters_in_technical_failure,
     dao_mark_letter_sent,
     dao_record_letter_despatched_on_by_id,
     dao_touch_notification,
@@ -284,6 +286,47 @@ def check_letters_stuck_sending():
                 ticket_type=NotifySupportTicket.TYPE_TASK,
                 notify_ticket_type=NotifyTicketType.TECHNICAL,
                 notify_task_type="notify_task_letters_stuck_sending",
+            )
+        )
+
+
+@notify_celery.task(name=TaskNamesNL.CHECK_PROVIDER_LETTERS_IN_TECHNICAL_FAILURE)
+def check_provider_letters_in_technical_failure():
+    """
+    Letters that failed on our side or their print provider's in the last 3 days: rejected (e.g. a misconfigured
+    provider), out of retries, or with issues reported by the provider. Replaces upstream's check, which points at the
+    DVLA runbook.
+    """
+    letters = dao_letters_in_technical_failure(session=db.session_bulk, retry_attempts=2)
+    if not letters:
+        return
+
+    notification_ids = sorted(str(notification.id) for notification in letters)
+    status_codes = Counter(notification.detailed_status_code or "unknown" for notification in letters)
+    current_app.logger.error(
+        "Letters in technical-failure",
+        extra={
+            "number_of_notifications": len(notification_ids),
+            "notification_ids": notification_ids,
+            "detailed_status_codes": dict(status_codes),
+        },
+    )
+    if current_app.should_send_zendesk_alerts:
+        environment = current_app.config["NOTIFY_ENVIRONMENT"]
+        zendesk_client.send_ticket_to_zendesk(
+            NotifySupportTicket(
+                subject=f"[{environment}] Letters in 'technical-failure' status",
+                message=(
+                    f"{len(notification_ids)} letters created in the last 3 days have 'technical-failure' status. "
+                    "The detailed status code says why (e.g. pingen-http-404 or endpoint-http-400 for a rejected "
+                    "letter, print-provider-unavailable after running out of retries, print-provider-issue when the "
+                    "provider reported a problem). Check the organisation's letter provider before resending.\n\n"
+                    f"Detailed status codes: {dict(sorted(status_codes.items()))}\n\n"
+                    f"Notifications: {notification_ids}"
+                ),
+                ticket_type=NotifySupportTicket.TYPE_TASK,
+                notify_ticket_type=NotifyTicketType.TECHNICAL,
+                notify_task_type="notify_task_letters_technical_failure_status",
             )
         )
 

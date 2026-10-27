@@ -29,7 +29,11 @@ DVLA_TASKS = {
     "raise-alert-if-letter-notifications-still-sending",
     "check-if-letters-in-technical-failure",
 }
-PROVIDER_TASKS = {"dispatch-stranded-letters", "check-letters-stuck-sending"}
+PROVIDER_TASKS = {
+    "dispatch-stranded-letters",
+    "check-letters-stuck-sending",
+    "check-provider-letters-in-technical-failure",
+}
 
 
 def test_letter_beat_schedule_while_letters_go_through_dvla():
