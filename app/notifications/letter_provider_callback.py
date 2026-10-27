@@ -88,18 +88,28 @@ def process_pingen_webhook():
     except (ValueError, KeyError, TypeError) as e:
         raise InvalidRequest("Invalid Pingen webhook payload", status_code=400) from e
 
+    extra = {"pingen_webhook_type": webhook_type, "pingen_letter_id": deliverable.get("id")}
     # anything we can't act on is acknowledged, otherwise Pingen keeps retrying it
     status = PINGEN_WEBHOOK_STATUSES.get(webhook_type)
-    notification_id = dao_get_notification_id_by_provider_reference(LETTER_PROVIDER_PINGEN, deliverable["id"])
-    if deliverable.get("type") != "letters" or not status or not notification_id:
+    if deliverable.get("type") != "letters" or not status:
         current_app.logger.info(
             "Ignoring Pingen webhook %s for %s %s",
             webhook_type,
             deliverable.get("type"),
             deliverable.get("id"),
-            extra={"pingen_webhook_type": webhook_type, "pingen_letter_id": deliverable.get("id")},
+            extra=extra,
         )
         return jsonify(result="ignored"), 200
+
+    notification_id = dao_get_notification_id_by_provider_reference(LETTER_PROVIDER_PINGEN, deliverable["id"])
+    if not notification_id:
+        # Pingen can report on a letter before its delivery task saved the reference (or after that task died): a
+        # non-2xx makes Pingen try again later (after 1m, 5m, 10m, 1h, 2h and 4h). Letters of another environment
+        # sharing the Pingen organisation end up here too, until Pingen gives up.
+        current_app.logger.info(
+            "Pingen webhook %s for letter %s we don't know (yet)", webhook_type, deliverable.get("id"), extra=extra
+        )
+        return jsonify(result="unknown letter"), 404
 
     _queue_status_update(
         str(notification_id), LETTER_PROVIDER_PINGEN, status, (data.get("attributes") or {}).get("reason")

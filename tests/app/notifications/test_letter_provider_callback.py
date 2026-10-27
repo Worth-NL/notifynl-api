@@ -140,12 +140,11 @@ def test_pingen_webhook_queues_the_status_update(
 @pytest.mark.parametrize(
     "payload",
     [
-        # e.g. a letter sent through notifynl-dvla-service
-        _pingen_webhook("webhook_sent", letter_id="00000000-0000-0000-0000-000000000000"),
         _pingen_webhook("webhook_sent", deliverable_type="emails"),
         _pingen_webhook("webhook_channel_subscriptions"),
+        _pingen_webhook("webhook_channel_subscriptions", letter_id="00000000-0000-0000-0000-000000000000"),
     ],
-    ids=["unknown-letter", "not-a-letter", "unknown-webhook-type"],
+    ids=["not-a-letter", "unknown-webhook-type", "unknown-webhook-type-for-an-unknown-letter"],
 )
 def test_pingen_webhook_acknowledges_what_it_cannot_act_on(
     client, notify_db_session, pingen_signing_key, mock_status_task, payload
@@ -156,6 +155,18 @@ def test_pingen_webhook_acknowledges_what_it_cannot_act_on(
 
     assert response.status_code == 200
     assert response.json == {"result": "ignored"}
+    assert not mock_status_task.called
+
+
+@pytest.mark.parametrize("webhook_type", ["webhook_sent", "webhook_issues"])
+def test_pingen_webhook_has_pingen_retry_a_letter_it_does_not_know_yet(
+    client, notify_db_session, pingen_signing_key, mock_status_task, webhook_type
+):
+    # e.g. Pingen reported on the letter before its delivery task saved Pingen's letter id
+    response = _post_pingen(client, _pingen_webhook(webhook_type))
+
+    assert response.status_code == 404
+    assert response.json == {"result": "unknown letter"}
     assert not mock_status_task.called
 
 
