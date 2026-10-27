@@ -307,9 +307,9 @@ def test_dao_get_letters_abandoned_sending(sample_letter_template):
     ]
 
 
-# Twins of the upstream provider-stats tests. NotifyNL also has Spryng and keeps MMG inactive: the undelivered-age
-# report lists Spryng with zero counts, and the banded reports (active providers only) use Spryng where upstream
-# uses MMG.
+# Twins of the upstream provider-stats tests. NotifyNL also has Spryng and the Pingen and REST endpoint print
+# providers, and keeps MMG inactive: the undelivered-age report lists those with zero counts, and the banded reports
+# (active providers only) use Spryng where upstream uses MMG.
 
 
 def _tds(s):
@@ -333,6 +333,12 @@ def _tds(s):
                 ("mmg", "sms", "normal"): (0, 0, 0),
                 ("mmg", "sms", "team"): (0, 0, 0),
                 ("mmg", "sms", "test"): (0, 0, 0),
+                ("pingen", "letter", "normal"): (0, 0, 0),
+                ("pingen", "letter", "team"): (0, 0, 0),
+                ("pingen", "letter", "test"): (0, 0, 0),
+                ("rest-endpoint", "letter", "normal"): (0, 0, 0),
+                ("rest-endpoint", "letter", "team"): (0, 0, 0),
+                ("rest-endpoint", "letter", "test"): (0, 0, 0),
                 ("ses", "email", "normal"): (0, 0, 0),
                 ("ses", "email", "team"): (0, 0, 0),
                 ("ses", "email", "test"): (0, 0, 0),
@@ -375,6 +381,12 @@ def _tds(s):
                 ("mmg", "sms", "normal"): (0, 3, 5),
                 ("mmg", "sms", "team"): (0, 0, 0),
                 ("mmg", "sms", "test"): (0, 1, 1),
+                ("pingen", "letter", "normal"): (0, 0, 0),
+                ("pingen", "letter", "team"): (0, 0, 0),
+                ("pingen", "letter", "test"): (0, 0, 0),
+                ("rest-endpoint", "letter", "normal"): (0, 0, 0),
+                ("rest-endpoint", "letter", "team"): (0, 0, 0),
+                ("rest-endpoint", "letter", "test"): (0, 0, 0),
                 ("ses", "email", "normal"): (0, 0, 0),
                 ("ses", "email", "team"): (0, 0, 0),
                 ("ses", "email", "test"): (0, 0, 0),
@@ -414,6 +426,12 @@ def _tds(s):
                 ("mmg", "sms", "normal"): (0, 0, 0),
                 ("mmg", "sms", "team"): (0, 0, 0),
                 ("mmg", "sms", "test"): (2, 2, 3),
+                ("pingen", "letter", "normal"): (0, 0, 0),
+                ("pingen", "letter", "team"): (0, 0, 0),
+                ("pingen", "letter", "test"): (0, 0, 0),
+                ("rest-endpoint", "letter", "normal"): (0, 0, 0),
+                ("rest-endpoint", "letter", "team"): (0, 0, 0),
+                ("rest-endpoint", "letter", "test"): (0, 0, 0),
                 ("ses", "email", "normal"): (0, 0, 0),
                 ("ses", "email", "team"): (0, 0, 0),
                 ("ses", "email", "test"): (0, 0, 0),
