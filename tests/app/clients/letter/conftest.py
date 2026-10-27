@@ -1,8 +1,25 @@
 import socket
 
 import pytest
+import requests
+from urllib3.exceptions import MaxRetryError, NameResolutionError, NewConnectionError, ProtocolError
 
 from app.clients.letter import Letter
+
+# requests errors as raised for a failure to connect, which means the provider never got the request ...
+FAILED_TO_CONNECT = {
+    "connection-refused": requests.ConnectionError(
+        MaxRetryError(None, "/", NewConnectionError(None, "Connection refused"))
+    ),
+    "dns": requests.ConnectionError(MaxRetryError(None, "/", NameResolutionError("print.example.com", None, "nope"))),
+    "connect-timeout": requests.ConnectTimeout(MaxRetryError(None, "/", NewConnectionError(None, "timed out"))),
+}
+# ... and for failures after the request went out, which the provider may have acted on
+FAILED_AFTER_SENDING = {
+    "read-timeout": requests.ReadTimeout("Read timed out."),
+    "connection-closed": requests.ConnectionError(ProtocolError("Connection aborted.")),
+    "chunked-encoding": requests.exceptions.ChunkedEncodingError("Connection broken"),
+}
 
 
 @pytest.fixture

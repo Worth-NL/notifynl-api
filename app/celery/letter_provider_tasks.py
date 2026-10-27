@@ -27,7 +27,10 @@ from app.constants import (
 )
 from app.dao.letter_provider_reference_dao import (
     dao_create_letter_provider_reference,
+    dao_get_letter_provider_pin,
     dao_get_letter_provider_reference,
+    dao_pin_letter_provider,
+    dao_unpin_letter_provider,
 )
 from app.dao.notifications_dao import (
     dao_claim_letter_for_sending,
@@ -43,7 +46,7 @@ from app.dao.notifications_dao import (
     update_notification_status_by_id,
 )
 from app.letters.utils import LetterPDFNotFound, find_letter_pdf_in_s3
-from app.letters_nl.constants import LETTER_PROVIDER_CALLBACK_PATH
+from app.letters_nl.constants import LETTER_PROVIDER_CALLBACK_PATH, LETTER_PROVIDER_REST_ENDPOINT
 from app.letters_nl.provider import resolve_letter_provider
 from app.models import LetterCostThreshold
 from app.notifications.notifications_ses_callback import check_and_queue_callback_task
@@ -151,10 +154,30 @@ def _deliver_claimed_letter(task, notification):
 
     if reference := dao_get_letter_provider_reference(notification_id):
         # an earlier attempt got the letter accepted but didn't get to mark it sent
+        dao_unpin_letter_provider(notification_id)
         _mark_sent(notification_id, reference.provider)
         return
 
     client, letter_provider = resolve_letter_provider(service.organisation_id)
+    # Pingen has one URL for all organisations; a REST endpoint is only the same provider at the same URL
+    endpoint_url = letter_provider.endpoint_url if client.name == LETTER_PROVIDER_REST_ENDPOINT else None
+
+    pin = dao_get_letter_provider_pin(notification_id)
+    if pin and (pin.provider, pin.endpoint_url) != (client.name, endpoint_url):
+        # an earlier attempt may have got the letter accepted, so sending it again elsewhere could print it twice
+        current_app.logger.error(
+            "Letter %s may have been accepted by %s %s, but its organisation now sends letters with %s %s: check "
+            "with %s before resending it",
+            notification_id,
+            pin.provider,
+            pin.endpoint_url or "",
+            client.name,
+            endpoint_url or "",
+            pin.provider,
+            extra={"notification_id": notification_id, "provider_name": pin.provider},
+        )
+        _fail(notification_id, "print-provider-changed")
+        return
 
     try:
         pdf = find_letter_pdf_in_s3(notification).get()["Body"].read()
@@ -174,15 +197,23 @@ def _deliver_claimed_letter(task, notification):
         callback_url=_callback_url(notification_id),
     )
 
+    # kept unless the send certainly didn't reach the provider, also if this worker dies during it
+    dao_pin_letter_provider(notification_id, client.name, endpoint_url)
     try:
         result = client.send_letter(letter, letter_provider)
-    except LetterClientRetryableException:
+    except LetterClientRetryableException as e:
         current_app.logger.exception(
             "RETRY: letter %s could not be sent with %s",
             notification_id,
             client.name,
-            extra={"notification_id": notification_id, "provider_name": client.name},
+            extra={
+                "notification_id": notification_id,
+                "provider_name": client.name,
+                "may_have_been_accepted": e.may_have_been_accepted,
+            },
         )
+        if not e.may_have_been_accepted:
+            dao_unpin_letter_provider(notification_id)
         _retry(task, notification_id, "print-provider-unavailable")
         return
     except LetterClientNonRetryableException as e:
@@ -192,11 +223,13 @@ def _deliver_claimed_letter(task, notification):
             client.name,
             extra={"notification_id": notification_id, "provider_name": client.name},
         )
+        dao_unpin_letter_provider(notification_id)
         _fail(notification_id, e.detailed_status_code)
         return
 
     if result.provider_reference:
         dao_create_letter_provider_reference(notification_id, client.name, result.provider_reference)
+    dao_unpin_letter_provider(notification_id)
     _mark_sent(notification_id, client.name)
 
 

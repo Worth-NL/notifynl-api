@@ -2,11 +2,11 @@ import base64
 import socket
 
 import pytest
-import requests
 
 from app.clients.letter import LetterClientNonRetryableException, LetterClientRetryableException
 from app.clients.letter.rest_endpoint import RestEndpointLetterClient
 from app.models_nl import OrganisationLetterProvider
+from tests.app.clients.letter.conftest import FAILED_AFTER_SENDING, FAILED_TO_CONNECT
 from tests.conftest import set_config
 
 ENDPOINT_URL = "https://print.example.com/letters"
@@ -126,20 +126,44 @@ def test_send_letter_with_oauth_token_failure_is_retryable(client, letter, rmock
         client.send_letter(letter, letter_provider)
 
 
-@pytest.mark.parametrize("status_code", [429, 500, 502, 503])
-def test_send_letter_server_errors_are_retryable(client, letter, rmock, status_code):
+@pytest.mark.parametrize(
+    "status_code, may_have_been_accepted", [(429, False), (500, True), (502, True), (503, True), (504, True)]
+)
+def test_send_letter_server_errors_are_retryable(client, letter, rmock, status_code, may_have_been_accepted):
     rmock.post(ENDPOINT_URL, status_code=status_code)
 
-    with pytest.raises(LetterClientRetryableException):
+    with pytest.raises(LetterClientRetryableException) as exc_info:
         client.send_letter(letter, _letter_provider())
 
+    assert exc_info.value.may_have_been_accepted is may_have_been_accepted
 
-@pytest.mark.parametrize("exception", [requests.ConnectionError, requests.Timeout, requests.exceptions.SSLError])
-def test_send_letter_connection_errors_are_retryable(client, letter, rmock, exception):
+
+@pytest.mark.parametrize(
+    "exception, may_have_been_accepted",
+    [(e, False) for e in FAILED_TO_CONNECT.values()] + [(e, True) for e in FAILED_AFTER_SENDING.values()],
+    ids=[*FAILED_TO_CONNECT, *FAILED_AFTER_SENDING],
+)
+def test_send_letter_connection_errors_are_retryable(client, letter, rmock, exception, may_have_been_accepted):
     rmock.post(ENDPOINT_URL, exc=exception)
 
-    with pytest.raises(LetterClientRetryableException):
+    with pytest.raises(LetterClientRetryableException) as exc_info:
         client.send_letter(letter, _letter_provider())
+
+    assert exc_info.value.may_have_been_accepted is may_have_been_accepted
+
+
+@pytest.mark.parametrize("exception", [*FAILED_TO_CONNECT.values(), *FAILED_AFTER_SENDING.values()])
+def test_send_letter_oauth_token_errors_never_mean_the_letter_was_accepted(client, letter, rmock, exception):
+    rmock.post(TOKEN_URL, exc=exception)
+    letter_provider = _letter_provider(
+        "oauth", {"token_endpoint": TOKEN_URL, "client_id": "notify", "client_secret": "s3cret"}
+    )
+
+    with pytest.raises(LetterClientRetryableException) as exc_info:
+        client.send_letter(letter, letter_provider)
+
+    assert exc_info.value.may_have_been_accepted is False
+    assert not [r for r in rmock.request_history if r.url == ENDPOINT_URL]
 
 
 @pytest.mark.parametrize("status_code", [301, 302, 400, 401, 403, 404, 409, 422])

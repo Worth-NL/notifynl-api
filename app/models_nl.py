@@ -113,3 +113,19 @@ class LetterProviderReference(db.Model):
     created_at = db.Column(db.DateTime, nullable=False, default=datetime.datetime.utcnow)
 
     __table_args__ = (db.UniqueConstraint("provider", "provider_reference", name="uix_letter_provider_reference"),)
+
+
+class LetterProviderPin(db.Model):
+    """
+    The print provider a letter is being sent to (and, for a REST endpoint, its URL), written before the send. It is
+    removed once the letter was accepted or certainly wasn't, and kept while the provider may have accepted it (a
+    timeout or server error on the send, or a worker that died during it), so a later attempt can't send the letter
+    to another provider as well.
+    """
+
+    __tablename__ = "letter_provider_pin"
+
+    notification_id = db.Column(UUID(as_uuid=True), primary_key=True)
+    provider = db.Column(db.String, nullable=False)
+    endpoint_url = db.Column(db.String, nullable=True)
+    created_at = db.Column(db.DateTime, nullable=False, default=datetime.datetime.utcnow)

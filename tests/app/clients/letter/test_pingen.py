@@ -1,8 +1,8 @@
 import pytest
-import requests
 
 from app.clients.letter import LetterClientNonRetryableException, LetterClientRetryableException
 from app.clients.letter.pingen import PingenClient
+from tests.app.clients.letter.conftest import FAILED_AFTER_SENDING, FAILED_TO_CONNECT
 from tests.conftest import set_config_values
 
 API = "https://api-staging.pingen.com"
@@ -139,12 +139,16 @@ def test_access_token_failures_are_retryable(client, letter, pingen, status_code
     assert not _requests(pingen, "POST", LETTERS_URL)
 
 
-@pytest.mark.parametrize("status_code", [409, 424, 429, 500, 503])
-def test_create_letter_retryable_errors(client, letter, pingen, status_code):
+@pytest.mark.parametrize(
+    "status_code, may_have_been_accepted", [(409, True), (424, True), (429, False), (500, True), (503, True)]
+)
+def test_create_letter_retryable_errors(client, letter, pingen, status_code, may_have_been_accepted):
     pingen.post(LETTERS_URL, status_code=status_code)
 
-    with pytest.raises(LetterClientRetryableException):
+    with pytest.raises(LetterClientRetryableException) as exc_info:
         client.send_letter(letter, None)
+
+    assert exc_info.value.may_have_been_accepted is may_have_been_accepted
 
 
 @pytest.mark.parametrize("status_code", [400, 403, 404, 422])
@@ -171,12 +175,39 @@ def test_upload_failures_are_retryable(client, letter, pingen, status_code):
     assert not _requests(pingen, "POST", LETTERS_URL)
 
 
-@pytest.mark.parametrize("exception", [requests.ConnectionError, requests.Timeout])
-def test_connection_errors_are_retryable(client, letter, pingen, exception):
+@pytest.mark.parametrize(
+    "exception, may_have_been_accepted",
+    [(e, False) for e in FAILED_TO_CONNECT.values()] + [(e, True) for e in FAILED_AFTER_SENDING.values()],
+    ids=[*FAILED_TO_CONNECT, *FAILED_AFTER_SENDING],
+)
+def test_connection_errors_are_retryable(client, letter, pingen, exception, may_have_been_accepted):
     pingen.post(LETTERS_URL, exc=exception)
 
-    with pytest.raises(LetterClientRetryableException):
+    with pytest.raises(LetterClientRetryableException) as exc_info:
         client.send_letter(letter, None)
+
+    assert exc_info.value.may_have_been_accepted is may_have_been_accepted
+
+
+@pytest.mark.parametrize(
+    "fail",
+    [
+        lambda pingen: pingen.post(f"{IDENTITY}/auth/access-tokens", exc=FAILED_AFTER_SENDING["read-timeout"]),
+        lambda pingen: pingen.post(f"{IDENTITY}/auth/access-tokens", status_code=500),
+        lambda pingen: pingen.get(f"{API}/file-upload", exc=FAILED_AFTER_SENDING["read-timeout"]),
+        lambda pingen: pingen.get(f"{API}/file-upload", status_code=503),
+        lambda pingen: pingen.put(UPLOAD_URL, exc=FAILED_AFTER_SENDING["read-timeout"]),
+        lambda pingen: pingen.post(LETTERS_URL, status_code=401),
+    ],
+    ids=["token-timeout", "token-error", "upload-url-timeout", "upload-url-error", "upload-timeout", "create-401"],
+)
+def test_failures_before_creating_the_letter_never_mean_it_was_accepted(client, letter, pingen, fail):
+    fail(pingen)
+
+    with pytest.raises(LetterClientRetryableException) as exc_info:
+        client.send_letter(letter, None)
+
+    assert exc_info.value.may_have_been_accepted is False
 
 
 WEBHOOKS_URL = f"{API}/organisations/{ORGANISATION_ID}/webhooks"

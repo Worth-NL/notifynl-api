@@ -23,7 +23,11 @@ from app.clients.letter import (
 )
 from app.clients.letter.pingen import PingenClient
 from app.clients.letter.rest_endpoint import RestEndpointLetterClient
-from app.dao.letter_provider_reference_dao import dao_get_letter_provider_reference
+from app.dao.letter_provider_reference_dao import (
+    dao_get_letter_provider_pin,
+    dao_get_letter_provider_reference,
+    dao_pin_letter_provider,
+)
 from app.dao.notifications_dao import dao_get_notification_or_history_by_id
 from app.letters.utils import LetterPDFNotFound
 from app.models import LetterCostThreshold, Notification, NotificationHistory, NotificationLetterDespatch
@@ -411,6 +415,154 @@ def test_deliver_letter_via_provider_retry_uses_the_provider_chosen_since_the_cl
     assert send_with_rest_endpoint.call_count == 1
     notification = Notification.query.get(letter_notification.id)
     assert (notification.status, notification.sent_by) == ("sent", "rest-endpoint")
+    assert dao_get_letter_provider_pin(letter_notification.id) is None
+
+
+def _use_rest_endpoint(organisation, endpoint_url="https://print.example.com/letters"):
+    return create_organisation_letter_provider(
+        organisation,
+        "rest-endpoint",
+        endpoint_url=endpoint_url,
+        auth_method="api_key",
+        auth_config={"api_key_header": "X-Api-Key", "api_key": "secret"},
+        address_placement="50mm",
+    )
+
+
+def _retry_delivery(notification_id):
+    deliver_letter_via_provider.push_request(retries=1)
+    try:
+        deliver_letter_via_provider.run(str(notification_id))
+    finally:
+        deliver_letter_via_provider.pop_request()
+
+
+def _details(notification):
+    notification = Notification.query.get(notification.id)
+    return notification.status, notification.detailed_status_code
+
+
+def test_deliver_letter_via_provider_pins_the_provider_only_while_sending(
+    letter_notification, pdf_in_s3, send_with_pingen, mock_callback
+):
+    pins_while_sending = []
+
+    def send_letter(*args):
+        pin = dao_get_letter_provider_pin(letter_notification.id)
+        pins_while_sending.append((pin.provider, pin.endpoint_url))
+        return LetterSendResult(provider_reference="pingen-1")
+
+    send_with_pingen.side_effect = send_letter
+
+    deliver_letter_via_provider(str(letter_notification.id))
+
+    assert pins_while_sending == [("pingen", None)]
+    assert dao_get_letter_provider_pin(letter_notification.id) is None
+    assert _status(letter_notification) == "sent"
+
+
+@pytest.mark.parametrize(
+    "first_provider, switch_to",
+    [
+        ("pingen", lambda organisation: _use_rest_endpoint(organisation)),
+        ("rest-endpoint", lambda organisation: create_organisation_letter_provider(organisation, "pingen")),
+        # a misconfigured endpoint falls back to Pingen
+        ("rest-endpoint", lambda organisation: create_organisation_letter_provider(organisation, "rest-endpoint")),
+        (
+            "rest-endpoint",
+            lambda organisation: _use_rest_endpoint(organisation, endpoint_url="https://other.example.com/letters"),
+        ),
+    ],
+    ids=["pingen-to-rest-endpoint", "rest-endpoint-to-pingen", "rest-endpoint-to-incomplete", "other-endpoint-url"],
+)
+def test_deliver_letter_via_provider_never_sends_a_letter_that_may_have_been_accepted_to_another_provider(
+    organisation,
+    letter_notification,
+    pdf_in_s3,
+    send_with_pingen,
+    send_with_rest_endpoint,
+    mock_callback,
+    mocker,
+    first_provider,
+    switch_to,
+):
+    if first_provider == "rest-endpoint":
+        _use_rest_endpoint(organisation)
+    first_send = {"pingen": send_with_pingen, "rest-endpoint": send_with_rest_endpoint}[first_provider]
+    first_send.side_effect = LetterClientRetryableException("read timeout", may_have_been_accepted=True)
+    mocker.patch.object(deliver_letter_via_provider, "retry", side_effect=Retry)
+    with pytest.raises(Retry):
+        deliver_letter_via_provider(str(letter_notification.id))
+
+    switch_to(organisation)
+    _retry_delivery(letter_notification.id)
+
+    assert send_with_pingen.call_count + send_with_rest_endpoint.call_count == 1
+    assert _details(letter_notification) == ("technical-failure", "print-provider-changed")
+    assert mock_callback.called
+    # left for whoever checks whether the provider has the letter
+    assert dao_get_letter_provider_pin(letter_notification.id).provider == first_provider
+
+
+def test_deliver_letter_via_provider_resends_a_letter_that_may_have_been_accepted_to_the_same_provider(
+    organisation, letter_notification, pdf_in_s3, send_with_rest_endpoint, mock_callback, mocker
+):
+    _use_rest_endpoint(organisation)
+    send_with_rest_endpoint.side_effect = [
+        LetterClientRetryableException("read timeout", may_have_been_accepted=True),
+        LetterSendResult(provider_reference=None),
+    ]
+    mocker.patch.object(deliver_letter_via_provider, "retry", side_effect=Retry)
+    with pytest.raises(Retry):
+        deliver_letter_via_provider(str(letter_notification.id))
+    assert dao_get_letter_provider_pin(letter_notification.id).endpoint_url == "https://print.example.com/letters"
+
+    # e.g. new credentials for the same endpoint
+    _use_rest_endpoint(organisation)
+    _retry_delivery(letter_notification.id)
+
+    assert send_with_rest_endpoint.call_count == 2
+    assert _status(letter_notification) == "sent"
+    assert dao_get_letter_provider_pin(letter_notification.id) is None
+
+
+@pytest.mark.parametrize(
+    "provider, endpoint_url, expected",
+    [("pingen", None, "sent"), ("rest-endpoint", "https://print.example.com/letters", "technical-failure")],
+)
+def test_deliver_letter_via_provider_honours_the_pin_of_an_attempt_that_died_while_sending(
+    letter_notification, pdf_in_s3, send_with_pingen, mock_callback, provider, endpoint_url, expected
+):
+    letter_notification.status = "sending"
+    dao_pin_letter_provider(letter_notification.id, provider, endpoint_url)
+
+    _retry_delivery(letter_notification.id)
+
+    assert _status(letter_notification) == expected
+    assert send_with_pingen.called is (expected == "sent")
+
+
+def test_deliver_letter_via_provider_keeps_the_pin_after_an_unexpected_error(
+    letter_notification, pdf_in_s3, send_with_pingen, mocker
+):
+    send_with_pingen.side_effect = ValueError("unexpected response")
+    mocker.patch.object(deliver_letter_via_provider, "retry", side_effect=Retry)
+
+    with pytest.raises(Retry):
+        deliver_letter_via_provider(str(letter_notification.id))
+
+    assert dao_get_letter_provider_pin(letter_notification.id).provider == "pingen"
+
+
+def test_deliver_letter_via_provider_unpins_a_rejected_letter(
+    letter_notification, pdf_in_s3, send_with_pingen, mock_callback
+):
+    send_with_pingen.side_effect = LetterClientNonRetryableException("bad request", "pingen-http-422")
+
+    deliver_letter_via_provider(str(letter_notification.id))
+
+    assert _details(letter_notification) == ("technical-failure", "pingen-http-422")
+    assert dao_get_letter_provider_pin(letter_notification.id) is None
 
 
 def test_deliver_letter_via_provider_skips_a_letter_delivered_while_it_waited_for_the_lock(

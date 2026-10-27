@@ -6,6 +6,7 @@ from time import monotonic
 
 import requests
 from urllib3.connection import HTTPConnection
+from urllib3.exceptions import MaxRetryError
 
 from app.clients import Client, ClientException
 
@@ -15,7 +16,24 @@ class LetterClientException(ClientException):
 
 
 class LetterClientRetryableException(LetterClientException):
-    """A temporary failure (network, throttling, provider downtime): the send can be retried."""
+    """
+    A temporary failure (network, throttling, provider downtime): the send can be retried. `may_have_been_accepted`
+    says whether the provider may have accepted the letter anyway (e.g. a timeout waiting for its response), in which
+    case it must only be retried with the same provider.
+    """
+
+    def __init__(self, message: str, may_have_been_accepted: bool = False):
+        super().__init__(message)
+        self.may_have_been_accepted = may_have_been_accepted
+
+
+def may_have_reached_the_provider(error: requests.RequestException) -> bool:
+    """
+    Whether a request that failed with `error` may have been received by the provider anyway. With requests' default
+    of no retries, urllib3 only wraps an error in MaxRetryError when it couldn't connect (refused, DNS, connect timeout,
+    TLS handshake): errors after the request went out (a read timeout, the connection closed) are raised as they are.
+    """
+    return not (isinstance(error, requests.ConnectionError) and error.args and isinstance(error.args[0], MaxRetryError))
 
 
 class LetterClientNonRetryableException(LetterClientException):

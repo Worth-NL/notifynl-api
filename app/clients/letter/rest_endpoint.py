@@ -10,6 +10,7 @@ from app.clients.letter import (
     LetterClientNonRetryableException,
     LetterClientRetryableException,
     LetterSendResult,
+    may_have_reached_the_provider,
 )
 from app.constants import LETTER_TYPE
 from app.letters_nl.constants import (
@@ -70,7 +71,7 @@ class RestEndpointLetterClient(LetterClient):
             "callbackUrl": letter.callback_url,
         }
 
-        response = self._request("POST", endpoint_url, json=payload, headers=headers)
+        response = self._request("POST", endpoint_url, sends_the_letter=True, json=payload, headers=headers)
 
         if response.status_code == 401 and letter_provider.auth_method == AUTH_METHOD_OAUTH:
             # the token may have been revoked before it expired: fetch a new one on the retry
@@ -119,7 +120,7 @@ class RestEndpointLetterClient(LetterClient):
         )
         return token["access_token"]
 
-    def _request(self, method: str, url: str, **kwargs) -> requests.Response:
+    def _request(self, method: str, url: str, sends_the_letter: bool = False, **kwargs) -> requests.Response:
         try:
             return self.requests_session.request(
                 method,
@@ -130,7 +131,10 @@ class RestEndpointLetterClient(LetterClient):
                 **kwargs,
             )
         except requests.RequestException as e:
-            raise LetterClientRetryableException(f"Request to {url} failed: {e}") from e
+            raise LetterClientRetryableException(
+                f"Request to {url} failed: {e}",
+                may_have_been_accepted=sends_the_letter and may_have_reached_the_provider(e),
+            ) from e
 
     @staticmethod
     def _validate_url(url: str):
@@ -144,8 +148,13 @@ class RestEndpointLetterClient(LetterClient):
     def _raise_for_status(response: requests.Response, url: str):
         if _is_success(response):
             return
-        if response.status_code == 429 or response.status_code >= 500:
+        if response.status_code == 429:
             raise LetterClientRetryableException(f"{url} responded with {response.status_code}")
+        if response.status_code >= 500:
+            # e.g. a gateway timing out on an endpoint that goes on to accept the letter
+            raise LetterClientRetryableException(
+                f"{url} responded with {response.status_code}", may_have_been_accepted=True
+            )
         # includes redirects, which are never followed
         raise LetterClientNonRetryableException(
             f"{url} rejected the letter with {response.status_code}: {response.text[:500]}",

@@ -8,6 +8,7 @@ from app.clients.letter import (
     LetterClientNonRetryableException,
     LetterClientRetryableException,
     LetterSendResult,
+    may_have_reached_the_provider,
 )
 from app.constants import LETTER_TYPE
 from app.letters_nl.constants import LETTER_PROVIDER_PINGEN
@@ -85,6 +86,7 @@ class PingenClient(LetterClient):
             json=body,
             # a retried create (e.g. after a timeout) returns the letter created the first time instead of a new one
             headers={"Idempotency-Key": f"notifynl-letter-{letter.notification_id}"},
+            creates_letter=True,
         )
         return response.json()["data"]["id"]
 
@@ -113,8 +115,15 @@ class PingenClient(LetterClient):
         return response.json()["data"]["id"]
 
     def _api_request(
-        self, method: str, path: str, headers: dict | None = None, scope: str = LETTER_SCOPE, **kwargs
+        self,
+        method: str,
+        path: str,
+        headers: dict | None = None,
+        scope: str = LETTER_SCOPE,
+        creates_letter: bool = False,
+        **kwargs,
     ) -> requests.Response:
+        """`creates_letter`: whether a failure may still have created the letter (only the create request can)."""
         url = f"{self.current_app.config['PINGEN_API_URL']}{path}"
         try:
             response = self.requests_session.request(
@@ -130,16 +139,23 @@ class PingenClient(LetterClient):
                 **kwargs,
             )
         except requests.RequestException as e:
-            raise LetterClientRetryableException(f"Request to Pingen {method} {path} failed: {e}") from e
+            raise LetterClientRetryableException(
+                f"Request to Pingen {method} {path} failed: {e}",
+                may_have_been_accepted=creates_letter and may_have_reached_the_provider(e),
+            ) from e
 
         if 200 <= response.status_code < 300:
             return response
         if response.status_code == 401:
             self._access_tokens.pop(scope, None)
             raise LetterClientRetryableException(f"Pingen rejected the access token for {method} {path}")
-        # 409: a request with the same idempotency key is still in progress; 424: a Pingen dependency is down
+        # 409: a request with the same idempotency key is still in progress; 424: a Pingen dependency is down. Only
+        # throttling (429) certainly means Pingen didn't act on the request
         if response.status_code in (409, 424, 429) or response.status_code >= 500:
-            raise LetterClientRetryableException(f"Pingen {method} {path} responded with {response.status_code}")
+            raise LetterClientRetryableException(
+                f"Pingen {method} {path} responded with {response.status_code}",
+                may_have_been_accepted=creates_letter and response.status_code != 429,
+            )
         raise LetterClientNonRetryableException(
             f"Pingen {method} {path} was rejected with {response.status_code}: {_error_detail(response)}",
             f"pingen-http-{response.status_code}",
