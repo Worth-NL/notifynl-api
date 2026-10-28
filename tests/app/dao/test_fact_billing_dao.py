@@ -621,7 +621,6 @@ def test_fetch_billing_data_for_day_returns_list_for_given_service(notify_db_ses
     ),
     ids=("default", "bulk"),
 )
-@pytest.mark.skip(reason="[NOTIFYNL] letters in 'sent' are billable, see test_fact_billing_dao_nl.py")
 def test_fetch_billing_data_for_day_bills_correctly_for_status(notify_db_session, session, expected_bind_key):
     service = create_service()
     sms_template = create_template(service=service, template_type="sms")
@@ -669,7 +668,6 @@ def test_get_rates_for_billing(notify_db_session):
     assert len(letter_rates) == 4
 
 
-@pytest.mark.skip(reason="[NOTIFYNL] Dutch Postage")
 @freeze_time("2017-06-01 12:00")
 def test_get_rate(notify_db_session):
     create_rate(start_date=datetime(2017, 5, 30, 23, 0), value=1.2, notification_type="email")
@@ -1254,7 +1252,6 @@ def test_fetch_usage_for_all_services_letter(notify_db_session, session, expecte
     )
 
 
-@pytest.mark.skip(reason="[NOTIFYNL] Postage issue")
 @pytest.mark.parametrize(
     "session,expected_bind_key",
     ((db.session, None), (db.session_bulk, "bulk")),

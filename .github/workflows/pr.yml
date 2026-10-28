@@ -93,6 +93,9 @@ jobs:
       - name: Generate version file
         run: make generate-version-file
 
+      - name: Check superseded_tests_nl.toml
+        run: uv run pytest --collect-only -qq --nl-verify
+
       - uses: pavelzw/pytest-action@v2
         with:
           job-summary: false
@@ -101,15 +104,9 @@ jobs:
           custom-arguments: --junitxml=reports/pytest-unit.xml
           custom-pytest: uv run pytest
 
-      - uses: dorny/test-reporter@v2
+      # dorny/test-reporter, with xfailed and superseded tests counted separately from skipped
+      - uses: Worth-NL/ci-workflows/.github/actions/pytest-report@main
         if: ${{ !cancelled() }}
-        with:
-          name: PyTest Tests
-          path: reports/pytest-*.xml
-          reporter: java-junit
-          only-summary: true
-          use-actions-summary: false
-          badge-title: PYTEST
 
   build:
     if: github.event.pull_request.draft == false && github.base_ref == 'develop'

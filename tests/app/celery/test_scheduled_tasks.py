@@ -267,7 +267,6 @@ def test_switch_current_sms_provider_on_slow_delivery_does_nothing_if_no_need(
         ),
     ),
 )
-@pytest.mark.skip(reason="[NOTIFYNL] results also include Spryng, see test_provider_stats_nl.py")
 def test_generate_sms_delivery_stats(slow_delivery_config_option, expect_check_slow_delivery, notify_api, mocker):
     undelivered_notification_age_metric_set_mock = mocker.patch.object(
         notification_undelivered_notification_age_metric, "set"
@@ -983,7 +982,6 @@ def test_check_job_status_task_does_not_raise_error(sample_template):
     check_job_status()
 
 
-@pytest.mark.skip(reason="[NOTIFYNL] postage issue")
 @freeze_time("2019-05-30 14:00:00")
 def test_check_if_letters_still_pending_virus_check_restarts_scan_for_stuck_letters(mocker, sample_letter_template):
     mock_file_exists = mocker.patch("app.aws.s3.file_exists", return_value=True)
@@ -1024,7 +1022,6 @@ def test_check_if_letters_still_pending_virus_check_restarts_scan_for_stuck_lett
     assert mock_create_ticket.called is False
 
 
-@pytest.mark.skip(reason="[NOTIFYNL] Postage issue")
 @freeze_time("2019-05-30 14:00:00")
 def test_check_if_letters_still_pending_virus_check_raises_zendesk_if_files_cant_be_found(
     sample_letter_template, mocker
@@ -1092,7 +1089,6 @@ def test_check_if_letters_still_pending_virus_check_raises_zendesk_if_files_cant
 
 
 @freeze_time("2026-05-30 14:00:00")
-@pytest.mark.skip(reason="[NOTIFYNL] Postage issue")
 def test_check_if_letters_still_pending_virus_check_with_letters_both_missing_from_scan_bucket_and_in_it(
     sample_letter_template,
     mocker,
@@ -1162,7 +1158,6 @@ def test_check_if_letters_still_pending_virus_check_nightly_raises_error_if_args
 
 
 @freeze_time("2026-05-30 14:00:00")
-@pytest.mark.skip(reason="[NOTIFYNL] Postage issue")
 def test_check_if_letters_still_pending_virus_check_nightly_when_all_letters_can_be_processed(
     sample_letter_template,
     mocker,
@@ -1253,7 +1248,6 @@ def test_check_if_letters_still_pending_virus_check_nightly_alerts_on_old_letter
 
 
 @freeze_time("2026-05-30 14:00:00")
-@pytest.mark.skip(reason="[NOTIFYNL] Postage issue")
 def test_check_if_letters_still_pending_virus_check_nightly_warns_about_letters_not_in_scan_bucket(
     sample_letter_template,
     mocker,
@@ -1316,7 +1310,6 @@ def test_check_if_letters_still_pending_virus_check_nightly_warns_about_letters_
 
 
 @freeze_time("2026-05-30 14:00:00")
-@pytest.mark.skip(reason="[NOTIFYNL] Postage issue")
 def test_check_if_letters_still_pending_virus_check_nightly_with_both_types_of_zendesk_warning(
     sample_letter_template,
     mocker,
@@ -1792,7 +1785,6 @@ def test_delete_old_records_from_events_table(notify_db_session):
     assert events[0].created_at == recent_datetime
 
 
-@pytest.mark.skip(reason="[NOTIFYNL] Zendesk change")
 @freeze_time("2022-11-01 00:30:00", tick=True)
 def test_zendesk_new_email_branding_report(notify_db_session, notify_user, hostnames, mocker):
     org_1 = create_organisation(organisation_id=uuid.UUID("113d51e7-f204-44d0-99c6-020f3542a527"), name="org-1")

@@ -4,7 +4,6 @@ from app.models import Notification
 from app.service.send_notification import send_one_off_notification
 
 
-@pytest.mark.skip(reason="[NOTIFYNL] Postage issue")
 @pytest.mark.parametrize(
     "last_line_of_address, expected_postage, expected_international",
     [("France", "europe", True), ("Canada", "rest-of-world", True), ("SW1 1AA", "second", False)],
@@ -31,7 +30,6 @@ def test_send_notification_should_send_international_letters(
     assert notification.international == expected_international
 
 
-@pytest.mark.skip(reason="[NOTIFYNL] Postage issue")
 @pytest.mark.parametrize("reference_paceholder", [None, "ref2"])
 def test_send_notification_should_set_client_reference_from_placeholder(
     sample_letter_template, mocker, reference_paceholder

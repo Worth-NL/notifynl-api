@@ -1,0 +1,714 @@
+[[test]]
+nodeid = "tests/app/celery/test_letters_pdf_tasks.py::TestCheckTimeToCollateLetters::test_collate_letter_pdfs_to_be_sent_exits_early_outside_of_expected_window"
+reason = "Schedule change"
+
+[[test]]
+nodeid = "tests/app/celery/test_letters_pdf_tasks.py::test_get_pdf_for_templated_letter_happy_path"
+reason = "Postage issue"
+twin = ["tests/app/celery/test_letters_pdf_tasks_nl.py::test_get_pdf_for_templated_letter_happy_path"]
+
+[[test]]
+nodeid = "tests/app/celery/test_letters_pdf_tasks.py::test_process_sanitised_letter_sets_postage_international"
+reason = "broken because NL Postal address validation"
+twin = ["tests/app/celery/test_letters_pdf_tasks_nl.py::test_process_sanitised_letter_sets_postage_international"]
+
+[[test]]
+nodeid = "tests/app/celery/test_letters_pdf_tasks.py::test_process_sanitised_letter_with_valid_letter"
+reason = "broken because NL Postal address validation"
+twin = ["tests/app/celery/test_letters_pdf_tasks_nl.py::test_process_sanitised_letter_with_valid_letter"]
+
+[[test]]
+nodeid = "tests/app/celery/test_letters_pdf_tasks.py::test_resanitise_pdf_calls_template_preview_with_letter_details"
+reason = "broken because NL Postal address validation"
+twin = ["tests/app/celery/test_letters_pdf_tasks_nl.py::test_resanitise_pdf_calls_template_preview_with_letter_details"]
+
+[[test]]
+nodeid = "tests/app/celery/test_letters_pdf_tasks.py::test_send_dvla_letters_via_api"
+reason = "Schedule was removed, so this query will always return every result"
+
+[[test]]
+nodeid = "tests/app/celery/test_letters_pdf_tasks.py::test_send_letters_volume_email_to_dvla"
+reason = "PostalAddress / Postage issue"
+twin = ["tests/app/celery/test_letters_pdf_tasks_nl.py::test_send_letters_volume_email_to_dvla"]
+
+[[test]]
+nodeid = "tests/app/celery/test_provider_tasks.py::test_deliver_letter"
+reason = "postage issue"
+twin = ["tests/app/celery/test_provider_tasks_nl.py::test_deliver_letter"]
+
+[[test]]
+nodeid = "tests/app/celery/test_provider_tasks.py::test_deliver_sms_records_duration_histogram"
+reason = "Changes from mmg to spryng"
+twin = ["tests/app/celery/test_provider_tasks_nl.py::test_deliver_sms_records_duration_histogram"]
+
+[[test]]
+nodeid = "tests/app/celery/test_reporting_tasks.py::test_get_rate_for_letter_latest"
+reason = "Postage issue"
+twin = ["tests/app/celery/test_reporting_tasks_nl.py::test_get_rate_for_letter_latest"]
+
+[[test]]
+nodeid = "tests/app/celery/test_reporting_tasks.py::test_get_rate_for_letter_latest_if_crown_is_none"
+reason = "Postage issue"
+twin = ["tests/app/celery/test_reporting_tasks_nl.py::test_get_rate_for_letter_latest_if_crown_is_none"]
+
+[[test]]
+nodeid = "tests/app/celery/test_research_mode_tasks.py::test_create_fake_letter_callback_sends_letter_response"
+reason = "NL postage values in callback"
+twin = ["tests/app/celery/test_research_mode_tasks_nl.py::test_create_fake_letter_callback_sends_letter_response"]
+
+[[test]]
+nodeid = "tests/app/celery/test_scheduled_tasks.py::test_check_if_letters_still_pending_virus_check_nightly_warns_about_letters_not_in_scan_bucket"
+reason = "Postage issue"
+
+[[test]]
+nodeid = "tests/app/celery/test_scheduled_tasks.py::test_check_if_letters_still_pending_virus_check_nightly_when_all_letters_can_be_processed"
+reason = "Postage issue"
+
+[[test]]
+nodeid = "tests/app/celery/test_scheduled_tasks.py::test_check_if_letters_still_pending_virus_check_nightly_with_both_types_of_zendesk_warning"
+reason = "Postage issue"
+
+[[test]]
+nodeid = "tests/app/celery/test_scheduled_tasks.py::test_check_if_letters_still_pending_virus_check_raises_zendesk_if_files_cant_be_found"
+reason = "Postage issue"
+twin = ["tests/app/celery/test_scheduled_tasks_nl.py::test_check_if_letters_still_pending_virus_check_raises_zendesk_if_files_cant_be_found"]
+
+[[test]]
+nodeid = "tests/app/celery/test_scheduled_tasks.py::test_check_if_letters_still_pending_virus_check_restarts_scan_for_stuck_letters"
+reason = "postage issue"
+twin = ["tests/app/celery/test_scheduled_tasks_nl.py::test_check_if_letters_still_pending_virus_check_restarts_scan_for_stuck_letters"]
+
+[[test]]
+nodeid = "tests/app/celery/test_scheduled_tasks.py::test_check_if_letters_still_pending_virus_check_with_letters_both_missing_from_scan_bucket_and_in_it"
+reason = "Postage issue"
+
+[[test]]
+nodeid = "tests/app/celery/test_scheduled_tasks.py::test_generate_sms_delivery_stats"
+reason = "results also include Spryng, see test_scheduled_tasks_nl.py"
+twin = ["tests/app/celery/test_scheduled_tasks_nl.py::test_generate_sms_delivery_stats"]
+
+[[test]]
+nodeid = "tests/app/celery/test_scheduled_tasks.py::test_zendesk_new_email_branding_report"
+reason = "Zendesk change"
+
+[[test]]
+nodeid = "tests/app/celery/test_tasks.py::test_get_letter_template_instance"
+reason = "Dutch postal address implementation - less lines that uk"
+twin = ["tests/app/celery/test_tasks_nl.py::test_get_letter_template_instance"]
+
+[[test]]
+nodeid = "tests/app/celery/test_tasks.py::test_save_letter_saves_letter_to_database"
+reason = "Dutch postal address implementation - now on test_tasks_nl"
+twin = ["tests/app/celery/test_tasks_nl.py::test_save_letter_saves_letter_to_database"]
+
+[[test]]
+nodeid = "tests/app/celery/test_tasks.py::test_save_letter_saves_letter_to_database_right_reply_to"
+reason = "Dutch postal address implementation - less lines that uk"
+twin = ["tests/app/celery/test_tasks_nl.py::test_save_letter_saves_letter_to_database_right_reply_to"]
+
+[[test]]
+nodeid = "tests/app/celery/test_tasks.py::test_save_sms_uses_sms_sender_reply_to_text"
+reason = "Dutch phone number implementation breaks this test"
+
+[[test]]
+nodeid = "tests/app/celery/test_tasks.py::test_should_process_letter_job"
+reason = "Dutch postal address implementation - less lines that uk"
+twin = ["tests/app/celery/test_tasks_nl.py::test_should_process_letter_job"]
+
+[[test]]
+nodeid = "tests/app/celery/test_tasks.py::test_should_save_sms_if_restricted_service_and_valid_number"
+reason = "Dutch phone number implementation breaks this test"
+xfail = true
+
+[[test]]
+nodeid = "tests/app/clients/test_dvla.py::test_format_create_print_job_json_adds_despatchMethod_key_for_economy_class_post"
+reason = "Postage issue - no ECONONY"
+twin = ["tests/app/clients/test_dvla_nl.py::test_format_create_print_job_json_adds_despatchMethod_key_for_economy_class_post"]
+
+[[test]]
+nodeid = "tests/app/clients/test_dvla.py::test_format_create_print_job_json_adds_despatchMethod_key_for_first_class_post"
+reason = "POSTAGE issue"
+twin = ["tests/app/clients/test_dvla_nl.py::test_format_create_print_job_json_adds_despatchMethod_key_for_first_class_post"]
+
+[[test]]
+nodeid = "tests/app/clients/test_dvla.py::test_format_create_print_job_json_formats_address_lines"
+reason = "POSTAGE issue"
+twin = ["tests/app/clients/test_dvla_nl.py::test_format_create_print_job_json_formats_address_lines"]
+
+[[test]]
+nodeid = "tests/app/clients/test_dvla.py::test_send_bfpo_letter"
+reason = "PostalAddress issue -  no BFPO"
+counterpart = ["tests/app/clients/test_dvla_nl.py::test_send_bfpo_letter_returns_default"]
+
+[[test]]
+nodeid = "tests/app/dao/notification_dao/test_notification_dao.py::test_dao_get_letters_and_sheets_volume_by_postage"
+reason = "Postage issue"
+twin = ["tests/app/dao/notification_dao/test_notification_dao_nl.py::test_dao_get_letters_and_sheets_volume_by_postage"]
+
+[[test]]
+nodeid = "tests/app/dao/notification_dao/test_notification_dao.py::test_get_banded_slow_text_message_delivery_reports_by_provider"
+reason = "results also include Spryng, see test_notification_dao_nl.py"
+twin = ["tests/app/dao/notification_dao/test_notification_dao_nl.py::test_get_banded_slow_text_message_delivery_reports_by_provider"]
+
+[[test]]
+nodeid = "tests/app/dao/notification_dao/test_notification_dao.py::test_get_banded_slow_text_message_delivery_reports_by_provider_created_at_sent_at"
+reason = "results also include Spryng, see test_notification_dao_nl.py"
+twin = ["tests/app/dao/notification_dao/test_notification_dao_nl.py::test_get_banded_slow_text_message_delivery_reports_by_provider_created_at_sent_at"]
+
+[[test]]
+nodeid = "tests/app/dao/notification_dao/test_notification_dao.py::test_get_recent_undelivered_notification_ages"
+reason = "results also include Spryng, see test_notification_dao_nl.py"
+twin = ["tests/app/dao/notification_dao/test_notification_dao_nl.py::test_get_recent_undelivered_notification_ages"]
+
+[[test]]
+nodeid = "tests/app/dao/test_fact_billing_dao.py::test_fetch_billing_data_for_day_bills_correctly_for_status"
+reason = "NL bills letters in 'sent' (accepted by the print provider)"
+counterpart = ["tests/app/dao/test_fact_billing_dao_nl.py::test_fetch_billing_data_for_day_bills_correctly_for_status"]
+
+[[test]]
+nodeid = "tests/app/dao/test_fact_billing_dao.py::test_fetch_usage_for_all_services_letter_breakdown"
+reason = "Postage issue"
+twin = ["tests/app/dao/test_fact_billing_dao_nl.py::test_fetch_usage_for_all_services_letter_breakdown"]
+
+[[test]]
+nodeid = "tests/app/dao/test_fact_billing_dao.py::test_get_rate"
+reason = "Dutch Postage"
+twin = ["tests/app/dao/test_fact_billing_dao_nl.py::test_get_rate"]
+
+[[test]]
+nodeid = "tests/app/dao/test_provider_details_dao.py::test_adjust_provider_priority_back_to_resting_points_does_nothing_if_theyre_already_at_right_values"
+reason = "Spryng implementation breaks MMG tests"
+xfail = true
+
+[[test]]
+nodeid = "tests/app/dao/test_provider_details_dao.py::test_adjust_provider_priority_back_to_resting_points_updates_all_providers"
+reason = "Spryng implementation breaks MMG tests"
+xfail = true
+
+[[test]]
+nodeid = "tests/app/dao/test_provider_details_dao.py::test_reduce_sms_provider_priority_adjusts_provider_priorities"
+reason = "Spryng implementation breaks MMG tests"
+xfail = true
+
+[[test]]
+nodeid = "tests/app/dao/test_users_dao.py::test_is_gov_user"
+reason = "gov.uk emails aren't on the Dutch gov domain list, see test_users_dao_nl.py"
+twin = ["tests/app/dao/test_users_dao_nl.py::test_is_gov_user_nl"]
+
+[[test]]
+nodeid = "tests/app/dao/test_users_dao.py::test_user_can_be_removed_from_service_when_service_is_live_and_user_is_gov_user_with_manage_settings"
+reason = "gov.uk emails aren't on the Dutch gov domain list, see test_users_dao_nl.py"
+
+[[test]]
+nodeid = "tests/app/dao/test_users_dao.py::test_user_can_be_removed_from_service_when_service_is_trial_mode_and_user_is_gov_user_with_manage_settings"
+reason = "gov.uk emails aren't on the Dutch gov domain list, see test_users_dao_nl.py"
+
+[[test]]
+nodeid = "tests/app/dao/test_users_dao.py::test_user_cannot_be_archived_if_the_other_service_members_do_not_have_the_manage_setting_permission"
+reason = "gov.uk emails aren't on the Dutch gov domain list, see test_users_dao_nl.py"
+
+[[test]]
+nodeid = "tests/app/dao/test_users_dao.py::test_user_cannot_be_archived_if_there_are_not_enough_gov_users"
+reason = "gov.uk emails aren't on the Dutch gov domain list, see test_users_dao_nl.py"
+twin = ["tests/app/dao/test_users_dao_nl.py::test_user_cannot_be_archived_if_there_are_not_enough_gov_users"]
+
+[[test]]
+nodeid = "tests/app/dao/test_users_dao.py::test_user_cannot_be_archived_unless_they_can_be_removed_from_every_service"
+reason = "gov.uk emails aren't on the Dutch gov domain list, see test_users_dao_nl.py"
+
+[[test]]
+nodeid = "tests/app/dao/test_users_dao.py::test_users_permissions_can_be_changed_when_removing_manage_settings_from_user_of_live_service"
+reason = "gov.uk emails aren't on the Dutch gov domain list, see test_users_dao_nl.py"
+
+[[test]]
+nodeid = "tests/app/dao/test_users_dao.py::test_users_permissions_can_be_changed_when_removing_manage_settings_from_user_of_trial_mode_service"
+reason = "gov.uk emails aren't on the Dutch gov domain list, see test_users_dao_nl.py"
+
+[[test]]
+nodeid = "tests/app/delivery/test_send_to_providers.py::test_provider_to_use_raises_if_no_active_providers"
+reason = "Both Spryng and Firetext are marked as supporting international"
+
+[[test]]
+nodeid = "tests/app/delivery/test_send_to_providers.py::test_provider_to_use_should_only_return_mmg_for_international"
+reason = "Both Spryng and Firetext are marked as supporting international"
+
+[[test]]
+nodeid = "tests/app/delivery/test_send_to_providers.py::test_send_sms_should_use_service_sms_sender"
+reason = "Requires mocked Spryng client"
+
+[[test]]
+nodeid = "tests/app/delivery/test_send_to_providers.py::test_send_sms_should_use_template_version_from_notification_not_latest"
+reason = "Requires mocked Spryng client"
+
+[[test]]
+nodeid = "tests/app/delivery/test_send_to_providers.py::test_send_sms_to_provider_should_return_template_if_found_in_redis"
+reason = "Requires mocked Spryng client"
+
+[[test]]
+nodeid = "tests/app/delivery/test_send_to_providers.py::test_send_sms_to_provider_should_use_normalised_to"
+reason = "Requires mocked Spryng client"
+
+[[test]]
+nodeid = "tests/app/delivery/test_send_to_providers.py::test_should_call_send_sms_response_task_if_test_api_key"
+reason = "Requires mocked Spryng client"
+
+[[test]]
+nodeid = "tests/app/delivery/test_send_to_providers.py::test_should_handle_sms_sender_and_prefix_message"
+reason = "Requires mocked Spryng client"
+
+[[test]]
+nodeid = "tests/app/delivery/test_send_to_providers.py::test_should_log_sms_sent_with_downgraded_content"
+reason = "Requires mocked Spryng client"
+
+[[test]]
+nodeid = "tests/app/delivery/test_send_to_providers.py::test_should_send_non_international_sms_to_default_provider"
+reason = "Requires mocked Spryng client"
+
+[[test]]
+nodeid = "tests/app/delivery/test_send_to_providers.py::test_should_send_personalised_template_to_correct_sms_provider_and_persist"
+reason = "Requires mocked Spryng client"
+
+[[test]]
+nodeid = "tests/app/delivery/test_send_to_providers.py::test_should_send_sms_to_international_providers"
+reason = "Requires mocked Spryng client"
+
+[[test]]
+nodeid = "tests/app/delivery/test_send_to_providers.py::test_should_send_sms_with_encoded_content"
+reason = "Requires mocked Spryng client"
+
+[[test]]
+nodeid = "tests/app/delivery/test_send_to_providers.py::test_should_set_notification_billable_units_and_reduce_provider_priority_if_sending_fails_and_error_limit_exceeded"
+reason = "Requires mocked Spryng client"
+
+[[test]]
+nodeid = "tests/app/delivery/test_send_to_providers.py::test_should_set_notification_billable_units_if_sending_to_provider_fails_and_error_rate_limit_not_exceeded"
+reason = "Requires mocked Spryng client"
+
+[[test]]
+nodeid = "tests/app/delivery/test_send_to_providers.py::test_should_update_billable_units_and_status_according_to_and_key_type"
+reason = "Requires mocked Spryng client"
+
+[[test]]
+nodeid = "tests/app/inbound_sms/test_rest.py::test_post_to_get_inbound_sms_filters_user_number"
+reason = "Dutch phone number implementation breaks this test"
+
+[[test]]
+nodeid = "tests/app/letters/test_letter_utils.py::test_generate_letter_pdf_filename_returns_correct_filename_for_test_letters"
+reason = "Postage issue"
+twin = ["tests/app/letters/test_letter_utils_nl.py::test_generate_letter_pdf_filename_returns_correct_filename_for_test_letters"]
+
+[[test]]
+nodeid = "tests/app/letters/test_letter_utils.py::test_generate_letter_pdf_filename_returns_correct_postage_for_filename"
+reason = "Postage issue"
+twin = ["tests/app/letters/test_letter_utils_nl.py::test_generate_letter_pdf_filename_returns_correct_postage_for_filename"]
+
+[[test]]
+nodeid = "tests/app/letters/test_letter_utils.py::test_generate_letter_pdf_filename_returns_tomorrows_filename"
+reason = "Postage issue"
+twin = ["tests/app/letters/test_letter_utils_nl.py::test_generate_letter_pdf_filename_returns_tomorrows_filename"]
+
+[[test]]
+nodeid = "tests/app/letters/test_letter_utils.py::test_upload_letter_pdf_uses_postage_from_notification"
+reason = "Postage issue"
+twin = ["tests/app/letters/test_letter_utils_nl.py::test_upload_letter_pdf_uses_postage_from_notification"]
+
+[[test]]
+nodeid = "tests/app/notifications/test_notifications_sms_callbacks.py::test_firetext_callback_needs_auth"
+reason = "Firetext receipt auth is log-only, see test_notifications_sms_callbacks_nl.py"
+counterpart = ["tests/app/notifications/test_notifications_sms_callbacks_nl.py::test_firetext_callback_without_auth_is_accepted_and_logged", "tests/app/notifications/test_notifications_sms_callbacks_nl.py::test_firetext_callback_with_wrong_auth_is_still_accepted"]
+
+[[test]]
+nodeid = "tests/app/notifications/test_process_letter_notifications.py::test_create_letter_notification_creates_notification"
+reason = "Dutch postage"
+twin = ["tests/app/notifications/test_process_letter_notifications_nl.py::test_create_letter_notification_creates_notification"]
+
+[[test]]
+nodeid = "tests/app/notifications/test_process_notification.py::test_persist_notification_doesnt_increment_cache_for_international_sms_when_num_is_crown_dependency"
+reason = "UK phone numbers considered international now, which adds another call"
+
+[[test]]
+nodeid = "tests/app/notifications/test_process_notification.py::test_persist_notification_increments_cache_for_trial_or_live_service"
+reason = "UK phone numbers considered international now, which adds another call"
+
+[[test]]
+nodeid = "tests/app/notifications/test_process_notification.py::test_persist_notification_logs_when_sms_sent_to_uk_number_in_ofcom_protected_range"
+reason = "no UK OFCOM checks for Dutch numbers, see test_process_notification_nl.py"
+counterpart = ["tests/app/notifications/test_process_notification_nl.py::test_persist_notification_never_logs_ofcom_protected_range_for_dutch_numbers"]
+
+[[test]]
+nodeid = "tests/app/notifications/test_process_notification.py::test_persist_notification_sets_daily_limit_cache_if_one_does_not_exist"
+reason = "UK phone numbers considered international now, which adds another call"
+
+[[test]]
+nodeid = "tests/app/notifications/test_process_notification.py::test_simulated_recipient"
+reason = "Dutch phone number implementation breaks this test"
+
+[[test]]
+nodeid = "tests/app/notifications/test_receive_notification.py::test_create_inbound_mmg_sms_object"
+reason = "Dutch phone number implementation breaks this test"
+
+[[test]]
+nodeid = "tests/app/notifications/test_receive_notification.py::test_receive_notification_from_firetext_persists_message"
+reason = "Dutch phone number implementation breaks this test"
+
+[[test]]
+nodeid = "tests/app/notifications/test_validators.py::test_service_can_send_to_recipient_fails_when_ignoring_guest_list"
+reason = "Dutch phone number implementation breaks this test"
+
+[[test]]
+nodeid = "tests/app/notifications/test_validators.py::test_service_can_send_to_recipient_passes_for_guest_list_recipient_passes"
+reason = "Dutch phone number implementation breaks this test"
+
+[[test]]
+nodeid = "tests/app/notifications/test_validators.py::test_service_can_send_to_recipient_passes_with_non_normalised_number"
+reason = "Dutch phone number implementation breaks this test"
+
+[[test]]
+nodeid = "tests/app/notifications/test_validators.py::test_validate_address"
+reason = "PostalAddress / Postage issue"
+twin = ["tests/app/notifications/test_validators_nl.py::test_validate_address"]
+
+[[test]]
+nodeid = "tests/app/notifications/test_validators.py::test_validate_address_international_bfpo_error"
+reason = "PostalAddress / Postage issue, BFPO is no longer used"
+counterpart = ["tests/app/notifications/test_validators_nl.py::test_validate_address_international_bfpo_no_error"]
+
+[[test]]
+nodeid = "tests/app/notifications/test_validators.py::test_validate_and_format_recipient_doesnt_raise_for_crown_dependency_num_when_service_over_daily_intl_sms_limit"
+reason = "Dutch phone number implementation breaks this test"
+
+[[test]]
+nodeid = "tests/app/notifications/test_validators.py::test_validate_and_format_recipient_fails_when_international_number_and_service_does_not_allow_int_sms"
+reason = "Dutch phone number implementation breaks this test"
+
+[[test]]
+nodeid = "tests/app/notifications/test_validators.py::test_validate_and_format_recipient_gets_correct_info_for_international_numbers"
+reason = "Dutch phone number implementation breaks this test"
+
+[[test]]
+nodeid = "tests/app/notifications/test_validators.py::test_validate_and_format_recipient_gets_correct_info_for_landline_numbers"
+reason = "Dutch phone number implementation breaks this test"
+
+[[test]]
+nodeid = "tests/app/notifications/test_validators.py::test_validate_and_format_recipient_normalises_numbers"
+reason = "Dutch phone number implementation breaks this test"
+
+[[test]]
+nodeid = "tests/app/organisation/test_rest.py::test_notify_org_users_of_request_to_go_live"
+reason = "using nl email internationalization"
+twin = ["tests/app/organisation/test_rest_nl.py::test_notify_org_users_of_request_to_go_live"]
+
+[[test]]
+nodeid = "tests/app/platform_stats/test_rest.py::test_get_data_for_billing_report"
+reason = "Postage and PostalAddress issues"
+
+[[test]]
+nodeid = "tests/app/report_requests/test_process_notifications_report.py::test_process_report_request_should_return_correct_rows"
+reason = "CSV report issues"
+
+[[test]]
+nodeid = "tests/app/service/send_notification/test_send_notification.py::test_send_notification_should_send_international_letters"
+reason = "Postage issue"
+twin = ["tests/app/service/send_notification/test_send_notification_nl.py::test_send_notification_should_send_international_letters"]
+
+[[test]]
+nodeid = "tests/app/service/send_notification/test_send_notification.py::test_send_notification_should_set_client_reference_from_placeholder"
+reason = "Postage issue"
+twin = ["tests/app/service/send_notification/test_send_notification_nl.py::test_send_notification_should_set_client_reference_from_placeholder"]
+
+[[test]]
+nodeid = "tests/app/service/send_notification/test_send_one_off_notification.py::test_send_one_off_letter_notification_should_use_template_reply_to_text"
+reason = "PostalAddress issue"
+twin = ["tests/app/service/send_notification/test_send_one_off_notification_nl.py::test_send_one_off_letter_notification_should_use_template_reply_to_text"]
+
+[[test]]
+nodeid = "tests/app/service/send_notification/test_send_one_off_notification.py::test_send_one_off_notification_calls_persist_correctly_for_letter"
+reason = "Dutch postal address implementation"
+twin = ["tests/app/service/send_notification/test_send_one_off_notification_nl.py::test_send_one_off_notification_calls_persist_correctly_for_letter"]
+
+[[test]]
+nodeid = "tests/app/service/send_notification/test_send_one_off_notification.py::test_send_one_off_notification_calls_persist_correctly_for_sms"
+reason = "Dutch phone number implementation breaks this test"
+
+[[test]]
+nodeid = "tests/app/service/send_notification/test_send_one_off_notification.py::test_send_one_off_sms_notification_should_use_default_service_reply_to_text"
+reason = "Dutch phone number implementation breaks this test"
+
+[[test]]
+nodeid = "tests/app/service/send_notification/test_send_one_off_notification.py::test_send_one_off_sms_notification_should_use_sms_sender_reply_to_text"
+reason = "Dutch phone number implementation breaks this test"
+
+[[test]]
+nodeid = "tests/app/service/send_notification/test_send_pdf_letter_notification.py::test_send_pdf_letter_notification_creates_notification_and_moves_letter"
+reason = "postage and postalAddress change"
+twin = ["tests/app/service/send_notification/test_send_pdf_letter_notification_nl.py::test_send_pdf_letter_notification_creates_notification_and_moves_letter"]
+
+[[test]]
+nodeid = "tests/app/service/test_rest.py::test_create_pdf_letter"
+reason = "Postage issue"
+twin = ["tests/app/service/test_rest_nl.py::test_create_pdf_letter"]
+
+[[test]]
+nodeid = "tests/app/service/test_rest.py::test_create_pdf_letter_validates_against_json_schema"
+reason = "Postage and PostalAddress issue"
+twin = ["tests/app/service/test_rest_nl.py::test_create_pdf_letter_validates_against_json_schema"]
+
+[[test]]
+nodeid = "tests/app/service/test_service_guest_list.py::test_get_guest_list_separates_emails_and_phones"
+reason = "Dutch phone number implementation breaks this test"
+
+[[test]]
+nodeid = "tests/app/service/test_service_guest_list.py::test_update_guest_list_doesnt_remove_old_guest_list_if_error"
+reason = "Dutch phone number implementation breaks this test"
+
+[[test]]
+nodeid = "tests/app/service/test_service_guest_list.py::test_update_guest_list_replaces_old_guest_list"
+reason = "Dutch phone number implementation breaks this test"
+
+[[test]]
+nodeid = "tests/app/template/test_rest.py::test_create_a_new_template_for_a_service_adds_postage_for_letters_only"
+reason = "Postage issue"
+twin = ["tests/app/template/test_rest_nl.py::test_create_a_new_template_for_a_service_adds_postage_for_letters_only"]
+
+[[test]]
+nodeid = "tests/app/template/test_rest.py::test_create_template_bilingual_letter"
+reason = "Postage issue"
+twin = ["tests/app/template/test_rest_nl.py::test_create_template_bilingual_letter"]
+
+[[test]]
+nodeid = "tests/app/template/test_rest.py::test_create_template_validates_against_json_schema"
+reason = "Postage issue"
+twin = ["tests/app/template/test_rest_nl.py::test_create_template_validates_against_json_schema"]
+
+[[test]]
+nodeid = "tests/app/template/test_rest.py::test_create_template_validates_qr_code_too_long"
+reason = "Postage issue"
+twin = ["tests/app/template/test_rest_nl.py::test_create_template_validates_qr_code_too_long"]
+
+[[test]]
+nodeid = "tests/app/template/test_rest.py::test_should_create_a_new_template_for_a_service"
+reason = "Postage issue"
+twin = ["tests/app/template/test_rest_nl.py::test_should_create_a_new_template_for_a_service"]
+
+[[test]]
+nodeid = "tests/app/template/test_rest.py::test_update_should_update_a_template"
+reason = "Postage issue"
+twin = ["tests/app/template/test_rest_nl.py::test_update_should_update_a_template"]
+
+[[test]]
+nodeid = "tests/app/test_model.py::test_notification_serialize_with_cost_data_for_letter"
+reason = "Needs further testing"
+
+[[test]]
+nodeid = "tests/app/test_model.py::test_notification_serialize_with_cost_data_for_letter_when_data_not_ready"
+reason = "postage issue"
+twin = ["tests/app/test_model_nl.py::test_notification_serialize_with_cost_data_for_letter_when_data_not_ready"]
+
+[[test]]
+nodeid = "tests/app/test_model.py::test_notification_serialize_with_cost_data_uses_cache_to_get_letter_rate"
+reason = "Needs further testing"
+
+[[test]]
+nodeid = "tests/app/test_model.py::test_notification_serialize_with_with_cost_data_for_letter_that_wasnt_sent"
+reason = "postage issue"
+twin = ["tests/app/test_model_nl.py::test_notification_serialize_with_with_cost_data_for_letter_that_wasnt_sent"]
+
+[[test]]
+nodeid = "tests/app/user/test_rest.py::test_get_sms_reply_to_for_notify_service"
+reason = "Dutch phone number implementation breaks this test"
+
+[[test]]
+nodeid = "tests/app/user/test_rest.py::test_set_user_permissions_when_permissions_cannot_be_changed"
+reason = "gov.uk emails aren't on the Dutch gov domain list, see test_users_dao_nl.py"
+
+[[test]]
+nodeid = "tests/app/v2/notifications/test_get_notifications.py::test_get_all_notifications_renames_letter_statuses"
+reason = "Needs further testing PostalAddress issue"
+
+[[test]]
+nodeid = "tests/app/v2/notifications/test_get_notifications.py::test_get_letter_notifications_filter_by_single_status"
+reason = "Needs further testing PostalAddress issue"
+
+[[test]]
+nodeid = "tests/app/v2/notifications/test_get_notifications.py::test_get_notification_adds_delivery_estimate_for_letters"
+reason = "Needs further testing"
+
+[[test]]
+nodeid = "tests/app/v2/notifications/test_get_notifications.py::test_get_notification_by_id_renames_letter_statuses"
+reason = "Needs further testing"
+
+[[test]]
+nodeid = "tests/app/v2/notifications/test_notification_schemas.py::test_post_email_schema_invalid_scheduled_for"
+reason = "Dutch phone number implementation breaks this test"
+
+[[test]]
+nodeid = "tests/app/v2/notifications/test_notification_schemas.py::test_post_schema_valid_scheduled_for"
+reason = "Dutch phone number implementation breaks this test"
+
+[[test]]
+nodeid = "tests/app/v2/notifications/test_notification_schemas.py::test_post_sms_json_schema_bad_uuid"
+reason = "Dutch phone number implementation breaks this test"
+
+[[test]]
+nodeid = "tests/app/v2/notifications/test_notification_schemas.py::test_post_sms_request_schema_invalid_phone_number"
+reason = "Translation issue"
+
+[[test]]
+nodeid = "tests/app/v2/notifications/test_notification_schemas.py::test_post_sms_request_schema_invalid_phone_number_and_missing_template"
+reason = "Needs further testing PhoneNumber validation issue"
+
+[[test]]
+nodeid = "tests/app/v2/notifications/test_notification_schemas.py::test_post_sms_schema_is_valid"
+reason = "Dutch phone number implementation breaks this test"
+
+[[test]]
+nodeid = "tests/app/v2/notifications/test_notification_schemas.py::test_post_sms_schema_is_valid_for_landline_if_service_can_send_to_landlines"
+reason = "Dutch phone number implementation breaks this test"
+
+[[test]]
+nodeid = "tests/app/v2/notifications/test_notification_schemas.py::test_post_sms_schema_with_personalisation_that_is_not_a_dict"
+reason = "Dutch phone number implementation breaks this test"
+
+[[test]]
+nodeid = "tests/app/v2/notifications/test_notification_schemas.py::test_scheduled_for_raises_validation_error_when_in_the_past"
+reason = "Dutch phone number implementation breaks this test"
+
+[[test]]
+nodeid = "tests/app/v2/notifications/test_notification_schemas.py::test_scheduled_for_raises_validation_error_when_more_than_24_hours_in_the_future"
+reason = "Dutch phone number implementation breaks this test"
+
+[[test]]
+nodeid = "tests/app/v2/notifications/test_post_letter_notifications.py::test_post_letter_notification_formats_postcode"
+reason = "PostalAddress issue"
+twin = ["tests/app/v2/notifications/test_post_letter_notifications_nl.py::test_post_letter_notification_formats_postcode"]
+
+[[test]]
+nodeid = "tests/app/v2/notifications/test_post_letter_notifications.py::test_post_letter_notification_ignores_reply_to_text_for_service"
+reason = "PostalAddress issue"
+
+[[test]]
+nodeid = "tests/app/v2/notifications/test_post_letter_notifications.py::test_post_letter_notification_is_delivered_but_still_creates_pdf_if_in_trial_mode_and_using_test_key"
+reason = "Missing mock"
+
+[[test]]
+nodeid = "tests/app/v2/notifications/test_post_letter_notifications.py::test_post_letter_notification_persists_notification_reply_to_text_for_template"
+reason = "PostalAddress issue"
+
+[[test]]
+nodeid = "tests/app/v2/notifications/test_post_letter_notifications.py::test_post_letter_notification_returns_201"
+reason = "PostalAddress issue"
+twin = ["tests/app/v2/notifications/test_post_letter_notifications_nl.py::test_post_letter_notification_returns_201"]
+
+[[test]]
+nodeid = "tests/app/v2/notifications/test_post_letter_notifications.py::test_post_letter_notification_sets_postage"
+reason = "PostalAddress issue"
+twin = ["tests/app/v2/notifications/test_post_letter_notifications_nl.py::test_post_letter_notification_sets_postage"]
+
+[[test]]
+nodeid = "tests/app/v2/notifications/test_post_letter_notifications.py::test_post_letter_notification_throws_error_for_bad_address"
+reason = "PostalAddress issue"
+
+[[test]]
+nodeid = "tests/app/v2/notifications/test_post_letter_notifications.py::test_post_letter_notification_throws_error_for_invalid_postage"
+reason = "Needs further testing Postage issue europe is now valid"
+
+[[test]]
+nodeid = "tests/app/v2/notifications/test_post_letter_notifications.py::test_post_letter_notification_with_test_key_creates_pdf_and_sets_status_to_delivered"
+reason = "PostalAddress issue"
+
+[[test]]
+nodeid = "tests/app/v2/notifications/test_post_letter_notifications.py::test_post_letter_notification_with_test_key_creates_pdf_and_sets_status_to_sending_and_sends_fake_response_file"
+reason = "PostalAddress issue"
+
+[[test]]
+nodeid = "tests/app/v2/notifications/test_post_letter_notifications.py::test_post_precompiled_letter_notification_returns_201"
+reason = "Needs further testing Postage issue"
+
+[[test]]
+nodeid = "tests/app/v2/notifications/test_post_notifications.py::test_notification_reply_to_text_is_original_value_if_sender_is_changed_after_post_notification"
+reason = "Dutch phone number implementation breaks this test"
+twin = ["tests/app/v2/notifications/test_post_notifications_nl.py::test_notification_reply_to_text_is_original_value_if_sender_is_changed_after_post_notification_nl"]
+
+[[test]]
+nodeid = "tests/app/v2/notifications/test_post_notifications.py::test_post_email_notification_response_has_sanitised_content_info_for_emails_only[letter-recipient_dict2-False]"
+reason = "Dutch postal address implementation breaks this test"
+twin = ["tests/app/v2/notifications/test_post_notifications_nl.py::test_post_email_notification_response_has_sanitised_content_info_for_emails_only"]
+
+[[test]]
+nodeid = "tests/app/v2/notifications/test_post_notifications.py::test_post_email_notification_response_has_sanitised_content_info_for_emails_only[sms-recipient_dict1-False]"
+reason = "Dutch phone number implementation breaks this test"
+twin = ["tests/app/v2/notifications/test_post_notifications_nl.py::test_post_email_notification_response_has_sanitised_content_info_for_emails_only"]
+
+[[test]]
+nodeid = "tests/app/v2/notifications/test_post_notifications.py::test_post_sms_notification_returns_201_if_allowed_to_send_to_uk_landlines"
+reason = "Dutch phone number implementation breaks this test"
+
+[[test]]
+nodeid = "tests/app/v2/notifications/test_post_notifications.py::test_post_sms_notification_returns_400_if_not_allowed_to_send_int_sms"
+reason = "Dutch phone number implementation breaks this test"
+
+[[test]]
+nodeid = "tests/app/v2/notifications/test_post_notifications.py::test_post_sms_notification_returns_400_if_not_allowed_to_send_to_uk_landlines"
+reason = "Dutch phone number implementation breaks this test"
+
+[[test]]
+nodeid = "tests/app/v2/notifications/test_post_notifications.py::test_post_sms_notification_uses_inbound_number_reply_to_as_sender"
+reason = "Dutch phone number implementation breaks this test"
+twin = ["tests/app/v2/notifications/test_post_notifications_nl.py::test_post_sms_notification_uses_inbound_number_reply_to_as_sender_nl"]
+
+[[test]]
+nodeid = "tests/app/v2/notifications/test_post_notifications.py::test_post_sms_notification_uses_sms_sender_id_reply_to"
+reason = "Dutch phone number implementation breaks this test"
+twin = ["tests/app/v2/notifications/test_post_notifications_nl.py::test_post_sms_notification_uses_sms_sender_id_reply_to_nl"]
+
+[[test]]
+nodeid = "tests/app/v2/notifications/test_post_notifications.py::test_should_cache_template_and_service_in_redis"
+reason = "Dutch phone number implementation breaks this test"
+twin = ["tests/app/v2/notifications/test_post_notifications_nl.py::test_should_cache_template_and_service_in_redis_nl"]
+
+[[test]]
+nodeid = "tests/app/v2/notifications/test_post_notifications.py::test_should_cache_template_lookups_in_memory"
+reason = "Dutch phone number implementation breaks this test"
+twin = ["tests/app/v2/notifications/test_post_notifications_nl.py::test_should_cache_template_lookups_in_memory_nl"]
+
+[[test]]
+nodeid = "tests/app/v2/notifications/test_post_notifications.py::test_should_not_persist_or_send_notification_if_simulated_recipient"
+reason = "Dutch phone number implementation breaks this test"
+twin = ["tests/app/v2/notifications/test_post_notifications_nl.py::test_should_not_persist_or_send_notification_if_simulated_recipient_nl"]
+
+[[test]]
+nodeid = "tests/app/v2/notifications/test_post_notifications.py::test_should_return_template_if_found_in_redis"
+reason = "Dutch phone number implementation breaks this test"
+twin = ["tests/app/v2/notifications/test_post_notifications_nl.py::test_should_return_template_if_found_in_redis_nl"]
+
+[[test]]
+nodeid = "tests/app/v2/template/test_get_template.py::test_get_template_by_id_returns_200"
+reason = "Needs further testing Postage issue"
+
+[[test]]
+nodeid = "tests/app/v2/template/test_post_template.py::test_invalid_post_template_returns_400"
+reason = "messagebox template type returning NoneType"
+
+[[test]]
+nodeid = "tests/app/v2/template/test_post_template.py::test_valid_post_template_returns_200"
+reason = "messagebox template type returning NoneType"
+
+[[test]]
+nodeid = "tests/app/v2/template/test_template_schemas.py::test_get_template_response_schema_is_valid"
+reason = "Needs further testing Postage issue"
+
+[[test]]
+nodeid = "tests/app/v2/template/test_template_schemas.py::test_post_template_preview_response_schema_is_valid"
+reason = "Needs further testing Postage issue"
+
+[[test]]
+nodeid = "tests/app/v2/templates/test_get_templates.py::test_get_all_templates_for_valid_type_returns_200"
+reason = "messagebox template type returning NoneType"
+
+[[test]]
+nodeid = "tests/app/v2/templates/test_get_templates.py::test_get_all_templates_returns_200"
+reason = "messagebox template type returning NoneType"
+
+[[test]]
+nodeid = "tests/app/v2/templates/test_get_templates.py::test_get_correct_num_templates_for_valid_type_returns_200"
+reason = "messagebox template type returning NoneType"

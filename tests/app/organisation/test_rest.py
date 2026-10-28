@@ -1232,7 +1232,6 @@ def test_remove_letter_branding_from_organisation_pool_cannot_remove_default_bra
     assert sample_organisation.letter_branding_pool == [branding]
 
 
-@pytest.mark.skip(reason="[NOTIFYNL] using nl email internationalization ")
 def test_notify_org_users_of_request_to_go_live(
     mocker,
     admin_request,

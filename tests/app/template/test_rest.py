@@ -35,7 +35,6 @@ from tests.app.db import (
 from tests.conftest import set_config_values
 
 
-@pytest.mark.skip(reason="[NOTIFYNL] Postage issue")
 @pytest.mark.parametrize(
     "template_type, subject",
     [
@@ -114,7 +113,6 @@ def test_create_a_new_template_for_a_service_adds_folder_relationship(client, sa
     assert template.folder == parent_folder
 
 
-@pytest.mark.skip(reason="[NOTIFYNL] Postage issue")
 @pytest.mark.parametrize(
     "template_type, expected_postage", [(SMS_TYPE, None), (EMAIL_TYPE, None), (LETTER_TYPE, "second")]
 )
@@ -335,7 +333,6 @@ def test_must_have_a_subject_on_an_email_or_letter_template(client, sample_user,
     assert json_resp["errors"][0]["message"] == "subject is a required property"
 
 
-@pytest.mark.skip(reason="[NOTIFYNL] Postage issue")
 def test_update_should_update_a_template(client, sample_user):
     service = create_service(service_permissions=[LETTER_TYPE])
     template = create_template(service, template_type="letter", postage="second")
@@ -842,7 +839,6 @@ def test_create_a_template_with_reply_to(admin_request, sample_user):
     assert th.service_letter_contact_id == letter_contact.id
 
 
-@pytest.mark.skip(reason="[NOTIFYNL] Postage issue")
 def test_create_template_bilingual_letter(admin_request, sample_service_full_permissions, sample_user):
     letter_contact = create_letter_contact(sample_service_full_permissions, "Edinburgh, ED1 1AA")
     json_resp = admin_request.post(
@@ -892,7 +888,6 @@ def test_create_a_template_with_foreign_service_reply_to(admin_request, sample_u
     )
 
 
-@pytest.mark.skip(reason="[NOTIFYNL] Postage issue")
 @pytest.mark.parametrize(
     "post_data, expected_errors",
     [
@@ -937,7 +932,6 @@ def test_create_template_validates_against_json_schema(
     assert response["errors"] == expected_errors
 
 
-@pytest.mark.skip(reason="[NOTIFYNL] Postage issue")
 def test_create_template_validates_qr_code_too_long(
     admin_request,
     sample_service_full_permissions,

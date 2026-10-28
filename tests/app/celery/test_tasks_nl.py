@@ -187,39 +187,6 @@ def test_save_letter_saves_letter_to_database_with_correct_postage_nl(
     assert notification_db.international == expected_international
 
 
-def test_save_letter_saves_letter_to_database_with_uppercased_postcode(mocker, mock_celery_task_nl, notify_db_session):
-    service = create_service(service_permissions=[LETTER_TYPE])
-    template = create_template(service=service, template_type=LETTER_TYPE)
-    letter_job = create_job(template=template)
-
-    mock_celery_task_nl(get_pdf_for_templated_letter)
-
-    notification_json = _notification_json(
-        template=template,
-        to="Foo",
-        personalisation={
-            "addressline1": "Foo",
-            "addressline2": "Bar",
-            "postcode": "se1 64sa",
-        },
-        job_id=letter_job.id,
-        row_number=1,
-    )
-
-    notification_id = uuid.uuid4()
-
-    save_letter(
-        letter_job.service_id,
-        notification_id,
-        signing.encode(notification_json),
-    )
-
-    notification_db = Notification.query.one()
-
-    assert notification_db.id == notification_id
-    assert notification_db.personalisation["postcode"] == "se1 64sa"
-
-
 @freeze_time("2016-01-01 11:09:00.061258")
 def test_should_process_letter_job(sample_letter_job, mocker, mock_celery_task_nl):
     csv = """address_line_1,address_line_2,address_line_3,address_line_4,postcode,name
