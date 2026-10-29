@@ -24,7 +24,7 @@ psutil~=6.0
 notifications-python-client~=12.1
 
 # Run `make bump-utils` to update to the latest version
-notifications-utils @ git+https://github.com/Worth-NL/notifynl-utils.git@102.0.4
+notifications-utils @ git+https://github.com/Worth-NL/notifynl-utils.git@102.0.5
 
 git+https://github.com/alphagov/gds_metrics_python.git@6f1840a57b6fb1ee40b7e84f2f18ec229de8aa72
 
@@ -55,8 +55,7 @@ opentelemetry-instrumentation-urllib3
 
 ebms-adapter-client==0.3.0
 
-# [NOTIFYNL] vulnerability pins
-pypdf>=6.19.0
+# [NOTIFYNL] vulnerability pins (notifications-utils 102.0.5 floors pypdf, urllib3, certifi, dnspython, werkzeug,
+# requests and opentelemetry-api)
 pyjwt>=2.15.0
-urllib3>=2.8.0
 mako>=1.4.2
