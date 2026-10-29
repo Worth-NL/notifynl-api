@@ -21,6 +21,7 @@ from app.dao.services_dao import dao_fetch_service_by_id
 from app.errors import register_errors
 from app.models import Service
 from app.schema_validation import validate
+from app.utils import get_ft_billing_data_for_today_updated_at
 
 billing_blueprint = Blueprint("billing", __name__, url_prefix="/service/<uuid:service_id>/billing")
 
@@ -49,6 +50,12 @@ def get_yearly_billing_usage_summary_from_ft_billing(service_id):
     billing_data = fetch_usage_for_service_annual(service_id, year, session=db.session_bulk, retry_attempts=2)
     data = serialize_ft_billing_yearly_totals(billing_data)
     return jsonify(data)
+
+
+# [NOTIFYNL] the usage endpoints read ft_billing only, so the admin shows when today's rows were last refreshed
+@billing_blueprint.route("/usage-updated-at")
+def get_usage_updated_at(service_id):
+    return jsonify(updated_at=get_ft_billing_data_for_today_updated_at())
 
 
 @billing_blueprint.route("/free-sms-fragment-limit", methods=["GET"])

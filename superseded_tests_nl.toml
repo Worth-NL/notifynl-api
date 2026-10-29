@@ -171,6 +171,11 @@ reason = "Postage issue"
 twin = ["tests/app/dao/test_fact_billing_dao_nl.py::test_fetch_usage_for_all_services_letter_breakdown"]
 
 [[test]]
+nodeid = "tests/app/dao/test_fact_billing_dao.py::test_fetch_usage_for_service_by_month_populates_ft_billing_for_today"
+reason = "NL reads the hourly-refreshed ft_billing instead of recomputing today on every usage request"
+counterpart = ["tests/app/dao/test_fact_billing_dao_nl.py::test_fetch_usage_for_service_by_month_reads_ft_billing_only"]
+
+[[test]]
 nodeid = "tests/app/dao/test_fact_billing_dao.py::test_get_rate"
 reason = "Dutch Postage"
 twin = ["tests/app/dao/test_fact_billing_dao_nl.py::test_get_rate"]

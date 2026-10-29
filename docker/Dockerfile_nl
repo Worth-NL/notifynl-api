@@ -1,7 +1,5 @@
 FROM python:3.13-slim-trixie AS base
 
-COPY --from=ghcr.io/astral-sh/uv:0.12 /uv /uvx /bin/
-
 ENV DEBIAN_FRONTEND=noninteractive
 ENV PYTHONUNBUFFERED=1
 ENV UV_COMPILE_BYTECODE=1
@@ -20,6 +18,9 @@ WORKDIR /home/vcap/app
 
 ##### Python Build Image #####################################################
 FROM base AS python_build
+
+# uv vendors a vulnerable rustls: only the stages that install requirements get it
+COPY --from=ghcr.io/astral-sh/uv:0.12 /uv /uvx /bin/
 
 RUN echo "Install OS dependencies for python app requirements" &&  \
     apt-get update && \
@@ -68,6 +69,8 @@ ENTRYPOINT [ "/home/vcap/app/entrypoint.sh" ]
 ##### Test Image ##############################################################
 FROM production AS test
 
+COPY --from=ghcr.io/astral-sh/uv:0.12 /uv /uvx /bin/
+
 USER root
 RUN echo "Install OS dependencies for test build" && \
     apt-get update && \
@@ -97,6 +100,8 @@ COPY --chown=notify:notify . .
 
 ##### Concourse Test Image ##############################################################
 FROM production AS concourse_tests
+
+COPY --from=ghcr.io/astral-sh/uv:0.12 /uv /uvx /bin/
 
 SHELL ["/bin/bash", "-c"]
 
