@@ -178,6 +178,23 @@ class Config:
 
     NOTIFY_EVENTLET_STATS = os.getenv("NOTIFY_EVENTLET_STATS", "0") == "1"
 
+    # SMTP-server
+    SMTP_SERVER_HOST = os.getenv("SMTP_SERVER_HOST", "localhost")
+    SMTP_SERVER_PORT = os.getenv("SMTP_SERVER_PORT", 25)
+    SMTP_SERVER_USERNAME = os.getenv("SMTP_SERVER_USERNAME", "")
+    SMTP_SERVER_PASSWORD = os.getenv("SMTP_SERVER_PASSWORD", "")
+    SMTP_SERVER_USE_TLS = os.getenv("SMTP_SERVER_USE_TLS") == "1"
+    MAIL_SMTP_ENVELOPE_FROM = os.getenv("MAIL_SMTP_ENVELOPE_FROM", "noreply@basisdienst.overheid.nl")
+    MAIL_SMTP_EMAIL_FROM = os.getenv("MAIL_SMTP_EMAIL_FROM", "Overheid.nl <noreply@overheid.nl>")
+
+    # Message Broker
+    MESSAGE_BROKER_URL = os.getenv("MESSAGE_BROKER_URL", "amqp://notify:notify@rabbitmq:5672/notify")
+
+    # RabbitMQ-queue: audit service leest dit en stuurt het vervolgens naar ELK
+    AUDIT_ENABLED = os.getenv("AUDIT_ENABLED") == "1"
+    AUDIT_BROKER_URL = os.getenv("AUDIT_BROKER_URL", MESSAGE_BROKER_URL)
+    AUDIT_SERVICE_NAME = os.getenv("AUDIT_SERVICE_NAME", "notify_api")
+
     ###########################
     # Default config values ###
     ###########################
@@ -272,8 +289,8 @@ class Config:
 
     AWS_ACCOUNT_ID = os.environ.get("AWS_ACCOUNT_ID", "123456789012")
     CELERY: dict[str, Any] = {
-        "broker_url": "https://sqs.eu-west-1.amazonaws.com",
-        "broker_transport": "sqs",
+        "broker_url": MESSAGE_BROKER_URL,
+        #"broker_transport": "sqs",
         "task_ignore_result": True,
         "broker_transport_options": {
             "region": AWS_REGION,
@@ -648,7 +665,7 @@ class Development(Config):
     API_HOST_NAME = os.getenv("API_HOST_NAME", "http://localhost:6011")
     API_HOST_NAME_INTERNAL = os.getenv("API_HOST_NAME_INTERNAL", "http://localhost:6011")
     API_RATE_LIMIT_ENABLED = True
-    DVLA_EMAIL_ADDRESSES = ["success@simulator.amazonses.com"]
+    DVLA_EMAIL_ADDRESSES = ["ketentest-noreply@basisdienst.overheid.nl"]
 
     CBC_PROXY_ENABLED = False
 
@@ -704,7 +721,7 @@ class Test(Development):
     FIRETEXT_URL = "https://example.com/firetext"
 
     CBC_PROXY_ENABLED = True
-    DVLA_EMAIL_ADDRESSES = ["success@simulator.amazonses.com", "success+2@simulator.amazonses.com"]
+    DVLA_EMAIL_ADDRESSES = ["ketentest-noreply@basisdienst.overheid.nl", "ketentest-noreply2@basisdienst.overheid.nl"]
 
     DVLA_API_BASE_URL = "https://test-dvla-api.com"
 
@@ -924,7 +941,7 @@ class DevNL(ConfigNL):
     # set here explicitly rather than relying on the env var like other AWS clients do.
     CELERY = {
         **ConfigNL.CELERY,
-        "broker_url": os.getenv("AWS_ENDPOINT_URL", "http://ministack:4566"),
+        "broker_url": os.getenv("MESSAGE_BROKER_URL") or os.getenv("AWS_ENDPOINT_URL", "http://ministack:4566"),
         "broker_transport_options": {
             **ConfigNL.CELERY["broker_transport_options"],
             "is_secure": False,
@@ -986,7 +1003,7 @@ class DevNL(ConfigNL):
     API_HOST_NAME = os.getenv("API_HOST_NAME", "http://localhost:6011")
     API_HOST_NAME_INTERNAL = os.getenv("API_HOST_NAME_INTERNAL", "http://localhost:6011")
     API_RATE_LIMIT_ENABLED = True
-    DVLA_EMAIL_ADDRESSES = ["success@simulator.amazonses.com"]
+    DVLA_EMAIL_ADDRESSES = ["ketentest-noreply@basisdienst.overheid.nl"]
 
     REGISTER_FUNCTIONAL_TESTING_BLUEPRINT = True
 

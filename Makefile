@@ -17,13 +17,13 @@ EXCLUDE_REQUIREMENTS_NEWER_THAN_DAYS ?= 7
 
 .PHONY: bootstrap
 bootstrap: generate-version-file ## Set up everything to run the app
-	uv pip install -r requirements_for_test.txt
+	uv pip install --trusted-host git.lpc.logius.nl --trusted-host pypi.org --trusted-host github.com --trusted-host pypi.python.org --trusted-host=files.pythonhosted.org -r requirements_for_test.txt
 	createdb notification_api || true
 	(. environment.sh && flask db upgrade) || true
 
 .PHONY: bootstrap-nl
 bootstrap-nl: generate-version-file
-	uv pip install -r requirements_nl_test.txt
+	uv pip install --trusted-host git.lpc.logius.nl --trusted-host pypi.org --trusted-host github.com --trusted-host pypi.python.org --trusted-host=files.pythonhosted.org -r requirements_nl_test.txt
 	createdb notification_api || true
 	(. environment.sh && flask db upgrade) || true
 
@@ -114,10 +114,10 @@ refreeze-requirements: ## Upgrade unpinned requirements
 .PHONY: freeze-requirements
 freeze-requirements: ## Pin all requirements including sub dependencies into requirements.txt
 	uv pip compile requirements.in -o requirements.txt $(EXTRA_UV_PIP_COMPILE_FLAGS)
-	uv pip sync requirements.txt
+	uv pip sync --trusted-host pypi.org --trusted-host github.com --trusted-host pypi.python.org --trusted-host=files.pythonhosted.org requirements.txt
 	python -c "from notifications_utils.version_tools import copy_config; copy_config()"
 	uv pip compile requirements_for_test.in -o requirements_for_test.txt $(EXTRA_UV_PIP_COMPILE_FLAGS)
-	uv pip sync requirements_for_test.txt
+	uv pip sync --trusted-host pypi.org --trusted-host github.com --trusted-host pypi.python.org --trusted-host=files.pythonhosted.org requirements_for_test.txt
 
 .PHONY: show-outdated-requirements
 show-outdated-requirements: ## Audit requirements.in

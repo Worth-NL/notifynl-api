@@ -32,6 +32,7 @@ def pytest_configure(config):
     # import time) since it must run after pytest-dotenv/pytest-env have set it, and
     # their relative load order isn't guaranteed.
     os.environ.pop("AWS_ENDPOINT_URL", None)
+    os.environ["MOTO_S3_CUSTOM_ENDPOINTS"] = os.environ.get("MINIO_URL", "http://minio:9000")
 
 
 @pytest.fixture(scope="session")

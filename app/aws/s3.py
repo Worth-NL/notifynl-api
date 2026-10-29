@@ -1,6 +1,6 @@
 import botocore
-from boto3 import resource
 from flask import current_app
+from notifications_utils.clients.minio import resource
 
 FILE_LOCATION_STRUCTURE = "service-{}-notify/{}.csv"
 

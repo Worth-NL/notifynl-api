@@ -5,13 +5,14 @@ Revises: 0001
 Create Date: 2025-04-29 12:33:36.975727
 
 """
+
 from alembic import op
 from flask import current_app
 from sqlalchemy import text
 
 # revision identifiers, used by Alembic.
-revision = '0002'
-down_revision = '0001'
+revision = "0002"
+down_revision = "0001"
 branch_labels = None
 depends_on = None
 

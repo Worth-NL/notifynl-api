@@ -23,6 +23,7 @@ from gds_metrics import GDSMetrics
 from gds_metrics.metrics import Gauge, Histogram
 from notifications_utils import request_helper
 from notifications_utils.celery import NotifyCelery
+from notifications_utils.clients.audit.audit_client import AuditClient
 from notifications_utils.clients.encryption.encryption_client import Encryption
 from notifications_utils.clients.redis.redis_client import RedisClient
 from notifications_utils.clients.signing.signing_client import Signing
@@ -40,6 +41,7 @@ from app.clients import NotificationProviderClients
 from app.clients.document_download import DocumentDownloadClient
 from app.clients.email.aws_ses import AwsSesClient
 from app.clients.email.aws_ses_stub import AwsSesStubClient
+from app.clients.email.smtp import SmtpClient
 from app.clients.letter.dvla import DVLAClient
 from app.clients.messagebox.ebms_adapter import EbmsAdapterClient
 from app.clients.sms.firetext import FiretextClient
@@ -59,6 +61,7 @@ notify_celery = NotifyCelery()
 signing = Signing()
 encryption = Encryption()
 statsd_client = StatsdClient()
+audit_client = AuditClient()
 redis_store = RedisClient()
 metrics = GDSMetrics()
 
@@ -134,6 +137,25 @@ get_ebms_adapter_client: LazyLocalGetter[EbmsAdapterClient] = LazyLocalGetter(
 memo_resetters.append(lambda: get_ebms_adapter_client.clear())
 ebms_adapter_client = LocalProxy(get_ebms_adapter_client)
 
+_smtp_client_context_var: ContextVar[SmtpClient] = ContextVar("smtp_client")
+get_smtp_client: LazyLocalGetter[SmtpClient] = LazyLocalGetter(
+    _smtp_client_context_var,
+    lambda: SmtpClient(
+        current_app.config["SMTP_SERVER_HOST"],
+        current_app.config["SMTP_SERVER_PORT"],
+        current_app.config["SMTP_SERVER_USERNAME"],
+        current_app.config["SMTP_SERVER_PASSWORD"],
+        current_app.config["SMTP_SERVER_USE_TLS"],
+        current_app.config["MAIL_SMTP_ENVELOPE_FROM"],
+        current_app.config["MAIL_SMTP_EMAIL_FROM"],
+        statsd_client=statsd_client,
+        audit_client=audit_client,
+    ),
+    expected_type=SmtpClient,
+)
+memo_resetters.append(lambda: get_smtp_client.clear())
+smtp_client = LocalProxy(get_smtp_client)
+
 _notification_provider_clients_context_var: ContextVar[NotificationProviderClients] = ContextVar(
     "notification_provider_clients"
 )
@@ -148,7 +170,14 @@ get_notification_provider_clients: LazyLocalGetter[NotificationProviderClients] 
             getter.expected_type.name: LocalProxy(getter)
             # If a stub url is provided for SES, then use the stub client rather
             # than the real SES boto client
-            for getter in ((get_aws_ses_stub_client,) if current_app.config["SES_STUB_URL"] else (get_aws_ses_client,))
+            for getter in (
+                (get_aws_ses_stub_client,)
+                if current_app.config["SES_STUB_URL"]
+                else (
+                    get_aws_ses_client,
+                    get_smtp_client,
+                )
+            )
         },
     ),
 )
@@ -201,6 +230,7 @@ def create_app(application):
     migrate.init_app(application, db=db)
     ma.init_app(application)
     statsd_client.init_app(application)
+    audit_client.init_app(application)
     utils_logging.init_app(application, statsd_client)
 
     notify_celery.init_app(application)

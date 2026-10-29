@@ -5,13 +5,13 @@ Revises: 0005
 Create Date: 2025-05-26 14:17:22.480590
 
 """
+
 from alembic import op
 from sqlalchemy import text
 
-
 # revision identifiers, used by Alembic.
-revision = '0006'
-down_revision = '0005'
+revision = "0006"
+down_revision = "0005"
 branch_labels = None
 depends_on = None
 
