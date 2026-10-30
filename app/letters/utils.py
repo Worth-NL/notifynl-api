@@ -4,8 +4,8 @@ import math
 from datetime import datetime, timedelta
 from enum import Enum
 
-import boto3
 from flask import current_app
+from notifications_utils.clients.minio import resource
 from notifications_utils.clients.redis import daily_limit_cache_key
 from notifications_utils.letter_timings import LETTER_PROCESSING_DEADLINE
 from notifications_utils.pdf import pdf_page_count
@@ -82,7 +82,7 @@ class LetterPDFNotFound(Exception):
 def find_letter_pdf_in_s3(notification):
     bucket_name, prefix = get_bucket_name_and_prefix_for_notification(notification)
 
-    s3 = boto3.resource("s3")
+    s3 = resource("s3")
     bucket = s3.Bucket(bucket_name)
     try:
         item = next(x for x in bucket.objects.filter(Prefix=prefix))
@@ -323,7 +323,7 @@ def move_sanitised_letter_to_test_or_live_pdf_bucket(filename, is_test_letter, c
 
 
 def get_file_names_from_error_bucket():
-    s3 = boto3.resource("s3")
+    s3 = resource("s3")
     scan_bucket = current_app.config["S3_BUCKET_LETTERS_SCAN"]
     bucket = s3.Bucket(scan_bucket)
 
@@ -336,7 +336,7 @@ def get_letter_pdf_and_metadata(notification):
 
 
 def _move_s3_object(source_bucket, source_filename, target_bucket, target_filename, metadata=None):
-    s3 = boto3.resource("s3")
+    s3 = resource("s3")
     copy_source = {"Bucket": source_bucket, "Key": source_filename}
 
     target_bucket = s3.Bucket(target_bucket)
@@ -349,7 +349,8 @@ def _move_s3_object(source_bucket, source_filename, target_bucket, target_filena
     if metadata:
         put_args["Metadata"] = metadata
         put_args["MetadataDirective"] = "REPLACE"
-    obj.copy(copy_source, ExtraArgs=put_args)
+    # obj.copy(copy_source, ExtraArgs=put_args)
+    obj.copy(copy_source)
 
     s3.Object(source_bucket, source_filename).delete()
 

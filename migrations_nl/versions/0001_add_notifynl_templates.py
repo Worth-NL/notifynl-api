@@ -5,12 +5,13 @@ Revises: None
 Create Date: 2025-04-29 12:15:32.597184
 
 """
+
 from alembic import op
 from flask import current_app
 from sqlalchemy import text
 
 # revision identifiers, used by Alembic.
-revision = '0001'
+revision = "0001"
 down_revision = None
 branch_labels = None
 depends_on = None
@@ -21,12 +22,11 @@ templates = [
     # config.py/ConfigNL.NEW_USER_EMAIL_VERIFICATION_TEMPLATE_ID
     {
         "id": "afd325cd-c83e-4b0b-8426-7acb9c0aa62b",
-        "name": "NotifyNL email verification code",
+        "name": "NotifyNL email registratie-link",
         "type": "email",
-        "subject": "Confirm NotifyNL registration",
-        "content": """Hi ((name)),\n\n
-                    To complete your registration for NotifyNL please click the link below\n\n((url))
-                    """,
+        "subject": "Bevestig NotifyNL registratie",
+        "content": """Hallo ((name)),
+        \n\nOpen de volgende link om de registratie voor NotifyNL af te ronden:\n\n((url))""",
     },
     # Invitation to collaborate - service
     # config.py/ConfigNL.INVITATION_EMAIL_TEMPLATE_ID
@@ -106,12 +106,10 @@ templates = [
     # config.py/ConfigNL.EMAIL_2FA_TEMPLATE_ID
     {
         "id": "320a5f19-600f-451e-9646-11206c69828d",
-        "name": "NotifyNL email verify code",
+        "name": "NotifyNL email inlog-link",
         "type": "email",
-        "subject": "Sign in to NotifyNL",
-        "content": """Hi ((name)),\n\n
-                        To sign in to NotifyNL please open this link: ((url))
-                    """,
+        "subject": "Inloggen in NotifyNL",
+        "content": """Hallo ((name)),\n\nOpen deze link om in NotifyNL in te loggen:\n\n((url))""",
     },
     # Verify reply-to address
     # config.py/ConfigNL.REPLY_TO_EMAIL_ADDRESS_VERIFICATION_TEMPLATE_ID
@@ -122,7 +120,7 @@ templates = [
         "subject": "Your NotifyNL reply-to email address",
         "content": """Hi,\n\n
                     This address has been provided as a reply-to email address for a NotifyNL account.\n
-                    Any replies from users to emails they receive through NotifyNL will come back to this email address.\n\n
+                    Any replies from users to emails through NotifyNL will come back to this email address.\n\n
                     This is just a quick check to make sure the address is valid.\n\n
                     No need to reply.
                     """,

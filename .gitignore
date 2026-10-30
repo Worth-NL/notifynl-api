@@ -908,4 +908,5 @@ celerybeat-schedule*
 docker-compose.yml
 .env
 application.log.json
+dast-openapi.generated.yaml
 .claude/settings.local.json
