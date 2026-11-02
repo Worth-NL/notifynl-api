@@ -76,7 +76,8 @@ from app.constants import (
 )
 from app.hashing import check_hash, hashpw
 from app.history_meta import Versioned
-from app.letters_nl.constants import LETTER_PROVIDERS, PINGEN_ADDRESS_PLACEMENT
+from app.letters_nl.address_windows import letter_address_window_for
+from app.letters_nl.constants import LETTER_PROVIDER_PINGEN, LETTER_PROVIDERS, PINGEN_ADDRESS_PLACEMENT
 from app.models_types import (
     LetterCostDetails,
     SerializedAnnualBilling,
@@ -728,6 +729,24 @@ class Service(db.Model, Versioned):
         if letter_provider and letter_provider.is_complete():
             return letter_provider.address_placement
         return PINGEN_ADDRESS_PLACEMENT
+
+    @property
+    def effective_letter_provider(self):
+        """
+        [NotifyNL] The print provider this service's letters go to, as effective_letter_address_placement decides it:
+        None while LETTER_DELIVERY_VIA_PROVIDERS is off.
+        """
+        if not current_app.config.get("LETTER_DELIVERY_VIA_PROVIDERS"):
+            return None
+        letter_provider = self.organisation.letter_provider if self.organisation else None
+        if letter_provider and letter_provider.is_complete():
+            return letter_provider.provider.identifier
+        return LETTER_PROVIDER_PINGEN
+
+    @property
+    def letter_address_window(self):
+        """[NotifyNL] The address window template-preview checks this service's precompiled letters against."""
+        return letter_address_window_for(self.effective_letter_provider, self.effective_letter_address_placement)
 
     def has_permission(self, permission):
         return permission in [p.permission for p in self.permissions]

@@ -22,6 +22,7 @@ from app.celery.letters_pdf_tasks import (
     process_virus_scan_failed_letter_parts,
     process_virus_scan_success_letter_attachments,
     resanitise_pdf,
+    sanitise_letter,
     sanitise_letter_parts,
     send_letters_volume_email_to_dvla,
     update_billable_units_for_letter,
@@ -529,6 +530,7 @@ def test_resanitise_pdf_calls_template_preview_with_letter_details(
             "file_location": "2021-02-07/NOTIFY.FOO.D.1.C.20210207120000.PDF",
             "allow_international_letters": expected_international_letters_allowed,
             "letter_address_placement": sample_letter_notification.service.letter_address_placement,
+            "letter_address_window": sample_letter_notification.service.letter_address_window.to_dict(),
         },
         queue=QueueNames.SANITISE_LETTERS,
         MessageGroupId=str(sample_letter_notification.service_id),
@@ -563,8 +565,50 @@ def test_sanitise_letter_parts_calls_template_preview_sanitise_task(
             "filenames": filenames,
             "allow_international_letters": expected_international_letters_allowed,
             "letter_address_placement": sample_letter_notification.service.letter_address_placement,
+            "letter_address_window": sample_letter_notification.service.letter_address_window.to_dict(),
         },
         queue=QueueNames.SANITISE_LETTERS,
+    )
+
+
+@pytest.mark.parametrize(
+    "permissions, expected_international_letters_allowed",
+    (
+        ([LETTER_TYPE], False),
+        ([LETTER_TYPE, INTERNATIONAL_LETTERS], True),
+    ),
+)
+def test_sanitise_letter_calls_template_preview_sanitise_task(
+    mocker,
+    sample_letter_notification,
+    permissions,
+    expected_international_letters_allowed,
+):
+    mock_celery = mocker.patch("app.celery.letters_pdf_tasks.notify_celery.send_task")
+    filename = f"NOTIFY.{sample_letter_notification.reference}"
+    sample_letter_notification.service = create_service(service_permissions=permissions)
+    sample_letter_notification.status = NOTIFICATION_PENDING_VIRUS_CHECK
+
+    with _with_message_group_id(sanitise_letter, str(sample_letter_notification.service_id)):
+        sanitise_letter(filename)
+
+    mock_celery.assert_called_once_with(
+        name=TaskNames.SANITISE_LETTER,
+        kwargs={
+            "notification_id": str(sample_letter_notification.id),
+            "filename": filename,
+            "allow_international_letters": expected_international_letters_allowed,
+            "letter_address_placement": sample_letter_notification.service.letter_address_placement,
+            "letter_address_window": {
+                "id": "standard-60mm",
+                "address_placement": "60mm",
+                "address_area": {"x": 24.6, "y": 60, "width": 95.4, "height": 40},
+                "postage_area": None,
+                "provider": None,
+            },
+        },
+        queue=QueueNames.SANITISE_LETTERS,
+        MessageGroupId=str(sample_letter_notification.service_id),
     )
 
 
