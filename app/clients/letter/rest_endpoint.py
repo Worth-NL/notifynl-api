@@ -21,7 +21,7 @@ from app.letters_nl.constants import (
 )
 from app.letters_nl.url_validation import InvalidLetterEndpointUrl, validate_letter_endpoint_url
 from app.otel_metrics.provider import record_request_duration
-from app.utils_nl import get_client_certificate_path
+from app.utils_nl import get_ca_bundle, get_client_certificate_path
 
 # (connect, read) - the read timeout allows for endpoints that take a while to accept a multi-page PDF, as a timed out
 # send may still have been accepted. A token request plus the letter POST must stay well within the delivery lock's
@@ -128,6 +128,7 @@ class RestEndpointLetterClient(LetterClient):
                 timeout=TIMEOUT,
                 allow_redirects=False,
                 cert=get_client_certificate_path(url),
+                verify=get_ca_bundle(),
                 **kwargs,
             )
         except requests.RequestException as e:
