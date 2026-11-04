@@ -45,6 +45,19 @@ class TestCreateFixture:
         assert result["apiKeyTest"].startswith(f"smoke-test-test-{service.id}-")
         assert result["emailTemplateId"]
         assert result["smsTemplateId"]
+        assert result["letterTemplateId"]
+
+    def test_letter_template_has_netherlands_postage(self, functional_tests_request):
+        result = functional_tests_request.post(
+            "functional_tests.create_functional_test_fixture",
+            _data={"runId": "letter-template-check"},
+            _expected_status=201,
+        )
+
+        letter_template = Template.query.filter_by(id=result["letterTemplateId"]).one()
+        assert letter_template.template_type == "letter"
+        assert letter_template.postage == "netherlands"
+        assert "((nonce))" in letter_template.content
 
     def test_admin_user_gets_full_service_permissions(self, functional_tests_request):
         """
