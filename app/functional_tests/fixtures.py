@@ -137,6 +137,7 @@ def create_fixture(run_id: str) -> dict:
 
         email_template = _create_email_template(service, admin_user.id, resource_id)
         sms_template = _create_sms_template(service, admin_user.id, resource_id)
+        letter_template = _create_letter_template(service, admin_user.id, resource_id)
     except Exception:
         current_app.logger.exception("Failed to create smoke-test fixture for resourceId %s; cleaning up", resource_id)
         _delete_by_email(email_address)
@@ -152,6 +153,7 @@ def create_fixture(run_id: str) -> dict:
         "apiKeyTest": f"smoke-test-test-{service.id}-{api_key_test.secret}",
         "emailTemplateId": str(email_template.id),
         "smsTemplateId": str(sms_template.id),
+        "letterTemplateId": str(letter_template.id),
     }
 
 
@@ -270,6 +272,24 @@ def _create_sms_template(service, user_id, resource_id):
             "name": f"Smoke Test SMS {resource_id}",
             "template_type": "sms",
             "content": "Smoke test sms. ((nonce))",
+            "created_by": user_id,
+            "service": service.id,
+        }
+    )
+    dao_create_template(new_template)
+    return new_template
+
+
+def _create_letter_template(service, user_id, resource_id):
+    # Postage set explicitly: template/rest.py only defaults it to netherlands for templates created over HTTP, and
+    # a letter without NL postage breaks a v2 GET of its notifications (NL letter_timings has no "second").
+    new_template = template_schema.load(
+        {
+            "name": f"Smoke Test Letter {resource_id}",
+            "template_type": "letter",
+            "content": "Smoke test letter. ((nonce))",
+            "subject": "Smoke test",
+            "postage": "netherlands",
             "created_by": user_id,
             "service": service.id,
         }
