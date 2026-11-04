@@ -1,6 +1,7 @@
 import pytest
 
 from app.letters_nl.constants import LETTER_PROVIDER_PINGEN, LETTER_PROVIDER_REST_ENDPOINT
+from app.models_nl import OrganisationLetterProvider
 from app.utils import get_dt_string_or_none
 from tests.app.db import (
     create_notification,
@@ -310,6 +311,24 @@ def test_letter_address_window_without_an_organisation_is_pingens(notify_api, sa
     with set_config(notify_api, "LETTER_DELIVERY_VIA_PROVIDERS", True):
         assert sample_service.effective_letter_provider == LETTER_PROVIDER_PINGEN
         assert sample_service.letter_address_window.id == "pingen"
+
+
+def test_letter_address_window_checks_the_organisations_provider_once(mocker, notify_api, service_in_organisation):
+    create_organisation_letter_provider(
+        service_in_organisation.organisation,
+        LETTER_PROVIDER_REST_ENDPOINT,
+        endpoint_url="https://print.example.com",
+        auth_method="api_key",
+        auth_config=API_KEY_AUTH_CONFIG,
+        address_placement="50mm",
+    )
+    # for a REST endpoint each check decrypts its auth config
+    is_complete = mocker.spy(OrganisationLetterProvider, "is_complete")
+
+    with set_config(notify_api, "LETTER_DELIVERY_VIA_PROVIDERS", True):
+        assert service_in_organisation.letter_address_window.id == "standard-50mm"
+
+    assert is_complete.call_count == 1
 
 
 @pytest.mark.parametrize(

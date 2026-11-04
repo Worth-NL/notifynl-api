@@ -723,30 +723,29 @@ class Service(db.Model, Versioned):
         [NotifyNL] Where the address goes on this service's letters. Once letters go straight to print providers
         (LETTER_DELIVERY_VIA_PROVIDERS), the organisation's provider decides: its envelopes fix the window.
         """
-        if not current_app.config.get("LETTER_DELIVERY_VIA_PROVIDERS"):
-            return self.letter_address_placement
-        letter_provider = self.organisation.letter_provider if self.organisation else None
-        if letter_provider and letter_provider.is_complete():
-            return letter_provider.address_placement
-        return PINGEN_ADDRESS_PLACEMENT
+        return self._effective_letter_provider_and_placement()[1]
 
     @property
     def effective_letter_provider(self):
-        """
-        [NotifyNL] The print provider this service's letters go to, as effective_letter_address_placement decides it:
-        None while LETTER_DELIVERY_VIA_PROVIDERS is off.
-        """
-        if not current_app.config.get("LETTER_DELIVERY_VIA_PROVIDERS"):
-            return None
-        letter_provider = self.organisation.letter_provider if self.organisation else None
-        if letter_provider and letter_provider.is_complete():
-            return letter_provider.provider.identifier
-        return LETTER_PROVIDER_PINGEN
+        """[NotifyNL] The print provider of this service's letters: None while LETTER_DELIVERY_VIA_PROVIDERS is off."""
+        return self._effective_letter_provider_and_placement()[0]
 
     @property
     def letter_address_window(self):
         """[NotifyNL] The address window template-preview checks this service's precompiled letters against."""
-        return letter_address_window_for(self.effective_letter_provider, self.effective_letter_address_placement)
+        return letter_address_window_for(*self._effective_letter_provider_and_placement())
+
+    def _effective_letter_provider_and_placement(self):
+        """
+        [NotifyNL] The print provider and address placement of this service's letters, decided together: the
+        organisation's own provider if complete_letter_provider accepts it, otherwise Pingen.
+        """
+        if not current_app.config.get("LETTER_DELIVERY_VIA_PROVIDERS"):
+            return None, self.letter_address_placement
+        letter_provider = complete_letter_provider(self.organisation.letter_provider if self.organisation else None)
+        if letter_provider:
+            return letter_provider.provider.identifier, letter_provider.address_placement
+        return LETTER_PROVIDER_PINGEN, PINGEN_ADDRESS_PLACEMENT
 
     def has_permission(self, permission):
         return permission in [p.permission for p in self.permissions]
@@ -2982,4 +2981,8 @@ class ReportRequest(db.Model):
 
 
 # [NotifyNL] NL-only models, imported here so they're always mapped with the rest
-from app.models_nl import LetterProviderReference, OrganisationLetterProvider  # noqa: E402, F401
+from app.models_nl import (  # noqa: E402, F401
+    LetterProviderReference,
+    OrganisationLetterProvider,
+    complete_letter_provider,
+)
