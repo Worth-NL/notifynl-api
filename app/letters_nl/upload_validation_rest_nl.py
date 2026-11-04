@@ -9,12 +9,17 @@ import binascii
 import json
 
 from flask import Blueprint, current_app, jsonify, request
-from flask.ctx import has_request_context
 from requests import post as requests_post
 
+from app.constants import INTERNATIONAL_LETTERS
 from app.dao.services_dao import dao_fetch_service_by_id
 from app.errors import InvalidRequest, register_errors
 from app.schema_validation import validate
+from app.template.rest import template_preview_headers
+
+# seconds: below the 30 admin's API client waits for this API, so a template-preview that hangs doesn't keep a request
+# open here after admin has given up on it
+TEMPLATE_PREVIEW_TIMEOUT = 25
 
 letter_upload_blueprint = Blueprint("letter_upload", __name__, url_prefix="/service/<uuid:service_id>/letter-upload")
 register_errors(letter_upload_blueprint)
@@ -26,7 +31,6 @@ sanitise_letter_upload_schema = {
     "properties": {
         "file": {"type": "string", "minLength": 1},
         "upload_id": {"type": "string", "minLength": 1},
-        "allow_international_letters": {"type": "boolean"},
     },
     "required": ["file", "upload_id"],
     "additionalProperties": False,
@@ -47,7 +51,10 @@ overlay_letter_upload_page_schema = {
 
 @letter_upload_blueprint.route("/sanitise", methods=["POST"])
 def sanitise_letter_upload(service_id):
-    """template-preview's answer as is: its status (400 for a letter that failed validation) and its JSON."""
+    """
+    template-preview's answer as is: its status (400 for a letter that failed validation) and its JSON. Whether
+    international letters are allowed comes from the service's permissions, as for a letter sent through the API.
+    """
     data = request.get_json()
     validate(data, sanitise_letter_upload_schema)
     service = dao_fetch_service_by_id(service_id)
@@ -56,7 +63,7 @@ def sanitise_letter_upload(service_id):
         "/precompiled/sanitise",
         {
             "upload_id": data["upload_id"],
-            "allow_international_letters": "true" if data.get("allow_international_letters") else "false",
+            "allow_international_letters": "true" if service.has_permission(INTERNATIONAL_LETTERS) else "false",
             **_address_window_params(service),
         },
         _decode_pdf(data["file"]),
@@ -102,9 +109,10 @@ def _decode_pdf(encoded):
 
 
 def _post_to_template_preview(path, params, pdf):
-    headers = {"Authorization": f"Token {current_app.config['TEMPLATE_PREVIEW_API_KEY']}"}
-    if has_request_context() and hasattr(request, "get_onwards_request_headers"):
-        headers.update(request.get_onwards_request_headers())
     return requests_post(
-        f"{current_app.config['TEMPLATE_PREVIEW_API_HOST']}{path}", params=params, data=pdf, headers=headers
+        f"{current_app.config['TEMPLATE_PREVIEW_API_HOST']}{path}",
+        params=params,
+        data=pdf,
+        headers=template_preview_headers(),
+        timeout=TEMPLATE_PREVIEW_TIMEOUT,
     )

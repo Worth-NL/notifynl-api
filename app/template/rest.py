@@ -356,10 +356,17 @@ def preview_letter_template_by_notification_id(service_id, notification_id, file
     return jsonify({"content": response_content, "metadata": metadata})
 
 
-def _get_png_preview_or_overlaid_pdf(url, data, notification_id, json=True):
+def template_preview_headers():
+    # [NotifyNL] factored out of _get_png_preview_or_overlaid_pdf: app/letters_nl/upload_validation_rest_nl.py sends
+    # the same headers
     headers = {"Authorization": "Token {}".format(current_app.config["TEMPLATE_PREVIEW_API_KEY"])}
     if has_request_context() and hasattr(request, "get_onwards_request_headers"):
         headers.update(request.get_onwards_request_headers())
+    return headers
+
+
+def _get_png_preview_or_overlaid_pdf(url, data, notification_id, json=True):
+    headers = template_preview_headers()
 
     if json:
         resp = requests_post(

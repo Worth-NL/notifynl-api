@@ -5,6 +5,9 @@ from urllib.parse import parse_qs, urlparse
 import pytest
 import requests_mock
 
+from app.constants import INTERNATIONAL_LETTERS, LETTER_TYPE
+from app.letters_nl.upload_validation_rest_nl import TEMPLATE_PREVIEW_TIMEOUT
+from tests.app.db import create_service
 from tests.conftest import set_config, set_config_values
 
 TEMPLATE_PREVIEW = "http://localhost/notifications-template-preview"
@@ -37,20 +40,16 @@ def test_sanitise_letter_upload_passes_template_previews_answer_on(
         response = admin_request.post(
             "letter_upload.sanitise_letter_upload",
             service_id=sample_service.id,
-            _data={
-                "file": base64.b64encode(PDF).decode(),
-                "upload_id": "upload-1",
-                "allow_international_letters": True,
-            },
+            _data={"file": base64.b64encode(PDF).decode(), "upload_id": "upload-1"},
         )
 
     assert response == {"status_code": template_preview_status, "data": sanitise_result}
     request = mock_sanitise.last_request
     assert request.body == PDF
     assert request.headers["Authorization"] == "Token k"
+    assert request.timeout == TEMPLATE_PREVIEW_TIMEOUT
     query = _query(request)
     assert query["upload_id"] == "upload-1"
-    assert query["allow_international_letters"] == "true"
     # the service has no organisation, so its letters go to Pingen
     assert query["letter_address_placement"] == "60mm"
     window = json.loads(query["letter_address_window"])
@@ -72,9 +71,30 @@ def test_sanitise_letter_upload_without_providers_sends_the_services_own_placeme
         )
 
     query = _query(mock_sanitise.last_request)
-    assert query["allow_international_letters"] == "false"
     assert query["letter_address_placement"] == "50mm"
     assert json.loads(query["letter_address_window"])["id"] == "standard-50mm"
+
+
+@pytest.mark.parametrize(
+    "permissions, expected",
+    [
+        ([LETTER_TYPE, INTERNATIONAL_LETTERS], "true"),
+        ([LETTER_TYPE], "false"),
+    ],
+)
+def test_sanitise_letter_upload_allows_international_letters_by_the_services_permission(
+    admin_request, notify_db_session, template_preview, permissions, expected
+):
+    service = create_service(service_name="international letters", service_permissions=permissions)
+    mock_sanitise = template_preview.post(f"{TEMPLATE_PREVIEW}/precompiled/sanitise", json={"message": None})
+
+    admin_request.post(
+        "letter_upload.sanitise_letter_upload",
+        service_id=service.id,
+        _data={"file": base64.b64encode(PDF).decode(), "upload_id": "upload-1"},
+    )
+
+    assert _query(mock_sanitise.last_request)["allow_international_letters"] == expected
 
 
 def test_sanitise_letter_upload_fails_when_template_preview_does(admin_request, sample_service, template_preview):
@@ -95,6 +115,8 @@ def test_sanitise_letter_upload_fails_when_template_preview_does(admin_request, 
         {"file": base64.b64encode(PDF).decode()},
         {"file": "not base64!", "upload_id": "upload-1"},
         {"file": base64.b64encode(PDF).decode(), "upload_id": "upload-1", "letter_address_placement": "50mm"},
+        # the API decides these from the service
+        {"file": base64.b64encode(PDF).decode(), "upload_id": "upload-1", "allow_international_letters": True},
     ],
 )
 def test_sanitise_letter_upload_rejects_bad_requests(admin_request, sample_service, template_preview, data):
@@ -118,6 +140,7 @@ def test_overlay_letter_upload_page(notify_api, admin_request, sample_service, t
     assert response == {"png": base64.b64encode(b"\x89PNG").decode()}
     request = mock_overlay.last_request
     assert request.body == PDF
+    assert request.timeout == TEMPLATE_PREVIEW_TIMEOUT
     query = _query(request)
     assert query["page_number"] == "2"
     assert json.loads(query["letter_address_window"])["id"] == "pingen"
