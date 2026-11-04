@@ -10,7 +10,13 @@ the windows can later come from somewhere else (configuration, the provider) wit
 
 from dataclasses import asdict, dataclass
 
+from flask import current_app
+
 from app.letters_nl.constants import LETTER_PROVIDER_PINGEN, PINGEN_ADDRESS_PLACEMENT
+
+# The standard window for a placement that has none, as template-preview falls back to its
+# DEFAULT_LETTER_ADDRESS_PLACEMENT
+DEFAULT_ADDRESS_PLACEMENT = "60mm"
 
 
 @dataclass(frozen=True)
@@ -46,7 +52,10 @@ LETTER_ADDRESS_WINDOWS = [
         address_placement="60mm",
         address_area=Area(x=24.6, y=60, width=95.4, height=40),
     ),
-    # Pingen's document check: the address inside its Address Area, nothing else inside its Postage Area
+    # Pingen's document check for left-windowed envelopes: the address inside its Address Area, nothing else inside its
+    # Postage Area. The measurements are on https://help.pingen.com/en/templates-and-postal-requirements/layout-requirements
+    # ("Address area", "Postage area"), the rule on
+    # https://help.pingen.com/en/fix-and-enhance-letters/issue-with-recipient-address
     LetterAddressWindow(
         id="pingen",
         provider=LETTER_PROVIDER_PINGEN,
@@ -62,7 +71,11 @@ def letter_address_window_for(provider, address_placement):
     for window in LETTER_ADDRESS_WINDOWS:
         if provider and window.provider == provider:
             return window
-    for window in LETTER_ADDRESS_WINDOWS:
-        if not window.provider and window.address_placement == address_placement:
-            return window
-    return next(window for window in LETTER_ADDRESS_WINDOWS if window.id == f"standard-{PINGEN_ADDRESS_PLACEMENT}")
+    standard_windows = {window.address_placement: window for window in LETTER_ADDRESS_WINDOWS if not window.provider}
+    if address_placement in standard_windows:
+        return standard_windows[address_placement]
+    # placements are validated when they're set, so this means one was added without a window
+    current_app.logger.warning(
+        "No letter address window for placement %s, using the %s one", address_placement, DEFAULT_ADDRESS_PLACEMENT
+    )
+    return standard_windows[DEFAULT_ADDRESS_PLACEMENT]

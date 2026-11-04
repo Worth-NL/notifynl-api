@@ -16,13 +16,16 @@ from app.letters_nl.constants import LETTER_PROVIDER_PINGEN, LETTER_PROVIDER_RES
         # letters through DVLA: no provider
         (None, "50mm", "standard-50mm"),
         (None, "60mm", "standard-60mm"),
-        # always a window, even for a placement that doesn't exist
-        (None, None, "standard-60mm"),
-        (None, "70mm", "standard-60mm"),
     ],
 )
 def test_letter_address_window_for(provider, address_placement, expected):
     assert letter_address_window_for(provider, address_placement).id == expected
+
+
+@pytest.mark.parametrize("address_placement", [None, "70mm"])
+def test_letter_address_window_for_a_placement_without_a_window_is_the_default_one(caplog, address_placement):
+    assert letter_address_window_for(None, address_placement).id == "standard-60mm"
+    assert f"No letter address window for placement {address_placement}, using the 60mm one" in caplog.messages
 
 
 def test_pingen_window_is_pingens_address_and_postage_area():
