@@ -1,5 +1,7 @@
 import base64
+import json
 from io import BytesIO
+from urllib.parse import urlencode
 
 import botocore
 from flask import Blueprint, current_app, jsonify, request
@@ -250,13 +252,15 @@ def redact_template(template, data):
     return "null", 200
 
 
-def _overlay_query_string(file_type, page_number, letter_address_placement):
+def _overlay_query_string(file_type, page_number, letter_address_placement, letter_address_window=None):
     params = {} if file_type != "png" else {"page_number": page_number}
     if letter_address_placement:
         params["letter_address_placement"] = letter_address_placement
+    if letter_address_window:
+        params["letter_address_window"] = json.dumps(letter_address_window, separators=(",", ":"))
     if not params:
         return ""
-    return "?" + "&".join(f"{key}={value}" for key, value in params.items())
+    return "?" + urlencode(params)
 
 
 @template_blueprint.route("/preview/<uuid:notification_id>/<file_type>", methods=["GET"])
@@ -291,7 +295,10 @@ def preview_letter_template_by_notification_id(service_id, notification_id, file
         if content_outside_printable_area and (file_type == "pdf" or page_is_in_invalid_pages):
             path = f"/precompiled/overlay.{file_type}"
             query_string = _overlay_query_string(
-                file_type, page_number, notification.service.effective_letter_address_placement
+                file_type,
+                page_number,
+                notification.service.effective_letter_address_placement,
+                notification.service.letter_address_window.to_dict(),
             )
             content = pdf_file
         elif file_type == "png":
@@ -349,10 +356,17 @@ def preview_letter_template_by_notification_id(service_id, notification_id, file
     return jsonify({"content": response_content, "metadata": metadata})
 
 
-def _get_png_preview_or_overlaid_pdf(url, data, notification_id, json=True):
+def template_preview_headers():
+    # [NotifyNL] factored out of _get_png_preview_or_overlaid_pdf: app/letters_nl/upload_validation_rest_nl.py sends
+    # the same headers
     headers = {"Authorization": "Token {}".format(current_app.config["TEMPLATE_PREVIEW_API_KEY"])}
     if has_request_context() and hasattr(request, "get_onwards_request_headers"):
         headers.update(request.get_onwards_request_headers())
+    return headers
+
+
+def _get_png_preview_or_overlaid_pdf(url, data, notification_id, json=True):
+    headers = template_preview_headers()
 
     if json:
         resp = requests_post(

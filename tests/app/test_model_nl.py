@@ -1,6 +1,7 @@
 import pytest
 
 from app.letters_nl.constants import LETTER_PROVIDER_PINGEN, LETTER_PROVIDER_REST_ENDPOINT
+from app.models_nl import OrganisationLetterProvider
 from app.utils import get_dt_string_or_none
 from tests.app.db import (
     create_notification,
@@ -262,6 +263,72 @@ def test_effective_letter_address_placement_without_an_organisation(notify_api, 
 
     with set_config(notify_api, "LETTER_DELIVERY_VIA_PROVIDERS", True):
         assert sample_service.effective_letter_address_placement == "60mm"
+
+
+def test_effective_letter_provider_is_none_while_letters_go_through_dvla(notify_api, service_in_organisation):
+    create_organisation_letter_provider(service_in_organisation.organisation, LETTER_PROVIDER_PINGEN)
+
+    with set_config(notify_api, "LETTER_DELIVERY_VIA_PROVIDERS", False):
+        assert service_in_organisation.effective_letter_provider is None
+        assert service_in_organisation.letter_address_window.id == "standard-50mm"
+
+
+@pytest.mark.parametrize(
+    "provider, endpoint_url, auth_config, expected_provider, expected_window",
+    [
+        (
+            LETTER_PROVIDER_REST_ENDPOINT,
+            "https://print.example.com",
+            API_KEY_AUTH_CONFIG,
+            "rest-endpoint",
+            "standard-50mm",
+        ),
+        # an incomplete endpoint means letters go to Pingen
+        (LETTER_PROVIDER_REST_ENDPOINT, None, API_KEY_AUTH_CONFIG, "pingen", "pingen"),
+        (LETTER_PROVIDER_PINGEN, None, None, "pingen", "pingen"),
+        (None, None, None, "pingen", "pingen"),
+    ],
+)
+def test_letter_address_window_follows_the_organisations_provider(
+    notify_api, service_in_organisation, provider, endpoint_url, auth_config, expected_provider, expected_window
+):
+    if provider:
+        create_organisation_letter_provider(
+            service_in_organisation.organisation,
+            provider,
+            endpoint_url=endpoint_url,
+            auth_method="api_key" if auth_config else None,
+            auth_config=auth_config,
+            address_placement="50mm" if provider == LETTER_PROVIDER_REST_ENDPOINT else "60mm",
+        )
+
+    with set_config(notify_api, "LETTER_DELIVERY_VIA_PROVIDERS", True):
+        assert service_in_organisation.effective_letter_provider == expected_provider
+        assert service_in_organisation.letter_address_window.id == expected_window
+
+
+def test_letter_address_window_without_an_organisation_is_pingens(notify_api, sample_service):
+    with set_config(notify_api, "LETTER_DELIVERY_VIA_PROVIDERS", True):
+        assert sample_service.effective_letter_provider == LETTER_PROVIDER_PINGEN
+        assert sample_service.letter_address_window.id == "pingen"
+
+
+def test_letter_address_window_checks_the_organisations_provider_once(mocker, notify_api, service_in_organisation):
+    create_organisation_letter_provider(
+        service_in_organisation.organisation,
+        LETTER_PROVIDER_REST_ENDPOINT,
+        endpoint_url="https://print.example.com",
+        auth_method="api_key",
+        auth_config=API_KEY_AUTH_CONFIG,
+        address_placement="50mm",
+    )
+    # for a REST endpoint each check decrypts its auth config
+    is_complete = mocker.spy(OrganisationLetterProvider, "is_complete")
+
+    with set_config(notify_api, "LETTER_DELIVERY_VIA_PROVIDERS", True):
+        assert service_in_organisation.letter_address_window.id == "standard-50mm"
+
+    assert is_complete.call_count == 1
 
 
 @pytest.mark.parametrize(

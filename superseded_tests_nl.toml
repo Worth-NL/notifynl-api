@@ -23,6 +23,11 @@ reason = "broken because NL Postal address validation"
 twin = ["tests/app/celery/test_letters_pdf_tasks_nl.py::test_resanitise_pdf_calls_template_preview_with_letter_details"]
 
 [[test]]
+nodeid = "tests/app/celery/test_letters_pdf_tasks.py::test_sanitise_letter_calls_template_preview_sanitise_task"
+reason = "NL also sends the service's letter address window"
+twin = ["tests/app/celery/test_letters_pdf_tasks_nl.py::test_sanitise_letter_calls_template_preview_sanitise_task"]
+
+[[test]]
 nodeid = "tests/app/celery/test_letters_pdf_tasks.py::test_send_dvla_letters_via_api"
 reason = "Schedule was removed, so this query will always return every result"
 
@@ -457,6 +462,11 @@ twin = ["tests/app/service/test_rest_nl.py::test_create_pdf_letter"]
 nodeid = "tests/app/service/test_rest.py::test_create_pdf_letter_validates_against_json_schema"
 reason = "Postage and PostalAddress issue"
 twin = ["tests/app/service/test_rest_nl.py::test_create_pdf_letter_validates_against_json_schema"]
+
+[[test]]
+nodeid = "tests/app/service/test_rest.py::test_get_service_by_id"
+reason = "NL service JSON also carries letter_address_window"
+twin = ["tests/app/service/test_rest_nl.py::test_get_service_by_id"]
 
 [[test]]
 nodeid = "tests/app/service/test_service_guest_list.py::test_get_guest_list_separates_emails_and_phones"

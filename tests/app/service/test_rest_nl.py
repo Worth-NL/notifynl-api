@@ -211,3 +211,63 @@ def test_get_notification_for_service_has_the_print_provider(admin_request, samp
 
     assert response["status"] == "sent"
     assert response["print_provider"] == expected
+
+
+def test_get_service_by_id(admin_request, sample_service):
+    # NL twin: the service JSON also carries letter_address_window
+    json_resp = admin_request.get("service.get_service_by_id", service_id=sample_service.id)
+    assert json_resp["data"]["name"] == sample_service.name
+    assert json_resp["data"]["id"] == str(sample_service.id)
+    assert json_resp["data"]["email_branding"] is None
+    assert json_resp["data"]["prefix_sms"] is False
+
+    assert set(json_resp["data"].keys()) == {
+        "active",
+        "billing_contact_email_addresses",
+        "billing_contact_names",
+        "billing_reference",
+        "confirmed_email_sender_name",
+        "confirmed_service_name",
+        "confirmed_unique",
+        "consent_to_research",
+        "contact_link",
+        "count_as_live",
+        "created_by",
+        "custom_email_sender_name",
+        "email_branding",
+        "email_message_limit",
+        "email_sender_local_part",
+        "go_live_at",
+        "go_live_user",
+        "has_active_go_live_request",
+        "id",
+        "international_sms_message_limit",
+        "letter_address_placement",
+        "letter_address_placement_decided_by_provider",
+        "letter_address_window",
+        "letter_branding",
+        "letter_message_limit",
+        "name",
+        "notes",
+        "oin",
+        "organisation",
+        "organisation_type",
+        "permissions",
+        "prefix_sms",
+        "purchase_order_number",
+        "rate_limit",
+        "restricted",
+        "send_client_reference_to_letter_provider",
+        "service_callback_api",
+        "sms_message_limit",
+        "messagebox_message_limit",
+        "volume_email",
+        "volume_letter",
+        "volume_sms",
+    }
+
+
+def test_get_service_by_id_returns_the_letter_address_window(admin_request, sample_service):
+    json_resp = admin_request.get("service.get_service_by_id", service_id=sample_service.id)
+
+    assert json_resp["data"]["letter_address_window"] == sample_service.letter_address_window.to_dict()

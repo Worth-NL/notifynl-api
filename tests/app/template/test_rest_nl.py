@@ -1,4 +1,5 @@
 import json
+from urllib.parse import parse_qs
 
 import pytest
 import requests_mock
@@ -6,6 +7,7 @@ from freezegun import freeze_time
 
 from app.constants import EMAIL_TYPE, LETTER_TYPE, SMS_TYPE
 from app.models import Template, TemplateHistory
+from app.template.rest import _overlay_query_string
 from tests import create_admin_authorization_header
 from tests.app.db import (
     create_letter_contact,
@@ -262,3 +264,19 @@ def test_create_template_bilingual_letter(admin_request, sample_service_full_per
     assert t.letter_languages == "welsh_then_english"
     assert t.letter_welsh_subject == "welsh subject"
     assert t.letter_welsh_content == "welsh body"
+
+
+@pytest.mark.parametrize(
+    "file_type, expected",
+    [
+        ("png", {"page_number": ["2"], "letter_address_placement": ["60mm"]}),
+        ("pdf", {"letter_address_placement": ["60mm"]}),
+    ],
+)
+def test_overlay_query_string_carries_the_letter_address_window(file_type, expected):
+    window = {"id": "pingen", "address_area": {"x": 22, "y": 60, "width": 85.5, "height": 25.5}}
+
+    query = parse_qs(_overlay_query_string(file_type, "2", "60mm", window).removeprefix("?"))
+
+    assert json.loads(query.pop("letter_address_window")[0]) == window
+    assert query == expected

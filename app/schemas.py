@@ -341,6 +341,8 @@ class ServiceSchema(BaseSchema, UUIDsAsStringsMixin):
             data["letter_address_placement_decided_by_provider"] = bool(
                 current_app.config.get("LETTER_DELIVERY_VIA_PROVIDERS")
             )
+            # the window its precompiled letters are checked against, so admin can explain a rejected letter
+            data["letter_address_window"] = service.letter_address_window.to_dict()
         return data
 
     @pre_load

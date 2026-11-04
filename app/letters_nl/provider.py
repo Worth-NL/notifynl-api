@@ -2,6 +2,7 @@ from flask import current_app
 
 from app.dao.organisation_letter_provider_dao import dao_get_organisation_letter_provider
 from app.letters_nl.constants import LETTER_PROVIDER_PINGEN
+from app.models_nl import complete_letter_provider
 
 
 def resolve_letter_provider(organisation_id):
@@ -12,7 +13,7 @@ def resolve_letter_provider(organisation_id):
     from app import notification_provider_clients
 
     letter_provider = dao_get_organisation_letter_provider(organisation_id)
-    if letter_provider and letter_provider.is_complete():
+    if complete_letter_provider(letter_provider):
         return notification_provider_clients.get_letter_client(letter_provider.provider.identifier), letter_provider
 
     if letter_provider:

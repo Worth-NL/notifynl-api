@@ -99,6 +99,15 @@ class OrganisationLetterProvider(db.Model):
         }
 
 
+def complete_letter_provider(letter_provider: OrganisationLetterProvider | None) -> OrganisationLetterProvider | None:
+    """
+    The organisation's own letter provider if letters can be sent with it, otherwise None: its letters then go to
+    Pingen. Sending (app/letters_nl/provider.py) and the window letters are checked against (Service in app/models.py)
+    both decide it here, so a letter is checked for the provider it's sent to.
+    """
+    return letter_provider if letter_provider and letter_provider.is_complete() else None
+
+
 class LetterProviderReference(db.Model):
     """
     The id a print provider gave a letter (e.g. Pingen's letter id). No foreign key to notifications: the mapping has

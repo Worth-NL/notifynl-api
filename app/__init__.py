@@ -278,6 +278,7 @@ def register_blueprint(application):
         letter_branding_blueprint,
     )
     from app.letters.rest import letter_job, letter_rates_blueprint
+    from app.letters_nl.upload_validation_rest_nl import letter_upload_blueprint
     from app.notifications.letter_provider_callback import letter_provider_callback_blueprint
     from app.notifications.notifications_letter_callback import (
         letter_callback_blueprint,
@@ -410,6 +411,10 @@ def register_blueprint(application):
     # [NotifyNL] per-organisation letter provider
     organisation_letter_provider_blueprint.before_request(requires_admin_auth)
     application.register_blueprint(organisation_letter_provider_blueprint)
+
+    # [NotifyNL] checks letters uploaded in admin against the service's address window
+    letter_upload_blueprint.before_request(requires_admin_auth)
+    application.register_blueprint(letter_upload_blueprint)
 
     complaint_blueprint.before_request(requires_admin_auth)
     application.register_blueprint(complaint_blueprint)
