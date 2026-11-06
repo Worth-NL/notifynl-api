@@ -7,7 +7,7 @@ from app.clients.letter import LetterClientNonRetryableException, LetterClientRe
 from app.clients.letter.rest_endpoint import RestEndpointLetterClient
 from app.models_nl import OrganisationLetterProvider
 from tests.app.clients.letter.conftest import FAILED_AFTER_SENDING, FAILED_TO_CONNECT
-from tests.conftest import set_config
+from tests.conftest import set_config, set_config_values
 
 ENDPOINT_URL = "https://print.example.com/letters"
 TOKEN_URL = "https://idp.example.com/token"
@@ -210,3 +210,43 @@ def test_send_letter_presents_client_certificate_for_host(client, letter, rmock,
         client.send_letter(letter, _letter_provider())
 
     assert rmock.last_request.cert == str(certificate)
+
+
+def test_send_letter_presents_default_client_certificate(client, letter, rmock, notify_api, tmp_path):
+    default_certificate = tmp_path / "client.pem"
+    default_certificate.write_text("cert and key")
+    rmock.post(ENDPOINT_URL, json={})
+
+    with set_config_values(
+        notify_api, {"SSL_CERT_DIR": str(tmp_path), "SSL_DEFAULT_CLIENT_CERT": str(default_certificate)}
+    ):
+        client.send_letter(letter, _letter_provider())
+
+    assert rmock.last_request.cert == str(default_certificate)
+
+
+def test_send_letter_connection_error_names_the_client_certificate_source(client, letter, rmock, notify_api, tmp_path):
+    default_certificate = tmp_path / "client.pem"
+    default_certificate.write_text("cert and key")
+    rmock.post(ENDPOINT_URL, exc=FAILED_TO_CONNECT["connection-refused"])
+
+    with (
+        set_config_values(
+            notify_api, {"SSL_CERT_DIR": str(tmp_path), "SSL_DEFAULT_CLIENT_CERT": str(default_certificate)}
+        ),
+        pytest.raises(LetterClientRetryableException, match=r"failed \(client certificate: default\):"),
+    ):
+        client.send_letter(letter, _letter_provider())
+
+
+@pytest.mark.parametrize("ca_bundle", ["/ssl/notifynl.pem", None])
+def test_send_letter_verifies_against_ca_bundle(client, letter, rmock, notify_api, monkeypatch, ca_bundle):
+    # requests swaps verify=True for these env vars, which would hide what we pass
+    monkeypatch.delenv("CURL_CA_BUNDLE", raising=False)
+    monkeypatch.delenv("REQUESTS_CA_BUNDLE", raising=False)
+    rmock.post(ENDPOINT_URL, json={})
+
+    with set_config(notify_api, "SSL_CA_BUNDLE", ca_bundle):
+        client.send_letter(letter, _letter_provider())
+
+    assert rmock.last_request.verify == (ca_bundle or True)

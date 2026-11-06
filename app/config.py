@@ -990,10 +990,18 @@ class ConfigNL(Config):
     PINGEN_PRINT_MODE = os.getenv("PINGEN_PRINT_MODE", "simplex")
     PINGEN_PRINT_SPECTRUM = os.getenv("PINGEN_PRINT_SPECTRUM", "color")
 
-    # Client-side SSL setup
-    # NOTE: For mTLS setup, trusted certificates should be added to the system certificates.
-    # For a custom bundle to be used, override the CURL_CA_BUNDLE environment variable.
+    # Client-side SSL setup for service callbacks and letter REST endpoints (see app/utils_nl.py)
+    # Per-hostname client certificates, named "<hostname with dots replaced by dashes>.pem"
     SSL_CERT_DIR = os.getenv("SSL_CERT_DIR", "/ssl")
+    # Client certificate for hosts without their own, unless listed in the comma-separated excluded hostnames
+    SSL_DEFAULT_CLIENT_CERT = os.getenv("SSL_DEFAULT_CLIENT_CERT")
+    SSL_DEFAULT_CLIENT_CERT_EXCLUDED_HOSTNAMES = frozenset(
+        hostname.strip().lower()
+        for hostname in os.getenv("SSL_DEFAULT_CLIENT_CERT_EXCLUDED_HOSTNAMES", "").split(",")
+        if hostname.strip()
+    )
+    # CA bundle for verifying those hosts' server certificates; notifynl-full sets CURL_CA_BUNDLE to its trust bundle
+    SSL_CA_BUNDLE = os.getenv("CURL_CA_BUNDLE")
 
     # these should always add up to 100%
     SMS_PROVIDER_RESTING_POINTS = {"mmg": 0, "firetext": 0, "spryng": 100}
