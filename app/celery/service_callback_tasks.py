@@ -16,7 +16,7 @@ from app.dao.returned_letters_dao import fetch_returned_letter_callback_data_dao
 from app.dao.service_callback_api_dao import get_service_callback_api_by_callback_type
 from app.otel_metrics.service_callback import record_service_callback_forward_duration
 from app.utils import DATETIME_FORMAT
-from app.utils_nl import get_ca_bundle, get_client_certificate_path
+from app.utils_nl import get_ca_bundle, get_client_certificate
 
 # thread-local copies of persistent requests.Session
 _requests_session_context_var: ContextVar[requests.Session] = ContextVar("service_callback_requests_session")
@@ -172,9 +172,10 @@ def _send_data_to_service_callback_api(self, data, service_callback_url, token, 
         }
 
         # [NotifyNL] mTLS: send a client certificate when one exists for the callback's host
-        certificate_path = get_client_certificate_path(service_callback_url)
-        if certificate_path:
-            request_kwargs["cert"] = certificate_path
+        client_certificate = get_client_certificate(service_callback_url)
+        log_extra["client_certificate_source"] = client_certificate.source
+        if client_certificate.path:
+            request_kwargs["cert"] = client_certificate.path
         request_kwargs["verify"] = get_ca_bundle()
 
         response = requests_session.request(**request_kwargs)

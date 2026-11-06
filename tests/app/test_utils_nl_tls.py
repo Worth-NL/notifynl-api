@@ -12,7 +12,7 @@ import requests
 import trustme
 from pytest_httpserver import HTTPServer
 
-from app.utils_nl import get_ca_bundle, get_client_certificate_path
+from app.utils_nl import get_ca_bundle, get_client_certificate
 from tests.conftest import set_config_values
 
 
@@ -71,7 +71,7 @@ def start_server(server_ca):
 
 
 def _post(url):
-    return requests.post(url, cert=get_client_certificate_path(url), verify=get_ca_bundle(), timeout=5)
+    return requests.post(url, cert=get_client_certificate(url).path, verify=get_ca_bundle(), timeout=5)
 
 
 def test_default_certificate_is_presented_to_a_server_that_requires_it(notify_api, tls_config, start_server, g4_ca):

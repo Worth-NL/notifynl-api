@@ -1,12 +1,19 @@
 import os
+from functools import cache
+from typing import NamedTuple
 from urllib.parse import urlparse
 
 from flask import current_app
 
 
-def get_client_certificate_path(url: str) -> str | None:
+class ClientCertificate(NamedTuple):
+    path: str | None
+    source: str  # "hostname", "excluded", "default" or "none"; callers put it on their own log lines
+
+
+def get_client_certificate(url: str) -> ClientCertificate:
     """
-    Return the client certificate to present for mutual TLS when calling `url`, or None if there isn't one.
+    Return the client certificate to present for mutual TLS when calling `url`, and where it came from.
 
     Certificates are looked up per hostname as `<hostname with dots replaced by dashes>.pem` in SSL_CERT_DIR (mounted
     from the `callback-mtls-certs` secret in notifynl-full); each file holds both the certificate and its private key.
@@ -15,25 +22,25 @@ def get_client_certificate_path(url: str) -> str | None:
     """
     hostname = urlparse(url).hostname
     if not hostname:
-        return None
+        return ClientCertificate(None, "none")
 
     certificate_dir = current_app.config.get("SSL_CERT_DIR")
     if certificate_dir:
         certificate_path = os.path.join(certificate_dir, f"{hostname.replace('.', '-')}.pem")
         if os.path.exists(certificate_path):
-            _log_client_certificate("hostname", certificate_path, url)
-            return certificate_path
+            return ClientCertificate(certificate_path, "hostname")
 
     if hostname in (current_app.config.get("SSL_DEFAULT_CLIENT_CERT_EXCLUDED_HOSTNAMES") or ()):
-        _log_client_certificate("excluded", None, url)
-        return None
+        return ClientCertificate(None, "excluded")
 
     default_certificate_path = current_app.config.get("SSL_DEFAULT_CLIENT_CERT")
-    if default_certificate_path and os.path.exists(default_certificate_path):
-        _log_client_certificate("default", default_certificate_path, url)
-        return default_certificate_path
+    if default_certificate_path:
+        # checked on every call: the chart mounts this key as optional, so it can appear without a restart
+        if os.path.exists(default_certificate_path):
+            return ClientCertificate(default_certificate_path, "default")
+        _warn_missing_default_certificate(default_certificate_path)
 
-    return None
+    return ClientCertificate(None, "none")
 
 
 def get_ca_bundle() -> str | bool:
@@ -41,11 +48,10 @@ def get_ca_bundle() -> str | bool:
     return current_app.config.get("SSL_CA_BUNDLE") or True
 
 
-def _log_client_certificate(source: str, certificate_path: str | None, url: str):
-    current_app.logger.info(
-        "Client certificate [%s] (%s) selected for [%s].",
+@cache
+def _warn_missing_default_certificate(certificate_path: str) -> None:
+    # cached to warn once per process instead of on every request
+    current_app.logger.warning(
+        "Default client certificate [%s] does not exist, so hosts without their own certificate get none.",
         certificate_path,
-        source,
-        url,
-        extra={"client_certificate_source": source},
     )

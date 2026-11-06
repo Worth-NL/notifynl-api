@@ -225,6 +225,20 @@ def test_send_letter_presents_default_client_certificate(client, letter, rmock, 
     assert rmock.last_request.cert == str(default_certificate)
 
 
+def test_send_letter_connection_error_names_the_client_certificate_source(client, letter, rmock, notify_api, tmp_path):
+    default_certificate = tmp_path / "client.pem"
+    default_certificate.write_text("cert and key")
+    rmock.post(ENDPOINT_URL, exc=FAILED_TO_CONNECT["connection-refused"])
+
+    with (
+        set_config_values(
+            notify_api, {"SSL_CERT_DIR": str(tmp_path), "SSL_DEFAULT_CLIENT_CERT": str(default_certificate)}
+        ),
+        pytest.raises(LetterClientRetryableException, match=r"failed \(client certificate: default\):"),
+    ):
+        client.send_letter(letter, _letter_provider())
+
+
 @pytest.mark.parametrize("ca_bundle", ["/ssl/notifynl.pem", None])
 def test_send_letter_verifies_against_ca_bundle(client, letter, rmock, notify_api, monkeypatch, ca_bundle):
     # requests swaps verify=True for these env vars, which would hide what we pass
