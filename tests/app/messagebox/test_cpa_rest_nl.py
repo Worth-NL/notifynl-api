@@ -1,5 +1,5 @@
 import pytest
-from ebms_adapter_client import EbmsConnectionError
+from ebms_adapter_client import EbmsConnectionError, EbmsServerError
 from flask import current_app
 
 from app.messagebox.constants import CPA_PURPOSE_LIVE, CPA_PURPOSE_TEAM
@@ -80,6 +80,43 @@ def test_upload_returns_400_with_the_failed_checks(admin_request, core_client):
 
 
 @pytest.mark.parametrize(
+    ("cpa_kwargs", "failed_check"),
+    [({"status": "proposed"}, "status"), ({"end": "2026-01-02T00:00:00Z"}, "period")],
+    ids=["proposed", "expired"],
+)
+def test_upload_returns_400_for_a_cpa_ebms_core_would_answer_with_500(
+    admin_request, core_client, cpa_kwargs, failed_check
+):
+    # ebms-core 2.20.2 refuses these with a 500; the guardrails refuse them first, so ebms-core isn't asked
+    core_client.validate_cpa.side_effect = EbmsServerError("CPA refused", status_code=500)
+
+    response = admin_request.post(
+        "messagebox_cpa.upload_messagebox_cpa",
+        _data={"cpa_xml": make_cpa_xml(**cpa_kwargs), "purpose": CPA_PURPOSE_TEAM},
+        _expected_status=400,
+    )
+
+    assert [check["name"] for check in response["assessment"]["checks"] if not check["passed"]] == [failed_check]
+    core_client.validate_cpa.assert_not_called()
+    core_client.insert_cpa.assert_not_called()
+
+
+def test_upload_returns_400_when_ebms_core_refuses_with_500(admin_request, core_client):
+    core_client.validate_cpa.side_effect = EbmsServerError("CPA version 1.0 not supported!", status_code=500)
+
+    response = admin_request.post(
+        "messagebox_cpa.upload_messagebox_cpa",
+        _data={"cpa_xml": make_cpa_xml(), "purpose": CPA_PURPOSE_TEAM},
+        _expected_status=400,
+    )
+
+    failed = [check for check in response["assessment"]["checks"] if not check["passed"]]
+    assert [check["name"] for check in failed] == ["ebms_core_validation"]
+    assert "CPA version 1.0 not supported!" in failed[0]["message"]
+    core_client.insert_cpa.assert_not_called()
+
+
+@pytest.mark.parametrize(
     "data",
     [
         {"cpa_xml": "<x/>"},
@@ -117,7 +154,7 @@ def test_select_stores_the_selection(admin_request, core_client, notify_user):
     assert MessageboxCpaSelection.query.one().purpose == CPA_PURPOSE_TEAM
 
 
-def test_select_ignores_party_ids_sent_in_the_request(admin_request, core_client, notify_user):
+def test_select_rejects_party_ids_sent_in_the_request(admin_request, core_client, notify_user):
     admin_request.post(
         "messagebox_cpa.select_messagebox_cpa",
         purpose=CPA_PURPOSE_TEAM,

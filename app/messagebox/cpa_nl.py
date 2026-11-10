@@ -7,7 +7,7 @@ the API, whatever the admin UI shows. The CPA itself stays in ebms-core; only th
 app/models_nl.py::MessageboxCpaSelection).
 """
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from fnmatch import fnmatchcase
 from urllib.parse import urlsplit
@@ -18,8 +18,10 @@ from ebms_adapter_client import (
     CpaSummary,
     EbmsAdapterClientConfig,
     EbmsBadRequestError,
+    EbmsServerError,
     parse_cpa_summary,
 )
+from ebms_adapter_client.berichtenbox import BerichtenboxContractConfig
 from ebms_adapter_client.client import EbmsAdapterClient as EbmsCoreClient
 from ebms_adapter_client.cpa import CPA_STATUS_PROPOSED
 from flask import current_app
@@ -29,6 +31,12 @@ from app.messagebox.constants import BERICHTENBOX_PROCESS, CPA_PURPOSE_LIVE, CPA
 from app.models_nl import MessageboxCpaSelection
 
 EXPIRY_WARNING_PERIOD = timedelta(days=60)
+
+# The roles every send uses: the send path builds BerichtenboxContractConfig with only the CPA id and action, so its
+# default roles apply (our party "SR" sends to Logius's "SP")
+_SEND_CONTRACT = BerichtenboxContractConfig(cpa_id="")
+SENDER_ROLE = _SEND_CONTRACT.from_role
+RECEIVER_ROLE = _SEND_CONTRACT.to_role
 
 CHECK_EBMS_CORE = "ebms_core_validation"
 CHECK_PARTIES = "parties"
@@ -165,11 +173,29 @@ def _parse(cpa_xml: str) -> CpaSummary:
 
 
 def _ebms_core_check(core_client: EbmsCoreClient, cpa_xml: str) -> Check:
+    """
+    ebms-core 2.20.2 answers 400 only for XML it can't read; its CPAValidator's refusals (version, channels,
+    transports, ...) come back as 500 with the reason in the body. Both are a failed check, not an outage; only an
+    unreachable ebms-core (EbmsConnectionError) is left to the caller.
+    """
     try:
         core_client.validate_cpa(cpa_xml)
-    except EbmsBadRequestError as e:
+    except (EbmsBadRequestError, EbmsServerError) as e:
         return Check(CHECK_EBMS_CORE, False, f"ebms-core rejects the CPA: {e}")
     return Check(CHECK_EBMS_CORE, True, "ebms-core accepts the CPA")
+
+
+def _assess_with_ebms_core(
+    core_client: EbmsCoreClient, cpa_xml: str, summary: CpaSummary, purpose: str, *, for_selection: bool
+) -> CpaAssessment:
+    """
+    Runs the guardrails first and has ebms-core validate only a CPA that passes them: a CPA they refuse needs no
+    second opinion, and ebms-core would log the whole CPA with its refusal.
+    """
+    assessment = assess(summary, purpose, for_selection=for_selection)
+    if not assessment.eligible:
+        return assessment
+    return replace(assessment, checks=(_ebms_core_check(core_client, cpa_xml), *assessment.checks))
 
 
 def _endpoint_matches(endpoint: str, public_endpoint: str) -> bool:
@@ -209,6 +235,9 @@ def _counterparty_endpoint_check(counterparty: CpaParty | None, purpose: str) ->
         return Check(CHECK_COUNTERPARTY_ENDPOINT, False, "The other party couldn't be determined")
     if not counterparty.endpoints or len(counterparty.endpoint_hosts) != len(counterparty.endpoints):
         return Check(CHECK_COUNTERPARTY_ENDPOINT, False, "The other party has no valid endpoint")
+    # ebms-core doesn't require TLS, and the message carries the BSN and the message itself
+    if cleartext := [endpoint for endpoint in counterparty.endpoints if urlsplit(endpoint).scheme.lower() != "https"]:
+        return Check(CHECK_COUNTERPARTY_ENDPOINT, False, f"{', '.join(cleartext)} doesn't use https")
     allowed_hosts = _allowed_hosts(purpose)
     if disallowed := [host for host in counterparty.endpoint_hosts if not _host_allowed(host, allowed_hosts)]:
         return Check(
@@ -224,11 +253,31 @@ def _action() -> str:
     return current_app.config.get("EBMS_BERICHTENBOX_ACTION") or "GLOBE-R-BV-Request"
 
 
-def _action_check(own_party: CpaParty | None) -> Check:
+def _has_role(party: CpaParty | None, role: str, action: str, *, sends: bool) -> bool:
+    return party is not None and any(
+        collaboration_role.role == role
+        and collaboration_role.process == BERICHTENBOX_PROCESS
+        and action in (collaboration_role.can_send if sends else collaboration_role.can_receive)
+        for collaboration_role in party.collaboration_roles
+    )
+
+
+def _action_check(own_party: CpaParty | None, counterparty: CpaParty | None) -> Check:
+    """The send names the action and both roles, so the CPA must bind all three or ebms-core refuses every send."""
     action = _action()
-    if own_party is not None and own_party.can_send(action, process=BERICHTENBOX_PROCESS):
-        return Check(CHECK_ACTION, True, f"Our party can send {action} ({BERICHTENBOX_PROCESS})")
-    return Check(CHECK_ACTION, False, f"Our party can't send {action} in process {BERICHTENBOX_PROCESS}")
+    if not _has_role(own_party, SENDER_ROLE, action, sends=True):
+        return Check(
+            CHECK_ACTION, False, f"Our party can't send {action} as {SENDER_ROLE} in process {BERICHTENBOX_PROCESS}"
+        )
+    if not _has_role(counterparty, RECEIVER_ROLE, action, sends=False):
+        return Check(
+            CHECK_ACTION,
+            False,
+            f"The other party can't receive {action} as {RECEIVER_ROLE} in process {BERICHTENBOX_PROCESS}",
+        )
+    return Check(
+        CHECK_ACTION, True, f"Our party sends {action} as {SENDER_ROLE} to {RECEIVER_ROLE} ({BERICHTENBOX_PROCESS})"
+    )
 
 
 def _status_check(summary: CpaSummary) -> Check:
@@ -244,6 +293,8 @@ def _period_check(summary: CpaSummary, now: datetime, *, for_selection: bool) ->
     day Logius switches to it, but only selected from its Start.
     """
     period = f"from {summary.start:%Y-%m-%d} to {summary.end:%Y-%m-%d}"
+    if summary.start >= summary.end:
+        return Check(CHECK_PERIOD, False, f"Start isn't before End: {period}")
     if now >= summary.end:
         return Check(CHECK_PERIOD, False, f"Ended: valid {period}")
     if now < summary.start:
@@ -270,12 +321,11 @@ def assess(
     purpose: str,
     *,
     now: datetime | None = None,
-    ebms_core_check: Check | None = None,
     for_selection: bool = True,
 ) -> CpaAssessment:
     """
-    Runs the guardrails for one purpose against a parsed CPA. Doesn't call ebms-core itself. With `for_selection`
-    false (an upload), a CPA that hasn't started yet passes.
+    Runs the guardrails for one purpose against a parsed CPA. Doesn't call ebms-core. With `for_selection` false (an
+    upload), a CPA that hasn't started yet passes.
     """
     now = now or datetime.now(UTC)
     public_endpoint = current_app.config.get("EBMS_PUBLIC_ENDPOINT") or ""
@@ -284,11 +334,10 @@ def assess(
     counterparty = counterparties[0] if len(counterparties) == 1 else None
 
     checks = (
-        *([ebms_core_check] if ebms_core_check else []),
         _parties_check(summary),
         _own_endpoint_check(own_party, public_endpoint),
         _counterparty_endpoint_check(counterparty, purpose),
-        _action_check(own_party),
+        _action_check(own_party, counterparty),
         _status_check(summary),
         _period_check(summary, now, for_selection=for_selection),
     )
@@ -303,19 +352,17 @@ def assess(
 
 
 def validate(cpa_xml: str, purpose: str) -> CpaAssessment:
-    """Parses the CPA, has ebms-core validate it and runs the guardrails for the purpose. Stores nothing."""
+    """Parses the CPA and runs the guardrails for the purpose, then ebms-core's validation. Stores nothing."""
     summary = _parse(cpa_xml)
     with _core_client() as core_client:
-        return assess(summary, purpose, ebms_core_check=_ebms_core_check(core_client, cpa_xml), for_selection=False)
+        return _assess_with_ebms_core(core_client, cpa_xml, summary, purpose, for_selection=False)
 
 
 def upload(cpa_xml: str, purpose: str) -> CpaAssessment:
     """Inserts the CPA into ebms-core, only if every guardrail for the purpose passes. Never overwrites a CPA."""
     summary = _parse(cpa_xml)
     with _core_client() as core_client:
-        assessment = assess(
-            summary, purpose, ebms_core_check=_ebms_core_check(core_client, cpa_xml), for_selection=False
-        )
+        assessment = _assess_with_ebms_core(core_client, cpa_xml, summary, purpose, for_selection=False)
         if not assessment.eligible:
             raise CpaRejected(f"The CPA can't be used for {purpose}", assessment)
         if summary.cpa_id in core_client.list_cpa_ids():
@@ -353,7 +400,7 @@ def select(purpose: str, cpa_id: str, *, message_type: str, user_id) -> Messageb
         if cpa_id not in core_client.list_cpa_ids():
             raise CpaRejected(f"ebms-core has no CPA with id {cpa_id}")
         cpa_xml = core_client.get_cpa(cpa_id)
-        assessment = assess(_parse(cpa_xml), purpose, ebms_core_check=_ebms_core_check(core_client, cpa_xml))
+        assessment = _assess_with_ebms_core(core_client, cpa_xml, _parse(cpa_xml), purpose, for_selection=True)
 
     if not assessment.eligible or assessment.own_party is None or assessment.counterparty is None:
         raise CpaRejected(f"The CPA can't be used for {purpose}", assessment)

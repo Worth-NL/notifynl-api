@@ -1,7 +1,7 @@
 from datetime import UTC, datetime
 
 import pytest
-from ebms_adapter_client import EbmsBadRequestError
+from ebms_adapter_client import EbmsBadRequestError, EbmsServerError
 from flask import current_app
 
 from app.messagebox import cpa_nl
@@ -96,6 +96,19 @@ def test_validate_accepts_a_production_cpa_for_live(core_client):
         (CPA_PURPOSE_TEAM, {"own_endpoint": "https://ebms.other-environment.invalid/ebms"}, cpa_nl.CHECK_OWN_ENDPOINT),
         (CPA_PURPOSE_TEAM, {"own_actions": ("GLOBE-R-A-Request",)}, cpa_nl.CHECK_ACTION),
         (CPA_PURPOSE_TEAM, {"process": "MijnOverheid_BB"}, cpa_nl.CHECK_ACTION),
+        (CPA_PURPOSE_TEAM, {"own_role": "SP", "logius_role": "SR"}, cpa_nl.CHECK_ACTION),
+        (CPA_PURPOSE_TEAM, {"logius_role": "Provider"}, cpa_nl.CHECK_ACTION),
+        (CPA_PURPOSE_TEAM, {"logius_receives": ("GLOBE-R-A-Request",)}, cpa_nl.CHECK_ACTION),
+        (
+            CPA_PURPOSE_TEAM,
+            {"logius_endpoint": "http://preprod-globe-ebms-internet.procesinfrastructuur.nl/ebXML"},
+            cpa_nl.CHECK_COUNTERPARTY_ENDPOINT,
+        ),
+        (
+            CPA_PURPOSE_TEAM,
+            {"start": "2027-01-01T00:00:00Z", "end": "2027-01-01T00:00:00Z"},
+            cpa_nl.CHECK_PERIOD,
+        ),
         (CPA_PURPOSE_TEAM, {"end": "2026-11-01T00:00:00Z"}, cpa_nl.CHECK_PERIOD),
         (CPA_PURPOSE_TEAM, {"start": "2026-12-01T00:00:00Z"}, cpa_nl.CHECK_PERIOD),
         (CPA_PURPOSE_TEAM, {"end": "2026-11-10T12:00:00Z"}, cpa_nl.CHECK_PERIOD),
@@ -110,6 +123,11 @@ def test_validate_accepts_a_production_cpa_for_live(core_client):
         "wrong-own-endpoint",
         "cannot-send-action",
         "wrong-process",
+        "roles-swapped",
+        "other-receiver-role",
+        "receiver-cannot-receive-action",
+        "cleartext-endpoint",
+        "start-not-before-end",
         "expired",
         "not-started",
         "ends-now",
@@ -160,6 +178,34 @@ def test_validate_reports_ebms_core_rejection(core_client):
     assert _failed_checks(assessment) == [cpa_nl.CHECK_EBMS_CORE]
 
 
+def test_validate_reports_a_refusal_ebms_core_answers_with_500(core_client):
+    # ebms-core 2.20.2's CPAValidator refusals come back as 500 with the reason in the body
+    core_client.validate_cpa.side_effect = EbmsServerError("CPA version 1.0 not supported!", status_code=500)
+
+    assessment = cpa_nl.validate(make_cpa_xml(), CPA_PURPOSE_TEAM)
+
+    assert _failed_checks(assessment) == [cpa_nl.CHECK_EBMS_CORE]
+    assert "CPA version 1.0 not supported!" in assessment.checks[0].message
+
+
+@pytest.mark.parametrize(
+    "cpa_kwargs",
+    [{"status": "proposed"}, {"end": "2026-01-02T00:00:00Z"}, {"logius_endpoint": LIVE_ENDPOINT}],
+    ids=["proposed", "expired", "host-not-allowed"],
+)
+def test_validate_skips_ebms_core_for_a_cpa_the_guardrails_refuse(core_client, cpa_kwargs):
+    assessment = cpa_nl.validate(make_cpa_xml(**cpa_kwargs), CPA_PURPOSE_TEAM)
+
+    assert not assessment.eligible
+    assert cpa_nl.CHECK_EBMS_CORE not in [check.name for check in assessment.checks]
+    core_client.validate_cpa.assert_not_called()
+
+
+def test_send_roles_match_the_send_contract():
+    # the send path builds BerichtenboxContractConfig without roles, so the CPA must bind its defaults
+    assert (cpa_nl.SENDER_ROLE, cpa_nl.RECEIVER_ROLE) == ("SR", "SP")
+
+
 def test_validate_rejects_xml_that_is_not_a_cpa(core_client):
     with pytest.raises(cpa_nl.CpaRejected, match="Expected a CollaborationProtocolAgreement"):
         cpa_nl.validate("<Something/>", CPA_PURPOSE_TEAM)
@@ -180,6 +226,7 @@ def test_upload_refuses_an_ineligible_cpa(core_client):
         cpa_nl.upload(make_cpa_xml(logius_endpoint=LIVE_ENDPOINT), CPA_PURPOSE_TEAM)
 
     assert not error.value.assessment.eligible
+    core_client.validate_cpa.assert_not_called()
     core_client.insert_cpa.assert_not_called()
 
 
