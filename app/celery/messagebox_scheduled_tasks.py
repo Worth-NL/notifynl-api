@@ -10,7 +10,7 @@ from notifications_utils.clients.zendesk.zendesk_client import NotifySupportTick
 from app import notify_celery, zendesk_client
 from app.celery.process_messagebox_client_response_tasks import process_messagebox_client_response
 from app.config import QueueNamesNL, TaskNamesNL
-from app.constants import NOTIFICATION_CREATED, NOTIFICATION_PENDING_VIRUS_CHECK
+from app.constants import KEY_TYPE_TEAM, NOTIFICATION_CREATED, NOTIFICATION_PENDING_VIRUS_CHECK
 from app.dao.notifications_dao import (
     dao_messagebox_notifications_still_pending,
     dao_messagebox_notifications_stuck_sending,
@@ -194,6 +194,13 @@ def check_if_messagebox_still_pending(max_minutes_ago_to_check: int = 60, max_ho
             "needs manual investigation. Do not resend.\n\n"
             f"Notifications: {notification_ids}"
         )
+        # Team-key notifications went to Logius pre-production (app/messagebox/contract_nl.py), which may be down
+        # or slow on its own without anything being wrong with production.
+        team_key_ids = sorted(
+            str(notification.id) for notification in stuck_sending if notification.key_type == KEY_TYPE_TEAM
+        )
+        if team_key_ids:
+            msg += f"\n\nOf these, sent with a team key to Logius pre-production: {team_key_ids}"
 
         if current_app.should_send_zendesk_alerts:  # type: ignore[attr-defined]
             environment = current_app.config["NOTIFY_ENVIRONMENT"]

@@ -1,5 +1,6 @@
 import logging
 
+import sentry_sdk
 from ebms_adapter_client import EbmsAdapterClientConfig
 from ebms_adapter_client.berichtenbox import (
     BerichtenboxAttachment,
@@ -75,11 +76,7 @@ class EbmsAdapterClient(MessageboxClient):
         super().__init__(current_app)
 
         self.url = self.current_app.config.get("EBMS_ADAPTER_URL")
-        self._contract = BerichtenboxContractConfig(
-            cpa_id=self.current_app.config["EBMS_BERICHTENBOX_CPA_ID"],
-            action=self.current_app.config.get("EBMS_BERICHTENBOX_ACTION", "GLOBE-R-BV-Request"),
-        )
-        self._message_type = self.current_app.config.get("EBMS_BERICHTENBOX_MESSAGE_TYPE", "bericht")
+        # The CPA isn't fixed here: each send looks up the one for its key type (app/messagebox/contract_nl.py).
 
     @record_request_duration(notification_type="messagebox", provider_name="ebms-adapter")
     def try_send_messagebox(self, notification_id: str) -> str:
@@ -91,6 +88,7 @@ class EbmsAdapterClient(MessageboxClient):
         # cause a circular import (mirrors the pattern in app/clients/letter/dvla.py).
         from app import encryption
         from app.dao import notifications_dao
+        from app.messagebox.contract_nl import get_send_contract
         from app.messagebox.utils import get_messagebox_attachments
 
         notification = notifications_dao.get_notification_by_id(notification_id, _raise=True)
@@ -107,6 +105,27 @@ class EbmsAdapterClient(MessageboxClient):
         # correlation fallback with no persistence needed.
         notification_id = str(notification.id)
 
+        contract = get_send_contract(notification.key_type)
+        if contract is None:
+            # A team key without a `team` CPA selection: it must never fall back to the live CPA, which would send
+            # a test message to a real citizen. The API refuses these up front; this covers a selection removed since.
+            raise MessageboxClientNonRetryableException(
+                f"No messagebox CPA selected for {notification.key_type} key notification {notification_id}"
+            )
+        sentry_sdk.set_tag("ebms_cpa_purpose", contract.purpose)
+        logger.info(
+            "Sending messagebox notification %s under CPA %s (%s)",
+            notification_id,
+            contract.cpa_id,
+            contract.purpose,
+            extra={
+                "notification_id": notification_id,
+                "ebms_cpa_purpose": contract.purpose,
+                "ebms_cpa_id": contract.cpa_id,
+                "ebms_cpa_from_config": contract.from_config,
+            },
+        )
+
         config = EbmsAdapterClientConfig(base_url=self.url)
         try:
             xml_content = build_berichten_xml(
@@ -116,7 +135,7 @@ class EbmsAdapterClient(MessageboxClient):
                 message=personalisation.get("message", ""),
                 subject=personalisation.get("subject", "Berichtenboxbericht"),
                 deliverer_id=service.oin,
-                message_type=personalisation.get("message_type") or self._message_type,
+                message_type=personalisation.get("message_type") or contract.message_type,
                 attachments=[
                     BerichtenboxAttachment(filename=attachment["filename"], content=attachment["content"])
                     for attachment in attachments
@@ -124,9 +143,9 @@ class EbmsAdapterClient(MessageboxClient):
             )
 
             message_request = build_message_request(
-                contract=self._contract,
-                from_party_id=f"urn:osb:oin:{self.current_app.config['EBMS_BERICHTENBOX_FROM_PARTY_ID']}",
-                to_party_id=f"urn:osb:oin:{self.current_app.config['EBMS_BERICHTENBOX_TO_PARTY_ID']}",
+                contract=BerichtenboxContractConfig(cpa_id=contract.cpa_id, action=contract.action),
+                from_party_id=contract.from_party_id,
+                to_party_id=contract.to_party_id,
                 bericht_id=notification_id,
                 xml_content=xml_content,
             )
