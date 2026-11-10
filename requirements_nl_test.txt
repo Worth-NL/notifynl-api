@@ -617,6 +617,7 @@ cryptography==50.0.0 \
     --hash=sha256:fd9192b7b70c573d7f214eb1ae35e00d359f6f5e4b27c7e21e30de1fc6204645
     # via
     #   -r requirements_nl.txt
+    #   ebms-adapter-client
     #   moto
     #   notifications-utils
     #   trustme
@@ -638,9 +639,9 @@ docopt==0.6.2 \
     # via
     #   -r requirements_nl.txt
     #   notifications-python-client
-ebms-adapter-client==0.3.0 \
-    --hash=sha256:b916601ee8467349ec596d4fe7d3f1d7270cf50de4430b9f19c70f8f03b5f9f3 \
-    --hash=sha256:c1f374a76d818c804c751abca65b5c241a1c68959e6de529b3797b724d246fd7
+ebms-adapter-client==0.4.0 \
+    --hash=sha256:2de9358189cf484178d638229dce692fb0e4e25c50abb1a6f7843fffad6d71b3 \
+    --hash=sha256:be6301ae5414854008a4506f3a9c623c3202e6549faf1c3cce9e6be1dd2758ec
     # via -r requirements_nl.txt
 eventlet==0.41.2 \
     --hash=sha256:6cae50e67fe6ae8bb7013e7fd4d8e0d0d20aeb9b3259b93f023c93eb6749631f \
