@@ -1,7 +1,7 @@
 from app import db
 from app.dao.provider_details_dao import get_provider_details_by_identifier
 from app.letters_nl.constants import LETTER_PROVIDER_PINGEN
-from app.models_nl import LetterProviderReference, OrganisationLetterProvider
+from app.models_nl import LetterProviderReference, MessageboxCpaSelection, OrganisationLetterProvider
 
 
 def create_organisation_letter_provider(
@@ -41,3 +41,25 @@ def create_letter_provider_reference(notification_id, provider, provider_referen
     db.session.add(reference)
     db.session.commit()
     return reference
+
+
+def create_messagebox_cpa_selection(
+    purpose,
+    *,
+    updated_by,
+    cpa_id="EXAMPLE-EBMS-BB-2-0_team",
+    from_party_id="urn:osb:oin:11111111111111111111",
+    to_party_id="urn:osb:oin:22222222222222222222",
+    action="GLOBE-R-BV-Request",
+    message_type="test-bericht",
+):
+    selection = db.session.get(MessageboxCpaSelection, purpose) or MessageboxCpaSelection(purpose=purpose)
+    selection.cpa_id = cpa_id
+    selection.from_party_id = from_party_id
+    selection.to_party_id = to_party_id
+    selection.action = action
+    selection.message_type = message_type
+    selection.updated_by_id = updated_by.id
+    db.session.add(selection)
+    db.session.commit()
+    return selection
