@@ -8,7 +8,10 @@ LIVE_ENDPOINT = "https://globe-ebms-internet.procesinfrastructuur.nl/ebXML"
 
 
 def _party(name, oin, *, endpoint, can_send, process):
-    sends = "".join(f'<tp:ThisPartyActionBinding tp:action="{action}"/>' for action in can_send)
+    # one binding per CanSend, the element repeated per action, as in Logius's CPAs (cpp-cpa-2_0.xsd)
+    sends = "".join(
+        f'<tp:CanSend><tp:ThisPartyActionBinding tp:action="{action}"/></tp:CanSend>' for action in can_send
+    )
     return f"""
   <tp:PartyInfo tp:partyName="{name}">
     <tp:PartyId tp:type="urn:osb:oin">{oin}</tp:PartyId>
@@ -17,7 +20,7 @@ def _party(name, oin, *, endpoint, can_send, process):
       <tp:Role tp:name="role"/>
       <tp:ServiceBinding>
         <tp:Service tp:type="urn:osb:services">MIJNOVERHEID.ebMS.BB.2.0</tp:Service>
-        <tp:CanSend>{sends}</tp:CanSend>
+        {sends}
       </tp:ServiceBinding>
     </tp:CollaborationRole>
     <tp:Transport><tp:TransportReceiver><tp:Endpoint tp:uri="{endpoint}"/></tp:TransportReceiver></tp:Transport>
@@ -31,13 +34,14 @@ def make_cpa_xml(
     logius_endpoint=PREPROD_ENDPOINT,
     own_actions=("GLOBE-R-A-Request", "GLOBE-R-BV-Request"),
     process="MijnOverheid_BB_R",
+    status="agreed",
     start="2026-01-01T00:00:00Z",
     end="2030-01-01T00:00:00Z",
 ):
     return f"""<?xml version="1.0" encoding="UTF-8"?>
 <tp:CollaborationProtocolAgreement xmlns:tp="http://www.oasis-open.org/committees/ebxml-cppa/schema/cpp-cpa-2_0.xsd"
     tp:cpaid="{cpa_id}" tp:version="1.0">
-  <tp:Status tp:value="agreed"/>
+  <tp:Status tp:value="{status}"/>
   <tp:Start>{start}</tp:Start>
   <tp:End>{end}</tp:End>
   {_party("Logius", LOGIUS_OIN, endpoint=logius_endpoint, can_send=("GLOBE-R-BV-Result",), process=process)}

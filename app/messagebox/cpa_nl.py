@@ -21,6 +21,7 @@ from ebms_adapter_client import (
     parse_cpa_summary,
 )
 from ebms_adapter_client.client import EbmsAdapterClient as EbmsCoreClient
+from ebms_adapter_client.cpa import CPA_STATUS_PROPOSED
 from flask import current_app
 
 from app.dao.messagebox_cpa_dao_nl import dao_get_messagebox_cpa_selections, dao_set_messagebox_cpa_selection
@@ -34,6 +35,7 @@ CHECK_PARTIES = "parties"
 CHECK_OWN_ENDPOINT = "own_endpoint"
 CHECK_COUNTERPARTY_ENDPOINT = "counterparty_endpoint"
 CHECK_ACTION = "action"
+CHECK_STATUS = "status"
 CHECK_PERIOD = "period"
 
 
@@ -229,11 +231,26 @@ def _action_check(own_party: CpaParty | None) -> Check:
     return Check(CHECK_ACTION, False, f"Our party can't send {action} in process {BERICHTENBOX_PROCESS}")
 
 
-def _period_check(summary: CpaSummary, now: datetime) -> Check:
+def _status_check(summary: CpaSummary) -> Check:
+    # ebms-core refuses a proposed CPA too (CPAValidator); the check here also covers the overview, which skips it
+    if summary.status == CPA_STATUS_PROPOSED:
+        return Check(CHECK_STATUS, False, "The CPA is only proposed, not agreed")
+    return Check(CHECK_STATUS, True, f"The CPA's status is {summary.status or 'not set'}")
+
+
+def _period_check(summary: CpaSummary, now: datetime, *, for_selection: bool) -> Check:
+    """
+    End is exclusive, as in ebms-core. A CPA that hasn't started yet may be uploaded, so it's in ebms-core before the
+    day Logius switches to it, but only selected from its Start.
+    """
     period = f"from {summary.start:%Y-%m-%d} to {summary.end:%Y-%m-%d}"
-    if summary.is_active(now):
-        return Check(CHECK_PERIOD, True, f"Valid {period}")
-    return Check(CHECK_PERIOD, False, f"Not valid today: {period}")
+    if now >= summary.end:
+        return Check(CHECK_PERIOD, False, f"Ended: valid {period}")
+    if now < summary.start:
+        if for_selection:
+            return Check(CHECK_PERIOD, False, f"Not started yet: valid {period}")
+        return Check(CHECK_PERIOD, True, f"Valid {period}; it can be selected from {summary.start:%Y-%m-%d}")
+    return Check(CHECK_PERIOD, True, f"Valid {period}")
 
 
 def _expiry_warnings(summary: CpaSummary, now: datetime) -> tuple[str, ...]:
@@ -249,9 +266,17 @@ def _expiry_warnings(summary: CpaSummary, now: datetime) -> tuple[str, ...]:
 
 
 def assess(
-    summary: CpaSummary, purpose: str, *, now: datetime | None = None, ebms_core_check: Check | None = None
+    summary: CpaSummary,
+    purpose: str,
+    *,
+    now: datetime | None = None,
+    ebms_core_check: Check | None = None,
+    for_selection: bool = True,
 ) -> CpaAssessment:
-    """Runs the guardrails for one purpose against a parsed CPA. Doesn't call ebms-core itself."""
+    """
+    Runs the guardrails for one purpose against a parsed CPA. Doesn't call ebms-core itself. With `for_selection`
+    false (an upload), a CPA that hasn't started yet passes.
+    """
     now = now or datetime.now(UTC)
     public_endpoint = current_app.config.get("EBMS_PUBLIC_ENDPOINT") or ""
     own_party = _own_party(summary, public_endpoint)
@@ -264,7 +289,8 @@ def assess(
         _own_endpoint_check(own_party, public_endpoint),
         _counterparty_endpoint_check(counterparty, purpose),
         _action_check(own_party),
-        _period_check(summary, now),
+        _status_check(summary),
+        _period_check(summary, now, for_selection=for_selection),
     )
     return CpaAssessment(
         purpose=purpose,
@@ -280,14 +306,16 @@ def validate(cpa_xml: str, purpose: str) -> CpaAssessment:
     """Parses the CPA, has ebms-core validate it and runs the guardrails for the purpose. Stores nothing."""
     summary = _parse(cpa_xml)
     with _core_client() as core_client:
-        return assess(summary, purpose, ebms_core_check=_ebms_core_check(core_client, cpa_xml))
+        return assess(summary, purpose, ebms_core_check=_ebms_core_check(core_client, cpa_xml), for_selection=False)
 
 
 def upload(cpa_xml: str, purpose: str) -> CpaAssessment:
     """Inserts the CPA into ebms-core, only if every guardrail for the purpose passes. Never overwrites a CPA."""
     summary = _parse(cpa_xml)
     with _core_client() as core_client:
-        assessment = assess(summary, purpose, ebms_core_check=_ebms_core_check(core_client, cpa_xml))
+        assessment = assess(
+            summary, purpose, ebms_core_check=_ebms_core_check(core_client, cpa_xml), for_selection=False
+        )
         if not assessment.eligible:
             raise CpaRejected(f"The CPA can't be used for {purpose}", assessment)
         if summary.cpa_id in core_client.list_cpa_ids():

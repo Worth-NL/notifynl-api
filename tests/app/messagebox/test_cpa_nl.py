@@ -62,6 +62,7 @@ def test_validate_accepts_a_preprod_cpa_for_team(core_client):
         cpa_nl.CHECK_OWN_ENDPOINT,
         cpa_nl.CHECK_COUNTERPARTY_ENDPOINT,
         cpa_nl.CHECK_ACTION,
+        cpa_nl.CHECK_STATUS,
         cpa_nl.CHECK_PERIOD,
     ]
     core_client.validate_cpa.assert_called_once_with(cpa_xml)
@@ -97,6 +98,8 @@ def test_validate_accepts_a_production_cpa_for_live(core_client):
         (CPA_PURPOSE_TEAM, {"process": "MijnOverheid_BB"}, cpa_nl.CHECK_ACTION),
         (CPA_PURPOSE_TEAM, {"end": "2026-11-01T00:00:00Z"}, cpa_nl.CHECK_PERIOD),
         (CPA_PURPOSE_TEAM, {"start": "2026-12-01T00:00:00Z"}, cpa_nl.CHECK_PERIOD),
+        (CPA_PURPOSE_TEAM, {"end": "2026-11-10T12:00:00Z"}, cpa_nl.CHECK_PERIOD),
+        (CPA_PURPOSE_TEAM, {"status": "proposed"}, cpa_nl.CHECK_STATUS),
     ],
     ids=[
         "preprod-host-for-live",
@@ -109,6 +112,8 @@ def test_validate_accepts_a_production_cpa_for_live(core_client):
         "wrong-process",
         "expired",
         "not-started",
+        "ends-now",
+        "proposed",
     ],
 )
 def test_assess_rejects(purpose, cpa_kwargs, failed_check):
@@ -255,3 +260,29 @@ def test_list_cpas_assesses_every_cpa_and_marks_selections(core_client, notify_u
     assert broken.error.startswith("CPA is not well-formed")
     assert broken.assessments == {}
     core_client.validate_cpa.assert_not_called()
+
+
+def test_assess_lets_a_cpa_that_has_not_started_yet_be_uploaded_but_not_selected():
+    summary = cpa_nl.parse_cpa_summary(make_cpa_xml(start="2026-11-24T08:00:00Z"))
+
+    for_upload = cpa_nl.assess(summary, CPA_PURPOSE_TEAM, now=NOW, for_selection=False)
+    for_selection = cpa_nl.assess(summary, CPA_PURPOSE_TEAM, now=NOW)
+
+    assert for_upload.eligible
+    assert "it can be selected from 2026-11-24" in for_upload.checks[-1].message
+    assert _failed_checks(for_selection) == [cpa_nl.CHECK_PERIOD]
+
+
+def test_upload_inserts_a_cpa_that_starts_later(core_client):
+    cpa_xml = make_cpa_xml(start="2099-01-01T00:00:00Z", end="2099-12-31T00:00:00Z")
+
+    cpa_nl.upload(cpa_xml, CPA_PURPOSE_TEAM)
+
+    core_client.insert_cpa.assert_called_once_with(cpa_xml, overwrite=False)
+
+
+def test_upload_refuses_a_cpa_that_has_ended(core_client):
+    with pytest.raises(cpa_nl.CpaRejected):
+        cpa_nl.upload(make_cpa_xml(end="2026-01-02T00:00:00Z"), CPA_PURPOSE_TEAM)
+
+    core_client.insert_cpa.assert_not_called()
