@@ -1,7 +1,7 @@
 from datetime import UTC, datetime
 
 import pytest
-from ebms_adapter_client import EbmsBadRequestError, EbmsServerError
+from ebms_adapter_client import EbmsBadRequestError, EbmsConnectionError, EbmsNotFoundError, EbmsServerError
 from flask import current_app
 
 from app.messagebox import cpa_nl
@@ -307,6 +307,32 @@ def test_list_cpas_assesses_every_cpa_and_marks_selections(core_client, notify_u
     assert broken.error.startswith("CPA is not well-formed")
     assert broken.assessments == {}
     core_client.validate_cpa.assert_not_called()
+
+
+def test_list_cpas_marks_a_cpa_ebms_core_cannot_return_and_lists_the_others(core_client):
+    def get_cpa(cpa_id):
+        if cpa_id == "GONE":
+            raise EbmsNotFoundError("404 /cpas/GONE")
+        return make_cpa_xml(cpa_id=cpa_id)
+
+    core_client.list_cpa_ids.return_value = ["GONE", "PREPROD"]
+    core_client.get_cpa.side_effect = get_cpa
+
+    gone, preprod = cpa_nl.list_cpas()
+
+    assert gone.error == "ebms-core can't return the CPA: 404 /cpas/GONE"
+    assert gone.assessments == {}
+    assert preprod.assessments[CPA_PURPOSE_TEAM].eligible
+
+
+def test_list_cpas_fails_once_when_ebms_core_is_unreachable(core_client):
+    core_client.list_cpa_ids.return_value = ["PREPROD", "OTHER"]
+    core_client.get_cpa.side_effect = EbmsConnectionError("timed out")
+
+    with pytest.raises(EbmsConnectionError):
+        cpa_nl.list_cpas()
+
+    core_client.get_cpa.assert_called_once_with("PREPROD")
 
 
 def test_assess_lets_a_cpa_that_has_not_started_yet_be_uploaded_but_not_selected():

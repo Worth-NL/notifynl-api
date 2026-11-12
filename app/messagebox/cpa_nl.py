@@ -17,7 +17,9 @@ from ebms_adapter_client import (
     CpaParty,
     CpaSummary,
     EbmsAdapterClientConfig,
+    EbmsAdapterError,
     EbmsBadRequestError,
+    EbmsConnectionError,
     EbmsServerError,
     parse_cpa_summary,
 )
@@ -385,6 +387,12 @@ def list_cpas() -> list[CpaListing]:
                 listing.summary = parse_cpa_summary(core_client.get_cpa(cpa_id))
             except CpaParseError as e:
                 listing.error = str(e)
+            except EbmsConnectionError:
+                # ebms-core is gone, not this CPA: fail the listing once instead of timing out per CPA
+                raise
+            except EbmsAdapterError as e:
+                # one CPA ebms-core can't return (gone since list_cpa_ids, a 5xx) mustn't hide the others
+                listing.error = f"ebms-core can't return the CPA: {e}"
             else:
                 listing.assessments = {purpose: assess(listing.summary, purpose) for purpose in CPA_PURPOSES}
             listings.append(listing)
