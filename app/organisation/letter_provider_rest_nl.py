@@ -3,6 +3,9 @@ import re
 from cryptography.fernet import InvalidToken
 from flask import Blueprint, jsonify, request
 
+from app import redis_store
+from app.celery.letter_provider_tasks import check_letter_endpoint_connection
+from app.config import QueueNames
 from app.dao.organisation_dao import dao_get_organisation_by_id
 from app.dao.organisation_letter_provider_dao import (
     dao_delete_organisation_letter_provider,
@@ -23,6 +26,13 @@ from app.letters_nl.constants import (
     PINGEN_ADDRESS_PLACEMENT,
     REQUIRED_AUTH_CONFIG_FIELDS,
     SECRET_AUTH_CONFIG_FIELDS,
+)
+from app.letters_nl.letter_endpoint_connection import (
+    CONNECTION_TEST_RATE_INTERVAL_SECONDS,
+    CONNECTION_TEST_RATE_LIMIT,
+    create_connection_test,
+    encrypt_connection_test_settings,
+    get_connection_test_result,
 )
 from app.letters_nl.url_validation import InvalidLetterEndpointUrl, validate_letter_endpoint_url
 from app.schema_validation import validate
@@ -62,6 +72,19 @@ post_set_organisation_letter_provider_schema = {
     "required": ["provider", "updated_by_id"],
     "if": {"properties": {"provider": {"const": LETTER_PROVIDER_REST_ENDPOINT}}},
     "then": {"required": ["endpoint_url", "auth_method", "address_placement"]},
+    "additionalProperties": False,
+}
+
+post_letter_provider_connection_test_schema = {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "description": "POST organisation letter provider connection test schema",
+    "type": "object",
+    "properties": {
+        "endpoint_url": post_set_organisation_letter_provider_schema["properties"]["endpoint_url"],
+        "auth_method": post_set_organisation_letter_provider_schema["properties"]["auth_method"],
+        "auth_config": post_set_organisation_letter_provider_schema["properties"]["auth_config"],
+    },
+    "required": ["endpoint_url", "auth_method"],
     "additionalProperties": False,
 }
 
@@ -113,6 +136,52 @@ def delete_organisation_letter_provider(organisation_id):
     dao_get_organisation_by_id(organisation_id)
     dao_delete_organisation_letter_provider(organisation_id)
     return "", 204
+
+
+@organisation_letter_provider_blueprint.route(
+    "/organisations/<uuid:organisation_id>/letter-provider/connection-test", methods=["POST"]
+)
+def start_letter_provider_connection_test(organisation_id):
+    """Tries values that are being typed in, without saving them. A stored secret is only used under the save rules."""
+    data = request.get_json()
+    validate(data, post_letter_provider_connection_test_schema)
+    dao_get_organisation_by_id(organisation_id)
+
+    endpoint_url = data["endpoint_url"]
+    auth_method = data["auth_method"]
+    auth_config, secrets_dropped = _merge_auth_config(
+        dao_get_organisation_letter_provider(organisation_id), endpoint_url, auth_method, data.get("auth_config", {})
+    )
+    _validate_rest_endpoint(endpoint_url, auth_method, auth_config, secrets_dropped)
+
+    if not redis_store.active:
+        # without Redis nothing would limit the tests, and the worker's result couldn't reach admin
+        raise InvalidRequest("Connection tests need Redis", status_code=503)
+
+    if redis_store.exceeded_rate_limit(
+        f"letter-endpoint-connection-test-limit-{organisation_id}",
+        CONNECTION_TEST_RATE_LIMIT,
+        CONNECTION_TEST_RATE_INTERVAL_SECONDS,
+    ):
+        raise InvalidRequest("Too many connection tests", status_code=429)
+
+    test_id = create_connection_test(organisation_id)
+    check_letter_endpoint_connection.apply_async(
+        [str(organisation_id), test_id, encrypt_connection_test_settings(endpoint_url, auth_method, auth_config)],
+        queue=QueueNames.SEND_LETTER,
+        MessageGroupId=str(organisation_id),
+    )
+    return jsonify(data={"id": test_id}), 201
+
+
+@organisation_letter_provider_blueprint.route(
+    "/organisations/<uuid:organisation_id>/letter-provider/connection-test/<uuid:test_id>", methods=["GET"]
+)
+def get_letter_provider_connection_test(organisation_id, test_id):
+    result = get_connection_test_result(organisation_id, test_id)
+    if result is None:
+        raise InvalidRequest("Connection test not found", status_code=404)
+    return jsonify(data=result)
 
 
 def _merge_auth_config(existing, endpoint_url, auth_method, update) -> tuple[dict, bool]:

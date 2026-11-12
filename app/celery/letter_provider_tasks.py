@@ -48,6 +48,7 @@ from app.dao.notifications_dao import (
 )
 from app.letters.utils import LetterPDFNotFound, find_letter_pdf_in_s3
 from app.letters_nl.constants import LETTER_PROVIDER_CALLBACK_PATH, LETTER_PROVIDER_REST_ENDPOINT
+from app.letters_nl.letter_endpoint_connection import run_connection_test
 from app.letters_nl.provider import resolve_letter_provider
 from app.models import LetterCostThreshold
 from app.notifications.notifications_ses_callback import check_and_queue_callback_task
@@ -64,6 +65,9 @@ STRANDED_AFTER = timedelta(minutes=15)
 ABANDONED_SENDING_AFTER = timedelta(minutes=15)
 # longer than all delivery retries together
 STUCK_SENDING_AFTER = timedelta(hours=4)
+# an endpoint can drip its reply for as long as each read stays within the timeout, and these workers send real letters
+CONNECTION_TEST_SOFT_TIME_LIMIT = 60
+CONNECTION_TEST_TIME_LIMIT = 70
 
 
 def queue_letter_for_delivery(notification):
@@ -128,6 +132,16 @@ def deliver_letter_via_provider(self, notification_id):
         _retry(self, notification_id, "print-provider-error")
     finally:
         _release(lock, notification_id)
+
+
+@notify_celery.task(
+    name=TaskNamesNL.CHECK_LETTER_ENDPOINT_CONNECTION,
+    soft_time_limit=CONNECTION_TEST_SOFT_TIME_LIMIT,
+    time_limit=CONNECTION_TEST_TIME_LIMIT,
+)
+def check_letter_endpoint_connection(organisation_id, test_id, encrypted_settings):
+    """On the letter worker because only that has the client certificates, without which mTLS endpoints would fail."""
+    run_connection_test(organisation_id, test_id, encrypted_settings, _callback_url(test_id))
 
 
 def _still_to_deliver(notification, resuming, extra) -> bool:

@@ -9,6 +9,7 @@ from redis.exceptions import LockNotOwnedError
 
 from app import signing
 from app.celery.letter_provider_tasks import (
+    check_letter_endpoint_connection,
     check_letters_stuck_sending,
     check_provider_letters_in_technical_failure,
     deliver_letter_via_provider,
@@ -1006,3 +1007,21 @@ def test_process_letter_provider_status_never_moves_a_letter_in_notification_his
 
     assert NotificationHistory.query.get(notification.id).status == "permanent-failure"
     assert not mock_callback.called
+
+
+def test_check_letter_endpoint_connection_gives_the_test_a_signed_callback_url(notify_api, mocker):
+    run = mocker.patch("app.celery.letter_provider_tasks.run_connection_test")
+
+    check_letter_endpoint_connection("organisation-id", "test-id", "encrypted")
+
+    organisation_id, test_id, encrypted_settings, callback_url = run.call_args.args
+    assert (organisation_id, test_id, encrypted_settings) == ("organisation-id", "test-id", "encrypted")
+    assert signing.decode(callback_url.split("?token=")[1]) == "test-id"
+
+
+def test_a_provider_reporting_on_a_connection_test_changes_nothing(notify_db_session):
+    # a connection test has no notification, so a callback for its id has nothing to update
+    process_letter_provider_status("7b2dd5d6-b52f-4a9c-9d0e-9d3b4b1b4a51", "rest-endpoint", "delivered")
+
+    assert Notification.query.count() == 0
+    assert NotificationHistory.query.count() == 0
