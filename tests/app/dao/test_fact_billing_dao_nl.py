@@ -200,3 +200,17 @@ def test_fetch_usage_for_service_by_month_reads_ft_billing_only(notify_db_sessio
     )
     assert db.session.query(FactBilling.bst_date).count() == 31
     assert len(results) == 1
+
+
+def test_fetch_billing_data_for_day_excludes_team_key_messagebox(notify_db_session):
+    # team keys send messagebox to Logius pre-production, which isn't billed; normal keys are
+    service = create_service()
+    template = create_template(service=service, template_type="messagebox")
+    create_notification(template=template, status="delivered", key_type="normal")
+    create_notification(template=template, status="delivered", key_type="team")
+    create_notification(template=template, status="sending", key_type="team")
+    create_notification(template=template, status="delivered", key_type="test")
+
+    results = fetch_billing_data_for_day(convert_utc_to_bst(datetime.utcnow()).date())
+
+    assert [(result.notification_type, result.notifications_sent) for result in results] == [("messagebox", 1)]

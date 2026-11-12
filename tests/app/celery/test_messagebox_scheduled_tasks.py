@@ -13,7 +13,13 @@ from app.celery.messagebox_scheduled_tasks import (
     messagebox_process_unprocessed_messages,
 )
 from app.config import QueueNamesNL, TaskNamesNL
-from app.constants import MESSAGEBOX_TYPE, NOTIFICATION_CREATED, NOTIFICATION_PENDING_VIRUS_CHECK, NOTIFICATION_SENDING
+from app.constants import (
+    KEY_TYPE_TEAM,
+    MESSAGEBOX_TYPE,
+    NOTIFICATION_CREATED,
+    NOTIFICATION_PENDING_VIRUS_CHECK,
+    NOTIFICATION_SENDING,
+)
 from app.dao.templates_messagebox_dao import get_messagebox_template
 from tests.app.db import create_notification, create_service
 
@@ -360,3 +366,33 @@ def test_check_if_messagebox_still_pending_ignores_actively_retrying_created(moc
     check_if_messagebox_still_pending(max_minutes_ago_to_check=60)
 
     mock_send_task.assert_not_called()
+
+
+def test_check_if_messagebox_still_pending_names_team_key_notifications_stuck_sending(
+    mocker, messagebox_notification, notify_user
+):
+    messagebox_notification.created_at = datetime.utcnow() - timedelta(hours=48)
+    team_notification = create_notification(
+        template=messagebox_notification.template,
+        status=NOTIFICATION_SENDING,
+        key_type=KEY_TYPE_TEAM,
+        created_at=datetime.utcnow() - timedelta(hours=48),
+    )
+    messagebox_scheduled_tasks.current_app.config["SEND_ZENDESK_ALERTS_ENABLED"] = True
+    mock_zendesk = mocker.patch("app.celery.messagebox_scheduled_tasks.zendesk_client.send_ticket_to_zendesk")
+
+    check_if_messagebox_still_pending(max_hours_ago_to_check_sending=24)
+
+    message = mock_zendesk.call_args[0][0].message
+    assert f"Notifications: {sorted([str(messagebox_notification.id), str(team_notification.id)])}" in message
+    assert f"sent with a team key to Logius pre-production: {[str(team_notification.id)]}" in message
+
+
+def test_check_if_messagebox_still_pending_names_no_team_keys_when_there_are_none(mocker, messagebox_notification):
+    messagebox_notification.created_at = datetime.utcnow() - timedelta(hours=48)
+    messagebox_scheduled_tasks.current_app.config["SEND_ZENDESK_ALERTS_ENABLED"] = True
+    mock_zendesk = mocker.patch("app.celery.messagebox_scheduled_tasks.zendesk_client.send_ticket_to_zendesk")
+
+    check_if_messagebox_still_pending(max_hours_ago_to_check_sending=24)
+
+    assert "team key" not in mock_zendesk.call_args[0][0].message

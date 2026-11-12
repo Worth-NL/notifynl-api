@@ -907,6 +907,16 @@ def build_letter_beat_schedule(beat_schedule, delivery_via_providers, collation_
     return schedule
 
 
+# Logius's pre-production GLOBE ebMS endpoints (preprod-globe-ebms-internet, ...). A `*` matches within one DNS label.
+PREPROD_GLOBE_EBMS_HOSTS = "preprod-globe-ebms-*.procesinfrastructuur.nl"
+
+
+def _comma_separated(value: str | None, default: tuple[str, ...]) -> tuple[str, ...]:
+    """A comma-separated env value as a tuple, or the default when the variable is unset or empty."""
+    items = tuple(item.strip() for item in (value or "").split(",") if item.strip())
+    return items or default
+
+
 class ConfigNL(Config):
     """
     Overrides for NotifyNL usage
@@ -1059,6 +1069,16 @@ class ConfigNL(Config):
     # free text, and the generic ebms_adapter_client default ("bericht") is
     # not itself a registered type in any known environment.
     EBMS_BERICHTENBOX_MESSAGE_TYPE = os.getenv("EBMS_BERICHTENBOX_MESSAGE_TYPE", "bericht")
+    # Messagebox CPAs managed in platform admin (app/messagebox/cpa_nl.py). EBMS_PUBLIC_ENDPOINT is this environment's
+    # own ebMS endpoint: a CPA naming any other endpoint for us would send Logius's replies to another environment, so
+    # selecting a CPA is refused while it's unset. The host allowlists name the Logius endpoints a CPA may deliver to,
+    # per purpose: `live` (normal API keys) and `team` (team keys, Logius pre-production). Only ProdNL allows
+    # Logius's production endpoint; everywhere else both purposes are pre-production only.
+    EBMS_PUBLIC_ENDPOINT = os.getenv("EBMS_PUBLIC_ENDPOINT", "")
+    EBMS_LIVE_ENDPOINT_HOSTS = _comma_separated(os.getenv("EBMS_LIVE_ENDPOINT_HOSTS"), (PREPROD_GLOBE_EBMS_HOSTS,))
+    EBMS_PREPROD_ENDPOINT_HOSTS = _comma_separated(
+        os.getenv("EBMS_PREPROD_ENDPOINT_HOSTS"), (PREPROD_GLOBE_EBMS_HOSTS,)
+    )
 
 
 class DevNL(ConfigNL):
@@ -1081,6 +1101,10 @@ class DevNL(ConfigNL):
     PINGEN_CLIENT_ID = os.getenv("PINGEN_CLIENT_ID", "stub")
     PINGEN_CLIENT_SECRET = os.getenv("PINGEN_CLIENT_SECRET", "stub")
     PINGEN_ORGANISATION_ID = os.getenv("PINGEN_ORGANISATION_ID", "00000000-0000-0000-0000-000000000000")
+
+    # Local development reaches the Test environment's ebms-core through a port-forward (scripts/port-forward-ebms.sh),
+    # so its CPAs name the Test endpoint as ours.
+    EBMS_PUBLIC_ENDPOINT = os.getenv("EBMS_PUBLIC_ENDPOINT", "https://ebms.test.notifynl.nl/ebms")
 
     # Mockoon's MMG and Firetext delivery receipts (and research mode's own) authenticate as notify:testkey
     MMG_DELIVERY_STATUS_CALLBACK_ALLOWED_BASIC_AUTH_CREDENTIALS = json.loads(
@@ -1229,6 +1253,10 @@ class ProdNL(ConfigNL):
 
     PINGEN_API_URL = os.getenv("PINGEN_API_URL", "https://api.pingen.com")
     PINGEN_IDENTITY_URL = os.getenv("PINGEN_IDENTITY_URL", "https://identity.pingen.com")
+
+    EBMS_LIVE_ENDPOINT_HOSTS = _comma_separated(
+        os.getenv("EBMS_LIVE_ENDPOINT_HOSTS"), ("globe-ebms-internet.procesinfrastructuur.nl",)
+    )
 
     NOTIFY_EMAIL_DOMAIN = "notifynl.nl"
     FROM_NUMBER = "NOTIFYNL"

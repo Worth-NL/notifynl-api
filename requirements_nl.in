@@ -53,7 +53,7 @@ opentelemetry-instrumentation-sqlalchemy
 opentelemetry-instrumentation-system-metrics
 opentelemetry-instrumentation-urllib3
 
-ebms-adapter-client==0.3.0
+ebms-adapter-client==0.4.0
 
 # [NOTIFYNL] vulnerability pins (notifications-utils 102.0.5 floors pypdf, urllib3, certifi, dnspython, werkzeug,
 # requests and opentelemetry-api)
