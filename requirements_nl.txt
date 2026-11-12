@@ -451,7 +451,9 @@ cryptography==50.0.0 \
     --hash=sha256:f59e38625469987d7ef6d495323c55e7db6c212eaf6112267e0d3b565a2e9c9f \
     --hash=sha256:f89831ef99dd7dd169ab06d63a831adb9e20a87aac6d380266bbda5823349169 \
     --hash=sha256:fd9192b7b70c573d7f214eb1ae35e00d359f6f5e4b27c7e21e30de1fc6204645
-    # via notifications-utils
+    # via
+    #   ebms-adapter-client
+    #   notifications-utils
 defusedxml==0.7.1 \
     --hash=sha256:1bb3032db185915b62d7c6209c5a8792be6a32ab2fedacc84e01b52c51aa3e69 \
     --hash=sha256:a352e7e428770286cc899e2542b6cdaedb2b4953ff269a210103ec58f6198a61
@@ -465,9 +467,9 @@ dnspython==2.9.0 \
 docopt==0.6.2 \
     --hash=sha256:49b3a825280bd66b3aa83585ef59c4a8c82f2c8a522dbe754a8bc8d08c85c491
     # via notifications-python-client
-ebms-adapter-client==0.3.0 \
-    --hash=sha256:b916601ee8467349ec596d4fe7d3f1d7270cf50de4430b9f19c70f8f03b5f9f3 \
-    --hash=sha256:c1f374a76d818c804c751abca65b5c241a1c68959e6de529b3797b724d246fd7
+ebms-adapter-client==0.4.0 \
+    --hash=sha256:2de9358189cf484178d638229dce692fb0e4e25c50abb1a6f7843fffad6d71b3 \
+    --hash=sha256:be6301ae5414854008a4506f3a9c623c3202e6549faf1c3cce9e6be1dd2758ec
     # via -r requirements_nl.in
 eventlet==0.41.2 \
     --hash=sha256:6cae50e67fe6ae8bb7013e7fd4d8e0d0d20aeb9b3259b93f023c93eb6749631f \

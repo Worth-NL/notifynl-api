@@ -4,3 +4,12 @@ exclude-newer = "7 days"
 
 [pip]
 generate-hashes = true
+
+
+# This section was automatically copied from uv-overrides.toml
+
+# [NotifyNL] Appended to uv.toml by notifications_utils.version_tools.copy_config on every utils sync.
+# The 7-day cooldown guards against hijacked third-party releases. ebms-adapter-client is ours, published from reviewed
+# main by its own CI, and notifynl-api needs a new release as soon as it's out.
+[exclude-newer-package]
+ebms-adapter-client = false

@@ -10,11 +10,13 @@ from app import encryption
 from app.config import QueueNamesNL, TaskNamesNL
 from app.constants import MESSAGEBOX_TYPE, NOTIFICATION_CREATED, NOTIFICATION_PENDING_VIRUS_CHECK
 from app.dao.organisation_dao import dao_add_service_to_organisation
+from app.messagebox.constants import CPA_PURPOSE_TEAM
 from app.models import Notification
 from app.notifications.validators import check_rate_limiting
 from app.schema_validation import validate
 from app.v2.notifications.notification_schemas import post_messagebox_request, post_messagebox_response
 from tests.app.db import create_api_key, create_organisation, create_service
+from tests.app.db_nl import create_messagebox_cpa_selection
 
 fake = Faker()
 
@@ -458,3 +460,72 @@ def test_messagebox_attachments_over_combined_size_limit_are_rejected(
     )
 
     assert "Combined attachment size" in resp_json["errors"][0]["message"]
+
+
+def _post_messagebox(api_client_request, template, key_type, **kwargs):
+    return api_client_request.post(
+        template.service_id,
+        "v2_notifications.post_notification_messagebox",
+        _api_key_type=key_type,
+        notification_type=MESSAGEBOX_TYPE,
+        _data=_valid_messagebox_data(),
+        **kwargs,
+    )
+
+
+@pytest.fixture
+def messagebox_send_mocks(mocker, sample_template_with_placeholders):
+    sample_template_with_placeholders.service.oin = str(fake.random_number(digits=20, fix_len=True))
+    mocker.patch.dict(current_app.config, {"S3_BUCKET_MESSAGEBOX_SCAN": "notifynl-test-messagebox-scan"})
+    mocker.patch("app.messagebox.utils.s3upload")
+    mocker.patch("app.v2.notifications.post_notifications_messagebox.check_and_queue_callback_task")
+    return mocker.patch("app.v2.notifications.post_notifications_messagebox.notify_celery.send_task")
+
+
+def test_post_messagebox_with_team_key_is_refused_without_a_team_cpa(
+    messagebox_send_mocks, api_client_request, sample_template_with_placeholders
+):
+    resp_json = _post_messagebox(api_client_request, sample_template_with_placeholders, "team", _expected_status=403)
+
+    assert resp_json["errors"][0]["message"] == "Cannot send messagebox messages with a team api key"
+    assert Notification.query.count() == 0
+    assert not messagebox_send_mocks.called
+
+
+@pytest.mark.parametrize("restricted", [False, True])
+def test_post_messagebox_with_team_key_is_sent_once_a_team_cpa_is_selected(
+    messagebox_send_mocks, api_client_request, sample_template_with_placeholders, notify_user, restricted
+):
+    # trial mode doesn't stop team keys: they only reach Logius pre-production
+    sample_template_with_placeholders.service.restricted = restricted
+    create_messagebox_cpa_selection(CPA_PURPOSE_TEAM, updated_by=notify_user)
+
+    resp_json = _post_messagebox(api_client_request, sample_template_with_placeholders, "team", _expected_status=201)
+
+    notification = Notification.query.get(resp_json["id"])
+    assert notification.key_type == "team"
+    assert notification.status == NOTIFICATION_PENDING_VIRUS_CHECK
+    messagebox_send_mocks.assert_called_once()
+
+
+def test_post_messagebox_with_normal_key_is_refused_in_trial_mode(
+    messagebox_send_mocks, api_client_request, sample_template_with_placeholders, notify_user
+):
+    sample_template_with_placeholders.service.restricted = True
+    create_messagebox_cpa_selection(CPA_PURPOSE_TEAM, updated_by=notify_user)
+
+    resp_json = _post_messagebox(api_client_request, sample_template_with_placeholders, "normal", _expected_status=403)
+
+    assert resp_json["errors"][0]["message"] == "Cannot send messagebox messages when service is in trial mode"
+
+
+def test_post_messagebox_with_test_key_is_still_simulated_with_a_team_cpa(
+    messagebox_send_mocks, api_client_request, sample_template_with_placeholders, notify_user
+):
+    sample_template_with_placeholders.service.restricted = True
+    create_messagebox_cpa_selection(CPA_PURPOSE_TEAM, updated_by=notify_user)
+
+    resp_json = _post_messagebox(api_client_request, sample_template_with_placeholders, "test", _expected_status=201)
+
+    assert Notification.query.get(resp_json["id"]).status == "delivered"
+    assert not messagebox_send_mocks.called

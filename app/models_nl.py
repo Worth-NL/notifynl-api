@@ -1,5 +1,6 @@
 import datetime
 import json
+import uuid
 
 from cryptography.fernet import InvalidToken
 from sqlalchemy.dialects.postgresql import UUID
@@ -138,3 +139,72 @@ class LetterProviderPin(db.Model):
     provider = db.Column(db.String, nullable=False)
     endpoint_url = db.Column(db.String, nullable=True)
     created_at = db.Column(db.DateTime, nullable=False, default=datetime.datetime.utcnow)
+
+
+class MessageboxCpaSelection(db.Model):
+    """
+    The ebms-core CPA that messagebox notifications are sent under, per purpose (see app/messagebox/constants.py),
+    chosen by a platform admin. The CPA itself stays in ebms-core; this keeps only which one is selected and the values
+    the send needs from it, taken when it was selected. Without a `live` row sends use the EBMS_BERICHTENBOX_* config;
+    without a `team` row team keys can't send messagebox at all. See app/messagebox/cpa_nl.py.
+    """
+
+    __tablename__ = "messagebox_cpa_selection"
+
+    purpose = db.Column(db.String(16), primary_key=True)
+    cpa_id = db.Column(db.String, nullable=False)
+    # Qualified party ids (`urn:osb:oin:<oin>`) as ebms-core expects them in a message request
+    from_party_id = db.Column(db.String, nullable=False)
+    to_party_id = db.Column(db.String, nullable=False)
+    action = db.Column(db.String, nullable=False)
+    message_type = db.Column(db.String, nullable=False)
+    updated_at = db.Column(db.DateTime, nullable=False, default=datetime.datetime.utcnow)
+    updated_by_id = db.Column(UUID(as_uuid=True), db.ForeignKey("users.id"), nullable=False)
+    updated_by = db.relationship("User")
+
+    __table_args__ = (db.CheckConstraint("purpose IN ('live', 'team')", name="ck_messagebox_cpa_selection_purpose"),)
+
+    def serialize(self) -> dict:
+        return {
+            "purpose": self.purpose,
+            "cpa_id": self.cpa_id,
+            "from_party_id": self.from_party_id,
+            "to_party_id": self.to_party_id,
+            "action": self.action,
+            "message_type": self.message_type,
+            "updated_at": get_dt_string_or_none(self.updated_at),
+            "updated_by_id": get_uuid_string_or_none(self.updated_by_id),
+        }
+
+
+class MessageboxCpaSelectionHistory(db.Model):
+    """Every selection ever made, one row each, written in the same transaction as the selection itself."""
+
+    __tablename__ = "messagebox_cpa_selection_history"
+
+    id = db.Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    purpose = db.Column(db.String(16), nullable=False, index=True)
+    cpa_id = db.Column(db.String, nullable=False)
+    from_party_id = db.Column(db.String, nullable=False)
+    to_party_id = db.Column(db.String, nullable=False)
+    action = db.Column(db.String, nullable=False)
+    message_type = db.Column(db.String, nullable=False)
+    updated_at = db.Column(db.DateTime, nullable=False)
+    updated_by_id = db.Column(UUID(as_uuid=True), db.ForeignKey("users.id"), nullable=False)
+    updated_by = db.relationship("User")
+
+    @classmethod
+    def from_original(cls, original: MessageboxCpaSelection) -> "MessageboxCpaSelectionHistory":
+        return cls(**{column.name: getattr(original, column.name) for column in original.__table__.columns})
+
+    def serialize(self) -> dict:
+        return {
+            "purpose": self.purpose,
+            "cpa_id": self.cpa_id,
+            "from_party_id": self.from_party_id,
+            "to_party_id": self.to_party_id,
+            "action": self.action,
+            "message_type": self.message_type,
+            "updated_at": get_dt_string_or_none(self.updated_at),
+            "updated_by_id": get_uuid_string_or_none(self.updated_by_id),
+        }

@@ -11,9 +11,12 @@ from app.clients.messagebox.ebms_adapter import (
     get_messagebox_failure_reason,
     get_messagebox_responses,
 )
-from app.constants import MESSAGEBOX_TYPE
+from app.constants import KEY_TYPE_NORMAL, KEY_TYPE_TEAM, MESSAGEBOX_TYPE
 from app.dao.templates_messagebox_dao import get_messagebox_template
+from app.messagebox.constants import CPA_PURPOSE_LIVE, CPA_PURPOSE_TEAM
 from tests.app.db import create_notification, create_service
+from tests.app.db_nl import create_messagebox_cpa_selection
+from tests.conftest import set_config
 
 # Synthetic placeholder OINs (not real CPA values). CLIENT_ORG_OIN is
 # deliberately distinct from the configured from/to party ids below, to
@@ -180,3 +183,117 @@ def test_get_messagebox_failure_reason_matches_across_status_entries():
 @pytest.mark.parametrize("code", [None, "", "SomeUnknownCode"])
 def test_get_messagebox_failure_reason_none_for_unknown_or_absent_code(code):
     assert get_messagebox_failure_reason(code) is None
+
+
+@pytest.fixture
+def mock_core_client(mocker):
+    mocker.patch("app.messagebox.utils.get_messagebox_attachments", return_value=[])
+    core_client = mocker.Mock()
+    core_client.send_message.return_value = "envelope-message-id-123"
+    core_client.__enter__ = mocker.Mock(return_value=core_client)
+    core_client.__exit__ = mocker.Mock(return_value=False)
+    mocker.patch("app.clients.messagebox.ebms_adapter.EbmsCoreClient", return_value=core_client)
+    return core_client
+
+
+def _messagebox_notification_with_key_type(key_type):
+    service = create_service(service_permissions=[MESSAGEBOX_TYPE], service_name=f"messagebox {key_type}")
+    service.oin = CLIENT_ORG_OIN
+    return create_notification(
+        template=get_messagebox_template(service.id),
+        to_field=encryption.encrypt("999993653"),
+        personalisation={"message": "Hello", "subject": "Test subject"},
+        status="created",
+        key_type=key_type,
+    )
+
+
+def _sent_payload(core_client):
+    message_request = core_client.send_message.call_args[0][0]
+    payload = message_request.to_dict()
+    return payload, base64.b64decode(payload["dataSources"][0]["content"]).decode("utf-8")
+
+
+def test_try_send_messagebox_sends_team_key_notifications_under_the_team_cpa(
+    mocker, mock_core_client, notify_db_session, notify_user
+):
+    create_messagebox_cpa_selection(
+        CPA_PURPOSE_TEAM,
+        updated_by=notify_user,
+        cpa_id="PREPROD-CPA",
+        from_party_id="urn:osb:oin:44444444444444444444",
+        to_party_id="urn:osb:oin:55555555555555555555",
+        message_type="preprod-bericht",
+    )
+    notification = _messagebox_notification_with_key_type(KEY_TYPE_TEAM)
+    mock_set_tag = mocker.patch("app.clients.messagebox.ebms_adapter.sentry_sdk.set_tag")
+
+    _client(current_app._get_current_object()).try_send_messagebox(str(notification.id))
+
+    payload, xml_content = _sent_payload(mock_core_client)
+    assert payload["properties"]["cpaId"] == "PREPROD-CPA"
+    assert payload["properties"]["fromPartyId"] == "urn:osb:oin:44444444444444444444"
+    assert payload["properties"]["toPartyId"] == "urn:osb:oin:55555555555555555555"
+    assert "<bericht:BerichtType>preprod-bericht</bericht:BerichtType>" in xml_content
+    mock_set_tag.assert_called_once_with("ebms_cpa_purpose", CPA_PURPOSE_TEAM)
+
+
+def test_try_send_messagebox_sends_normal_key_notifications_under_the_live_selection(
+    mock_core_client, notify_db_session, notify_user
+):
+    create_messagebox_cpa_selection(CPA_PURPOSE_TEAM, updated_by=notify_user, cpa_id="PREPROD-CPA")
+    create_messagebox_cpa_selection(
+        CPA_PURPOSE_LIVE,
+        updated_by=notify_user,
+        cpa_id="LIVE-CPA",
+        from_party_id="urn:osb:oin:66666666666666666666",
+        to_party_id="urn:osb:oin:77777777777777777777",
+        message_type="live-bericht",
+    )
+    notification = _messagebox_notification_with_key_type(KEY_TYPE_NORMAL)
+
+    _client(current_app._get_current_object()).try_send_messagebox(str(notification.id))
+
+    payload, xml_content = _sent_payload(mock_core_client)
+    assert payload["properties"]["cpaId"] == "LIVE-CPA"
+    assert payload["properties"]["fromPartyId"] == "urn:osb:oin:66666666666666666666"
+    assert payload["properties"]["toPartyId"] == "urn:osb:oin:77777777777777777777"
+    assert "<bericht:BerichtType>live-bericht</bericht:BerichtType>" in xml_content
+
+
+def test_try_send_messagebox_falls_back_to_config_for_normal_keys_without_a_live_selection(
+    mock_core_client, notify_db_session, notify_user
+):
+    # a team selection must never be used for a normal key
+    create_messagebox_cpa_selection(CPA_PURPOSE_TEAM, updated_by=notify_user, cpa_id="PREPROD-CPA")
+    notification = _messagebox_notification_with_key_type(KEY_TYPE_NORMAL)
+
+    _client(current_app._get_current_object()).try_send_messagebox(str(notification.id))
+
+    payload, _ = _sent_payload(mock_core_client)
+    assert payload["properties"]["cpaId"] == "MIJNOVERHEID-EBMS-BB-2-0_example"
+    assert payload["properties"]["fromPartyId"] == f"urn:osb:oin:{FROM_PARTY_ID}"
+    assert payload["properties"]["toPartyId"] == f"urn:osb:oin:{TO_PARTY_ID}"
+
+
+def test_try_send_messagebox_never_sends_team_key_notifications_under_the_live_cpa(
+    mock_core_client, notify_db_session, notify_user
+):
+    create_messagebox_cpa_selection(CPA_PURPOSE_LIVE, updated_by=notify_user, cpa_id="LIVE-CPA")
+    notification = _messagebox_notification_with_key_type(KEY_TYPE_TEAM)
+
+    with pytest.raises(MessageboxClientNonRetryableException, match="No messagebox CPA selected for team key"):
+        _client(current_app._get_current_object()).try_send_messagebox(str(notification.id))
+
+    mock_core_client.send_message.assert_not_called()
+
+
+def test_try_send_messagebox_fails_without_any_live_cpa(mock_core_client, notify_db_session, notify_user):
+    notification = _messagebox_notification_with_key_type(KEY_TYPE_NORMAL)
+    client = _client(current_app._get_current_object())
+
+    with set_config(current_app, "EBMS_BERICHTENBOX_CPA_ID", None):
+        with pytest.raises(MessageboxClientNonRetryableException, match="No messagebox CPA selected for normal key"):
+            client.try_send_messagebox(str(notification.id))
+
+    mock_core_client.send_message.assert_not_called()

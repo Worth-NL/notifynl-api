@@ -299,6 +299,11 @@ nodeid = "tests/app/delivery/test_send_to_providers.py::test_should_update_billa
 reason = "Requires mocked Spryng client"
 
 [[test]]
+nodeid = "tests/app/inbound_number/test_rest.py::test_rest_get_inbound_numbers"
+reason = "Flaky: the numbers have no updated_at, so the order the endpoint returns them in is undefined"
+twin = ["tests/app/inbound_number/test_rest_nl.py::test_rest_get_inbound_numbers_nl", "tests/app/inbound_number/test_rest_nl.py::test_rest_get_inbound_numbers_orders_by_updated_at_nl", "tests/app/inbound_number/test_rest_nl.py::test_rest_get_inbound_numbers_in_creation_order_nl"]
+
+[[test]]
 nodeid = "tests/app/inbound_sms/test_rest.py::test_post_to_get_inbound_sms_filters_user_number"
 reason = "Dutch phone number implementation breaks this test"
 

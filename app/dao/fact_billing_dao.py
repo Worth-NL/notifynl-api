@@ -651,7 +651,8 @@ def _query_for_billing_data(notification_type, start_dt, end_dt, service_ids, ch
             )
             .filter(
                 NotificationAllTimeView.status.in_(NOTIFICATION_STATUS_TYPES_SENT_MESSAGEBOX),
-                NotificationAllTimeView.key_type.in_((KEY_TYPE_NORMAL, KEY_TYPE_TEAM)),
+                # [NotifyNL] team keys send messagebox to Logius pre-production, which isn't billed
+                NotificationAllTimeView.key_type == KEY_TYPE_NORMAL,
                 NotificationAllTimeView.created_at >= start_dt,
                 NotificationAllTimeView.created_at < end_dt,
                 NotificationAllTimeView.notification_type == notification_type,
