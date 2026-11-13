@@ -100,6 +100,10 @@ class FakeSortedSets:
 
     def __init__(self):
         self.sets = defaultdict(dict)
+        self.held = {}
+
+    def get(self, key):
+        return self.held[key].encode() if key in self.held else None
 
     def pipeline(self):
         sets, results = self.sets, []
@@ -132,6 +136,7 @@ def live_redis(redis_results, mocker):
     """Redis as starting a test needs it: active, with locks and the rate limit's sorted sets."""
     locks = FakeRunLocks()
     locks.sorted_sets = FakeSortedSets()
+    locks.sorted_sets.held = locks.held
     mocker.patch("app.letters_nl.letter_endpoint_connection.redis_store.active", True)
     mocker.patch("app.letters_nl.letter_endpoint_connection.redis_store.get_lock", side_effect=locks.get_lock)
     mocker.patch("app.letters_nl.letter_endpoint_connection.redis_store.redis_store", locks.sorted_sets)
@@ -541,7 +546,7 @@ def test_the_time_limit_before_any_request_is_a_failed_test_that_says_so(rmock, 
     assert _run() == {
         "state": "finished",
         "outcome": "failed",
-        "error": "The test took longer than a connection test may take and was stopped",
+        "failed_reason": "stopped",
     }
     assert not rmock.called
 
@@ -576,7 +581,7 @@ def test_notifynl_refusing_the_url_when_sending_calls_nothing(rmock):
     assert result == {
         "state": "finished",
         "outcome": "failed",
-        "error": "http://print.example.com/letters must use https",
+        "failed_reason": "address_refused",
     }
     assert not rmock.called
 
@@ -639,8 +644,11 @@ def test_a_new_test_starts_queued_and_can_only_be_read_by_its_organisation(live_
 def test_an_organisation_runs_one_test_at_a_time(live_redis):
     first = start_connection_test(ORGANISATION_ID)
 
-    with pytest.raises(ConnectionTestBusy):
+    with pytest.raises(ConnectionTestBusy) as busy:
         start_connection_test(ORGANISATION_ID)
+
+    # so admin can still show the result of the test that is running
+    assert busy.value.running_test_id == first
 
     release_connection_test(ORGANISATION_ID, first)
     start_connection_test(ORGANISATION_ID)
@@ -650,8 +658,11 @@ def test_only_a_few_tests_run_at_once_across_organisations(live_redis):
     first = start_connection_test("organisation-1")
     start_connection_test("organisation-2")
 
-    with pytest.raises(ConnectionTestBusy):
+    with pytest.raises(ConnectionTestBusy) as busy:
         start_connection_test("organisation-3")
+
+    # it is the other organisations' tests that fill the worker, not one of its own
+    assert busy.value.running_test_id is None
 
     # the refused test didn't keep its organisation's run
     release_connection_test("organisation-1", first)
@@ -735,7 +746,7 @@ def test_a_test_killed_by_the_hard_time_limit_is_shown_as_stopped(
             "state": "finished",
             "outcome": "failed",
             "host": "print.example.com",
-            "error": "The test took longer than a connection test may take and was stopped",
+            "failed_reason": "stopped",
         }
         assert json.loads(redis_results[_result_key(test_id)]) == result
         # nothing else would let the next test start

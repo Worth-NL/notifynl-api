@@ -15,7 +15,7 @@ from io import BytesIO
 from pathlib import Path
 from time import monotonic, time
 from urllib.parse import quote, quote_plus, urlsplit
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import requests
 from celery.exceptions import SoftTimeLimitExceeded
@@ -27,6 +27,7 @@ from app import create_random_identifier, encryption, redis_store
 from app.clients.letter import (
     Letter,
     LetterClientException,
+    LetterClientNonRetryableException,
     LetterClientRetryableException,
     may_have_reached_the_provider,
 )
@@ -83,6 +84,10 @@ ERROR_READ_TIMEOUT = "read_timeout"
 ERROR_CLOSED = "closed"
 ERROR_OTHER = "other"
 
+# why a test could not run, when it is no result of the endpoint: admin has the texts, as the API's own are English
+FAILED_STOPPED = "stopped"
+FAILED_ADDRESS_REFUSED = "address_refused"
+
 STOPPED = "The test took longer than a connection test may take and was stopped"
 
 
@@ -94,6 +99,12 @@ class ConnectionTestRefused(Exception):
 
 class ConnectionTestBusy(ConnectionTestRefused):
     status_code = 409
+
+    def __init__(self, message: str, running_test_id: str | None = None):
+        super().__init__(message)
+        # the organisation's own running test, so its result can still be looked up. None when the organisation has
+        # no test running and it is the tests of all organisations together that fill the letter worker
+        self.running_test_id = running_test_id
 
 
 class ConnectionTestLimitReached(ConnectionTestRefused):
@@ -252,7 +263,7 @@ def start_connection_test(organisation_id) -> str:
     test_id = str(uuid4())
     try:
         if not _hold_a_run(organisation_id, test_id):
-            raise ConnectionTestBusy("A connection test is already running")
+            raise ConnectionTestBusy("A connection test is already running", _running_test_id(organisation_id))
         try:
             if _exceeded_rate_limit(organisation_id, test_id):
                 raise ConnectionTestLimitReached("Too many connection tests")
@@ -296,6 +307,15 @@ def _hold_a_run(organisation_id, test_id: str) -> bool:
         return True
     _run_lock(_organisation_run_key(organisation_id)).do_release(test_id)
     return False
+
+
+def _running_test_id(organisation_id) -> str | None:
+    """The test holding the organisation's run: the lock's token is the test id."""
+    try:
+        token = redis_store.redis_store.get(_organisation_run_key(organisation_id))
+        return str(UUID(token.decode())) if token else None
+    except (RedisError, ValueError, AttributeError):
+        return None
 
 
 def _run_lock(key: str):
@@ -345,7 +365,12 @@ def get_connection_test_result(organisation_id, test_id) -> dict | None:
     started_at = result.get("started_at")
     if result["state"] == STATE_RUNNING and started_at and time() - started_at > CONNECTION_TEST_OVERDUE_SECONDS:
         # the worker's hard time limit killed the test, so nothing else will finish it
-        result = {"state": STATE_FINISHED, "outcome": OUTCOME_FAILED, "host": result["host"], "error": STOPPED}
+        result = {
+            "state": STATE_FINISHED,
+            "outcome": OUTCOME_FAILED,
+            "host": result["host"],
+            "failed_reason": FAILED_STOPPED,
+        }
         _store_result(organisation_id, test_id, result)
         release_connection_test(organisation_id, test_id)
     return result
@@ -426,12 +451,12 @@ def _run_connection_test(organisation_id, test_id: str, encrypted_settings: str,
 def _finished_result(
     client: ConnectionTestLetterClient, settings: ConnectionTestSettings, failure: BaseException | None
 ) -> dict:
-    secrets = _secret_forms(settings, client.access_tokens)
     exchange = client.exchange
     if exchange is None:
         # NotifyNL stopped before calling anything, e.g. the URL now resolves to an internal address
-        return {"state": STATE_FINISHED, "outcome": OUTCOME_FAILED, "error": _redact(str(failure), secrets)}
+        return {"state": STATE_FINISHED, "outcome": OUTCOME_FAILED, "failed_reason": _failed_reason(failure)}
 
+    secrets = _secret_forms(settings, client.access_tokens)
     return {
         "state": STATE_FINISHED,
         "outcome": _outcome(exchange),
@@ -446,6 +471,17 @@ def _finished_result(
         "timed_out": exchange.timed_out,
         **_body_fields(exchange, secrets),
     }
+
+
+def _failed_reason(failure: BaseException | None) -> str | None:
+    if isinstance(failure, TimeoutError):
+        return FAILED_STOPPED
+    if (
+        isinstance(failure, LetterClientNonRetryableException)
+        and failure.detailed_status_code == "invalid-endpoint-url"
+    ):
+        return FAILED_ADDRESS_REFUSED
+    return None
 
 
 def _outcome(exchange: Exchange) -> str:

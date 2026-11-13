@@ -28,6 +28,7 @@ from app.letters_nl.constants import (
     SECRET_AUTH_CONFIG_FIELDS,
 )
 from app.letters_nl.letter_endpoint_connection import (
+    ConnectionTestBusy,
     ConnectionTestRefused,
     encrypt_connection_test_settings,
     get_connection_test_result,
@@ -160,6 +161,9 @@ def start_letter_provider_connection_test(organisation_id):
 
     try:
         test_id = start_connection_test(organisation_id)
+    except ConnectionTestBusy as e:
+        # with the running test's id, so admin can still show its result instead of another test being started
+        return jsonify(result="error", message=str(e), running_test_id=e.running_test_id), e.status_code
     except ConnectionTestRefused as e:
         raise InvalidRequest(str(e), status_code=e.status_code) from e
     try:

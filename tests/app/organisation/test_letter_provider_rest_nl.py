@@ -625,6 +625,23 @@ def test_a_connection_test_that_cannot_start(
     assert not queue_connection_test.called
 
 
+def test_a_busy_connection_test_names_the_test_that_is_running(
+    admin_request, notify_db_session, public_dns, queue_connection_test, start_connection_test, platform_admin
+):
+    running = str(uuid.uuid4())
+    start_connection_test.side_effect = ConnectionTestBusy("A connection test is already running", running)
+
+    response = _test_connection(
+        admin_request,
+        create_organisation().id,
+        {"endpoint_url": ENDPOINT_URL, "auth_method": "api_key", "auth_config": TYPED_API_KEY},
+        platform_admin,
+        _expected_status=409,
+    )
+
+    assert response["running_test_id"] == running
+
+
 def test_a_connection_test_that_cannot_be_queued_lets_the_next_one_start(
     admin_request, notify_db_session, public_dns, queue_connection_test, platform_admin, mocker
 ):
