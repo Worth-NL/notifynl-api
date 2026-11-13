@@ -1,14 +1,17 @@
 import re
 
 from cryptography.fernet import InvalidToken
-from flask import Blueprint, jsonify, request
+from flask import Blueprint, current_app, jsonify, request
 
+from app.celery.letter_provider_tasks import check_letter_endpoint_connection
+from app.config import QueueNames
 from app.dao.organisation_dao import dao_get_organisation_by_id
 from app.dao.organisation_letter_provider_dao import (
     dao_delete_organisation_letter_provider,
     dao_get_organisation_letter_provider,
     dao_set_organisation_letter_provider,
 )
+from app.dao.users_dao import get_user_by_id
 from app.errors import InvalidRequest, register_errors
 from app.letters_nl.constants import (
     ADDRESS_PLACEMENTS,
@@ -23,6 +26,13 @@ from app.letters_nl.constants import (
     PINGEN_ADDRESS_PLACEMENT,
     REQUIRED_AUTH_CONFIG_FIELDS,
     SECRET_AUTH_CONFIG_FIELDS,
+)
+from app.letters_nl.letter_endpoint_connection import (
+    ConnectionTestRefused,
+    encrypt_connection_test_settings,
+    get_connection_test_result,
+    release_connection_test,
+    start_connection_test,
 )
 from app.letters_nl.url_validation import InvalidLetterEndpointUrl, validate_letter_endpoint_url
 from app.schema_validation import validate
@@ -62,6 +72,20 @@ post_set_organisation_letter_provider_schema = {
     "required": ["provider", "updated_by_id"],
     "if": {"properties": {"provider": {"const": LETTER_PROVIDER_REST_ENDPOINT}}},
     "then": {"required": ["endpoint_url", "auth_method", "address_placement"]},
+    "additionalProperties": False,
+}
+
+post_letter_provider_connection_test_schema = {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "description": "POST organisation letter provider connection test schema",
+    "type": "object",
+    "properties": {
+        "endpoint_url": post_set_organisation_letter_provider_schema["properties"]["endpoint_url"],
+        "auth_method": post_set_organisation_letter_provider_schema["properties"]["auth_method"],
+        "auth_config": post_set_organisation_letter_provider_schema["properties"]["auth_config"],
+        "started_by_id": uuid,
+    },
+    "required": ["endpoint_url", "auth_method", "started_by_id"],
     "additionalProperties": False,
 }
 
@@ -113,6 +137,63 @@ def delete_organisation_letter_provider(organisation_id):
     dao_get_organisation_by_id(organisation_id)
     dao_delete_organisation_letter_provider(organisation_id)
     return "", 204
+
+
+@organisation_letter_provider_blueprint.route(
+    "/organisations/<uuid:organisation_id>/letter-provider/connection-test", methods=["POST"]
+)
+def start_letter_provider_connection_test(organisation_id):
+    """Tries values that are being typed in, without saving them. A stored secret is only used under the save rules."""
+    data = request.get_json()
+    validate(data, post_letter_provider_connection_test_schema)
+    dao_get_organisation_by_id(organisation_id)
+    if not get_user_by_id(data["started_by_id"]).platform_admin:
+        # a test presents NotifyNL's client certificate to the host that was typed in, and shows what it replies
+        raise InvalidRequest("Only platform admins can test a print endpoint connection", status_code=403)
+
+    endpoint_url = data["endpoint_url"]
+    auth_method = data["auth_method"]
+    auth_config, secrets_dropped = _merge_auth_config(
+        dao_get_organisation_letter_provider(organisation_id), endpoint_url, auth_method, data.get("auth_config", {})
+    )
+    _validate_rest_endpoint(endpoint_url, auth_method, auth_config, secrets_dropped)
+
+    try:
+        test_id = start_connection_test(organisation_id)
+    except ConnectionTestRefused as e:
+        raise InvalidRequest(str(e), status_code=e.status_code) from e
+    try:
+        check_letter_endpoint_connection.apply_async(
+            [str(organisation_id), test_id, encrypt_connection_test_settings(endpoint_url, auth_method, auth_config)],
+            queue=QueueNames.SEND_LETTER,
+            MessageGroupId=str(organisation_id),
+        )
+    except Exception:
+        release_connection_test(organisation_id, test_id)
+        raise
+
+    current_app.logger.info(
+        "Letter endpoint connection test %s of organisation %s started by user %s",
+        test_id,
+        organisation_id,
+        data["started_by_id"],
+        extra={
+            "connection_test_id": test_id,
+            "organisation_id": str(organisation_id),
+            "user_id": data["started_by_id"],
+        },
+    )
+    return jsonify(data={"id": test_id}), 201
+
+
+@organisation_letter_provider_blueprint.route(
+    "/organisations/<uuid:organisation_id>/letter-provider/connection-test/<uuid:test_id>", methods=["GET"]
+)
+def get_letter_provider_connection_test(organisation_id, test_id):
+    result = get_connection_test_result(organisation_id, test_id)
+    if result is None:
+        raise InvalidRequest("Connection test not found", status_code=404)
+    return jsonify(data=result)
 
 
 def _merge_auth_config(existing, endpoint_url, auth_method, update) -> tuple[dict, bool]:

@@ -39,6 +39,7 @@ class RestEndpointLetterClient(LetterClient):
     """
 
     name = LETTER_PROVIDER_REST_ENDPOINT
+    timeout = TIMEOUT
 
     def __init__(self, current_app):
         super().__init__(current_app)
@@ -47,6 +48,9 @@ class RestEndpointLetterClient(LetterClient):
 
     @record_request_duration(notification_type=LETTER_TYPE, provider_name=LETTER_PROVIDER_REST_ENDPOINT)
     def try_send_letter(self, letter: Letter, letter_provider) -> LetterSendResult:
+        return self._send_letter(letter, letter_provider)
+
+    def _send_letter(self, letter: Letter, letter_provider) -> LetterSendResult:
         endpoint_url = letter_provider.endpoint_url
         self._validate_url(endpoint_url)
         try:
@@ -126,7 +130,7 @@ class RestEndpointLetterClient(LetterClient):
             return self.requests_session.request(
                 method,
                 url,
-                timeout=TIMEOUT,
+                timeout=self.timeout,
                 allow_redirects=False,
                 cert=client_certificate.path,
                 verify=get_ca_bundle(),

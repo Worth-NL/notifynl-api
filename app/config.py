@@ -839,6 +839,7 @@ class TaskNamesNL(TaskNames):
     MESSAGEBOX_PROCESS_UNPROCESSED = "messagebox.process-unprocessed"
     MESSAGEBOX_CHECK_STILL_PENDING = "messagebox.check-still-pending"
     DELIVER_LETTER_VIA_PROVIDER = "deliver-letter-via-provider"
+    CHECK_LETTER_ENDPOINT_CONNECTION = "check-letter-endpoint-connection"
     DISPATCH_STRANDED_LETTERS = "dispatch-stranded-letters"
     CHECK_LETTERS_STUCK_SENDING = "check-letters-stuck-sending"
     CHECK_PROVIDER_LETTERS_IN_TECHNICAL_FAILURE = "check-provider-letters-in-technical-failure"

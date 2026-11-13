@@ -47,7 +47,16 @@ from app.dao.notifications_dao import (
     update_notification_status_by_id,
 )
 from app.letters.utils import LetterPDFNotFound, find_letter_pdf_in_s3
-from app.letters_nl.constants import LETTER_PROVIDER_CALLBACK_PATH, LETTER_PROVIDER_REST_ENDPOINT
+from app.letters_nl.constants import (
+    CONNECTION_TEST_CALLBACK_PREFIX,
+    LETTER_PROVIDER_CALLBACK_PATH,
+    LETTER_PROVIDER_REST_ENDPOINT,
+)
+from app.letters_nl.letter_endpoint_connection import (
+    CONNECTION_TEST_SOFT_TIME_LIMIT,
+    CONNECTION_TEST_TIME_LIMIT,
+    run_connection_test,
+)
 from app.letters_nl.provider import resolve_letter_provider
 from app.models import LetterCostThreshold
 from app.notifications.notifications_ses_callback import check_and_queue_callback_task
@@ -128,6 +137,19 @@ def deliver_letter_via_provider(self, notification_id):
         _retry(self, notification_id, "print-provider-error")
     finally:
         _release(lock, notification_id)
+
+
+@notify_celery.task(
+    name=TaskNamesNL.CHECK_LETTER_ENDPOINT_CONNECTION,
+    soft_time_limit=CONNECTION_TEST_SOFT_TIME_LIMIT,
+    time_limit=CONNECTION_TEST_TIME_LIMIT,
+)
+def check_letter_endpoint_connection(organisation_id, test_id, encrypted_settings):
+    """
+    On the letter worker because it has the client certificates (like the service-callback workers), without which
+    mTLS endpoints would fail, and because a test is meant to go out like the organisation's real letters would.
+    """
+    run_connection_test(organisation_id, test_id, encrypted_settings, _connection_test_callback_url(test_id))
 
 
 def _still_to_deliver(notification, resuming, extra) -> bool:
@@ -283,6 +305,11 @@ def _callback_url(notification_id):
     return (
         f"{current_app.config['API_HOST_NAME']}{LETTER_PROVIDER_CALLBACK_PATH}?token={signing.encode(notification_id)}"
     )
+
+
+def _connection_test_callback_url(test_id):
+    # a working callback URL, like a real letter's, whose reports are recognised as a test's and not processed
+    return _callback_url(f"{CONNECTION_TEST_CALLBACK_PREFIX}{test_id}")
 
 
 def _mark_sent(notification_id, sent_by):
