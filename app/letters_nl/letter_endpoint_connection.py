@@ -16,11 +16,17 @@ from urllib.parse import quote, quote_plus, urlsplit
 from uuid import uuid4
 
 import requests
+from celery.exceptions import SoftTimeLimitExceeded
 from flask import current_app
 from urllib3.exceptions import MaxRetryError
 
 from app import create_random_identifier, encryption, redis_store
-from app.clients.letter import Letter, LetterClientException, LetterClientRetryableException
+from app.clients.letter import (
+    Letter,
+    LetterClientException,
+    LetterClientRetryableException,
+    may_have_reached_the_provider,
+)
 from app.clients.letter.rest_endpoint import RestEndpointLetterClient
 from app.letters_nl.constants import AUTH_METHOD_BASIC, SECRET_AUTH_CONFIG_FIELDS
 
@@ -43,6 +49,8 @@ OUTCOME_AUTHORIZED = "authorized"
 OUTCOME_CONNECTED = "connected"
 OUTCOME_UNAUTHORIZED = "unauthorized"
 OUTCOME_NO_CONNECTION = "no_connection"
+# the request went out (or may have), but no reply came back
+OUTCOME_NO_REPLY = "no_reply"
 OUTCOME_FAILED = "failed"
 
 STEP_TOKEN = "token"
@@ -75,11 +83,21 @@ class Exchange:
     body: bytes = b""
     body_truncated: bool = False
     error: str | None = None
+    # whether the endpoint may have received the request although no reply came back, e.g. after a read timeout
+    may_have_arrived: bool = False
+    # the worker's time limit stopped this exchange
+    timed_out: bool = False
     duration_ms: int | None = None
 
     @property
     def is_success(self) -> bool:
         return self.status_code is not None and 200 <= self.status_code < 300
+
+    def stop_waiting(self):
+        """Called when the worker's time limit cuts the exchange off: what arrived until then is kept."""
+        self.timed_out = True
+        if self.status_code is not None:
+            self.body_truncated = True
 
 
 class ConnectionTestLetterClient(RestEndpointLetterClient):
@@ -111,6 +129,7 @@ class ConnectionTestLetterClient(RestEndpointLetterClient):
             return _read_reply(response, exchange)
         except LetterClientRetryableException as e:
             exchange.error = _network_error(e.__cause__)
+            exchange.may_have_arrived = may_have_reached_the_provider(e.__cause__)
             raise
         finally:
             exchange.duration_ms = round((monotonic() - started) * 1000)
@@ -135,8 +154,9 @@ def _read_reply(response: requests.Response, exchange: Exchange) -> requests.Res
         # the endpoint did answer: the status counts, and the body is shown as far as it got
         exchange.body_truncated = True
     finally:
+        # also when the worker's time limit stops the read
+        exchange.body = bytes(body[:MAX_BODY_READ])
         response.close()
-    exchange.body = bytes(body[:MAX_BODY_READ])
 
     bounded = requests.Response()
     bounded.status_code = response.status_code
@@ -181,6 +201,17 @@ def get_connection_test_result(organisation_id, test_id) -> dict | None:
 
 def run_connection_test(organisation_id, test_id: str, encrypted_settings: str, callback_url: str):
     try:
+        if not _is_awaited(organisation_id, test_id):
+            # e.g. it waited behind real letters in the queue for longer than its result is kept: admin already
+            # shows it as expired, so the letter would be sent for nothing
+            current_app.logger.info(
+                "Not running letter endpoint connection test %s of organisation %s: its result has expired",
+                test_id,
+                organisation_id,
+                extra={"connection_test_id": test_id, "organisation_id": str(organisation_id)},
+            )
+            return
+
         settings = ConnectionTestSettings(**json.loads(encryption.decrypt(encrypted_settings)))
         client = ConnectionTestLetterClient(
             current_app, lambda host: _store_result(organisation_id, test_id, {"state": STATE_RUNNING, "host": host})
@@ -196,6 +227,11 @@ def run_connection_test(organisation_id, test_id: str, encrypted_settings: str, 
         failure = None
         try:
             client.send_test_letter(letter, settings)
+        except SoftTimeLimitExceeded:
+            # e.g. an endpoint that drips its reply: what arrived until now is still worth showing
+            failure = TimeoutError("The test took longer than a connection test may take and was stopped")
+            if client.exchange:
+                client.exchange.stop_waiting()
         except (LetterClientException, ValueError, KeyError, TypeError, AttributeError) as e:
             # also an unusable token reply. What happened is read from the last exchange, not from this error
             failure = e
@@ -243,13 +279,15 @@ def _finished_result(
         "content_type": exchange.content_type,
         "location": _redact(exchange.location, secrets) if exchange.location else None,
         "error": _redact(exchange.error, secrets) if exchange.error else None,
+        "timed_out": exchange.timed_out,
         **_body_fields(exchange, secrets),
     }
 
 
 def _outcome(exchange: Exchange) -> str:
-    if exchange.error:
-        return OUTCOME_NO_CONNECTION
+    if exchange.status_code is None:
+        # a read timeout or a closed connection can come after the endpoint got the request, unlike a refused one
+        return OUTCOME_NO_REPLY if exchange.may_have_arrived or exchange.timed_out else OUTCOME_NO_CONNECTION
     if not exchange.sends_the_letter:
         # the token request is only the last one when it gave no usable token, so the letter was never sent
         return OUTCOME_UNAUTHORIZED
@@ -310,6 +348,11 @@ def _redact(text: str, secrets: list[str]) -> str:
     for secret in secrets:
         text = text.replace(secret, REDACTED)
     return text
+
+
+def _is_awaited(organisation_id, test_id: str) -> bool:
+    # a Redis error raises instead of reading as expired, which would drop the test without a word
+    return redis_store.get(_result_key(organisation_id, test_id), skippable=False, raise_exception=True) is not None
 
 
 def _store_result(organisation_id, test_id: str, result: dict):

@@ -4,7 +4,9 @@ import socket
 
 import pytest
 import requests
+from celery.exceptions import SoftTimeLimitExceeded
 from pypdf import PdfReader
+from redis.exceptions import ConnectionError as RedisConnectionError
 from urllib3.exceptions import ProtocolError
 
 from app.letters_nl.letter_endpoint_connection import (
@@ -47,9 +49,16 @@ def redis_results(notify_api, mocker):
     )
     mocker.patch(
         "app.letters_nl.letter_endpoint_connection.redis_store.get",
-        side_effect=lambda key, skippable=True: results.get(key),
+        side_effect=lambda key, **kwargs: results.get(key),
     )
     return results
+
+
+@pytest.fixture(autouse=True)
+def queued_test(redis_results, mocker):
+    # as the API starts one: a test only runs while admin still waits for its result
+    mocker.patch("app.letters_nl.letter_endpoint_connection.uuid4", return_value=CONNECTION_TEST_ID)
+    create_connection_test(ORGANISATION_ID)
 
 
 def _run(auth_method="api_key", auth_config=None, endpoint_url=ENDPOINT_URL):
@@ -144,6 +153,7 @@ def test_the_outcome_follows_from_the_endpoints_reply(rmock, status_code, expect
         "content_type": None,
         "location": None,
         "error": None,
+        "timed_out": False,
         "body": "the reply",
         "body_kind": "text",
         "body_truncated": False,
@@ -251,30 +261,38 @@ NETWORK_ERROR_TEXTS = {
 
 
 @pytest.mark.parametrize(
-    "error, expected_text",
-    [(error, NETWORK_ERROR_TEXTS[name]) for name, error in {**FAILED_TO_CONNECT, **FAILED_AFTER_SENDING}.items()],
+    "error, expected_outcome, expected_text",
+    [(error, "no_connection", NETWORK_ERROR_TEXTS[name]) for name, error in FAILED_TO_CONNECT.items()]
+    # the endpoint may have got the letter, so it isn't shown as a connection that failed
+    + [(error, "no_reply", NETWORK_ERROR_TEXTS[name]) for name, error in FAILED_AFTER_SENDING.items()],
     ids=NETWORK_ERROR_TEXTS,
 )
-def test_no_http_reply_shows_the_network_error(rmock, error, expected_text):
+def test_no_http_reply_shows_the_network_error(rmock, error, expected_outcome, expected_text):
     rmock.post(ENDPOINT_URL, exc=error)
 
     result = _run()
 
-    assert result["outcome"] == "no_connection"
+    assert result["outcome"] == expected_outcome
     assert result["host"] == "print.example.com"
     assert result["status_code"] is None
     assert expected_text in result["error"]
     assert "MaxRetryError" not in result["error"]
+    assert result["timed_out"] is False
 
 
-def test_no_http_reply_from_the_token_url_names_that_host(rmock):
-    rmock.post(TOKEN_URL, exc=FAILED_TO_CONNECT["dns"])
+@pytest.mark.parametrize(
+    "error, expected_outcome",
+    [(FAILED_TO_CONNECT["dns"], "no_connection"), (FAILED_AFTER_SENDING["read-timeout"], "no_reply")],
+)
+def test_no_http_reply_from_the_token_url_names_that_host(rmock, error, expected_outcome):
+    rmock.post(TOKEN_URL, exc=error)
 
     result = _run("oauth", OAUTH)
 
-    assert result["outcome"] == "no_connection"
+    assert result["outcome"] == expected_outcome
     assert result["step"] == "token"
     assert result["host"] == "idp.example.com"
+    assert [request.url for request in rmock.request_history] == [TOKEN_URL]
 
 
 @pytest.mark.parametrize(
@@ -361,6 +379,76 @@ def test_a_reply_that_breaks_off_keeps_its_status_and_what_arrived(rmock):
     assert result["body_truncated"] is True
 
 
+class DripsUntilTheTimeLimit:
+    """A reply body whose first chunk arrives, after which the worker's soft time limit goes off while reading."""
+
+    FIRST_CHUNK = b"x" * 8192
+
+    def __init__(self):
+        self.reads = 0
+        self.closed = False
+
+    def read(self, amount=None):
+        self.reads += 1
+        if self.reads == 1:
+            return self.FIRST_CHUNK
+        raise SoftTimeLimitExceeded
+
+    def close(self):
+        self.closed = True
+
+
+def test_the_time_limit_while_reading_the_reply_keeps_its_status_and_what_arrived(notify_api, rmock, mocker):
+    log_exception = mocker.patch.object(notify_api.logger, "exception")
+    rmock.post(ENDPOINT_URL, body=DripsUntilTheTimeLimit(), status_code=202, reason="Accepted")
+
+    result = _run()
+
+    assert result | {"duration_ms": None} == {
+        "state": "finished",
+        "outcome": "authorized",
+        "step": "letter",
+        "host": "print.example.com",
+        "duration_ms": None,
+        "status_code": 202,
+        "reason": "Accepted",
+        "content_type": None,
+        "location": None,
+        "error": None,
+        "timed_out": True,
+        "body": DripsUntilTheTimeLimit.FIRST_CHUNK.decode(),
+        "body_kind": "text",
+        "body_truncated": True,
+    }
+    assert not log_exception.called
+
+
+def test_the_time_limit_before_any_reply_is_no_reply(notify_api, rmock, mocker):
+    log_exception = mocker.patch.object(notify_api.logger, "exception")
+    rmock.post(ENDPOINT_URL, exc=SoftTimeLimitExceeded())
+
+    result = _run()
+
+    assert result["outcome"] == "no_reply"
+    assert result["host"] == "print.example.com"
+    assert result["status_code"] is None
+    assert result["timed_out"] is True
+    assert result["duration_ms"] is not None
+    assert not log_exception.called
+
+
+def test_the_time_limit_before_any_request_is_a_failed_test_that_says_so(rmock, public_dns):
+    # e.g. a DNS lookup that hangs while NotifyNL checks the URL
+    public_dns.side_effect = SoftTimeLimitExceeded()
+
+    assert _run() == {
+        "state": "finished",
+        "outcome": "failed",
+        "error": "The test took longer than a connection test may take and was stopped",
+    }
+    assert not rmock.called
+
+
 def test_a_binary_reply_is_not_shown(rmock):
     rmock.post(ENDPOINT_URL, content=b"%PDF\x00\x01", headers={"Content-Type": "application/pdf"})
 
@@ -403,6 +491,27 @@ def test_an_unexpected_failure_is_a_failed_test_without_details(rmock, mocker):
     )
 
     assert _run() == {"state": "finished", "outcome": "failed"}
+
+
+def test_a_test_whose_result_has_expired_sends_nothing(rmock, redis_results):
+    # e.g. it waited in the queue behind real letters for longer than admin waits
+    redis_results.clear()
+
+    assert _run() is None
+    assert not rmock.called
+
+
+def test_a_redis_error_while_checking_for_the_result_is_a_failed_test_not_a_skipped_one(rmock, redis_results, mocker):
+    def get(key, raise_exception=False, **kwargs):
+        # RedisClient only raises when asked to, and returns None otherwise
+        if raise_exception:
+            raise RedisConnectionError("Redis is gone")
+        return redis_results.get(key)
+
+    mocker.patch("app.letters_nl.letter_endpoint_connection.redis_store.get", side_effect=get)
+
+    assert _run() == {"state": "finished", "outcome": "failed"}
+    assert not rmock.called
 
 
 def test_the_result_says_which_host_is_being_waited_on(rmock):
