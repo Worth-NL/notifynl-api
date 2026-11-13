@@ -7,7 +7,12 @@ import pytest
 from app import encryption
 from app.dao.organisation_letter_provider_dao import dao_get_organisation_letter_provider
 from app.letters_nl.constants import LETTER_PROVIDER_PINGEN, LETTER_PROVIDER_REST_ENDPOINT
-from tests.app.db import create_organisation, create_service
+from app.letters_nl.letter_endpoint_connection import (
+    ConnectionTestBusy,
+    ConnectionTestLimitReached,
+    ConnectionTestUnavailable,
+)
+from tests.app.db import create_organisation, create_service, create_user
 from tests.app.db_nl import create_organisation_letter_provider, delete_organisation_letter_provider
 
 ENDPOINT_URL = "https://print.example.com/letters"
@@ -397,12 +402,33 @@ CONNECTION_TEST_RESULT = "organisation_letter_provider.get_letter_provider_conne
 TYPED_API_KEY = {"api_key_header": "X-Api-Key", "api_key": "typed-key"}
 
 
+CONNECTION_TEST_ID = "7b2dd5d6-b52f-4a9c-9d0e-9d3b4b1b4a51"
+
+
 @pytest.fixture
-def queue_connection_test(mocker):
-    mocker.patch("app.organisation.letter_provider_rest_nl.redis_store.active", True)
-    mocker.patch("app.letters_nl.letter_endpoint_connection.redis_store.set")
-    mocker.patch("app.organisation.letter_provider_rest_nl.redis_store.exceeded_rate_limit", return_value=False)
+def start_connection_test(mocker):
+    return mocker.patch(
+        "app.organisation.letter_provider_rest_nl.start_connection_test", return_value=CONNECTION_TEST_ID
+    )
+
+
+@pytest.fixture
+def queue_connection_test(mocker, start_connection_test):
     return mocker.patch("app.organisation.letter_provider_rest_nl.check_letter_endpoint_connection.apply_async")
+
+
+@pytest.fixture
+def platform_admin(notify_db_session):
+    return create_user(platform_admin=True)
+
+
+def _test_connection(admin_request, organisation_id, data, user, _expected_status=201):
+    return admin_request.post(
+        CONNECTION_TEST,
+        organisation_id=organisation_id,
+        _data=data | {"started_by_id": str(user.id)},
+        _expected_status=_expected_status,
+    )
 
 
 def _queued_settings(queue_connection_test):
@@ -410,22 +436,24 @@ def _queued_settings(queue_connection_test):
 
 
 def test_connection_test_queues_the_typed_values_without_saving_them(
-    admin_request, notify_db_session, public_dns, queue_connection_test
+    admin_request, notify_db_session, public_dns, queue_connection_test, start_connection_test, platform_admin, caplog
 ):
     organisation = create_organisation()
 
-    response = admin_request.post(
-        CONNECTION_TEST,
-        organisation_id=organisation.id,
-        _data={"endpoint_url": ENDPOINT_URL, "auth_method": "api_key", "auth_config": TYPED_API_KEY},
-        _expected_status=201,
+    response = _test_connection(
+        admin_request,
+        organisation.id,
+        {"endpoint_url": ENDPOINT_URL, "auth_method": "api_key", "auth_config": TYPED_API_KEY},
+        platform_admin,
     )
 
     (organisation_id, test_id, encrypted_settings), kwargs = (
         queue_connection_test.call_args.args[0],
         queue_connection_test.call_args.kwargs,
     )
-    assert response == {"data": {"id": test_id}}
+    assert response == {"data": {"id": CONNECTION_TEST_ID}}
+    start_connection_test.assert_called_once_with(organisation.id)
+    assert test_id == CONNECTION_TEST_ID
     assert organisation_id == str(organisation.id)
     assert "typed-key" not in encrypted_settings
     assert _queued_settings(queue_connection_test) == {
@@ -437,10 +465,32 @@ def test_connection_test_queues_the_typed_values_without_saving_them(
     stored = dao_get_organisation_letter_provider(organisation.id)
     assert stored.provider.identifier == LETTER_PROVIDER_PINGEN
     assert stored.endpoint_url is None
+    # who ran it: a test can use stored secrets
+    assert (
+        f"Letter endpoint connection test {CONNECTION_TEST_ID} of organisation {organisation.id} started by user "
+        f"{platform_admin.id}"
+    ) in caplog.messages
+
+
+def test_only_platform_admins_can_test_a_connection(
+    admin_request, notify_db_session, public_dns, queue_connection_test, start_connection_test
+):
+    # a test presents NotifyNL's client certificate to the host that was typed in, and shows its reply
+    response = _test_connection(
+        admin_request,
+        create_organisation().id,
+        {"endpoint_url": ENDPOINT_URL, "auth_method": "api_key", "auth_config": TYPED_API_KEY},
+        create_user(),
+        _expected_status=403,
+    )
+
+    assert response["message"] == "Only platform admins can test a print endpoint connection"
+    assert not start_connection_test.called
+    assert not queue_connection_test.called
 
 
 def test_connection_test_uses_a_stored_secret_left_out_for_the_same_destination(
-    admin_request, notify_db_session, public_dns, queue_connection_test
+    admin_request, notify_db_session, public_dns, queue_connection_test, platform_admin
 ):
     organisation = create_organisation()
     create_organisation_letter_provider(
@@ -452,11 +502,11 @@ def test_connection_test_uses_a_stored_secret_left_out_for_the_same_destination(
         address_placement="50mm",
     )
 
-    admin_request.post(
-        CONNECTION_TEST,
-        organisation_id=organisation.id,
-        _data={"endpoint_url": ENDPOINT_URL, "auth_method": "basic", "auth_config": {"username": "typed"}},
-        _expected_status=201,
+    _test_connection(
+        admin_request,
+        organisation.id,
+        {"endpoint_url": ENDPOINT_URL, "auth_method": "basic", "auth_config": {"username": "typed"}},
+        platform_admin,
     )
 
     assert _queued_settings(queue_connection_test)["auth_config"] == {
@@ -466,7 +516,7 @@ def test_connection_test_uses_a_stored_secret_left_out_for_the_same_destination(
 
 
 def test_connection_test_never_sends_a_stored_secret_to_another_url(
-    admin_request, notify_db_session, public_dns, queue_connection_test
+    admin_request, notify_db_session, public_dns, queue_connection_test, platform_admin
 ):
     organisation = create_organisation()
     create_organisation_letter_provider(
@@ -478,14 +528,15 @@ def test_connection_test_never_sends_a_stored_secret_to_another_url(
         address_placement="50mm",
     )
 
-    response = admin_request.post(
-        CONNECTION_TEST,
-        organisation_id=organisation.id,
-        _data={
+    response = _test_connection(
+        admin_request,
+        organisation.id,
+        {
             "endpoint_url": "https://attacker.example.com/letters",
             "auth_method": "basic",
             "auth_config": {"username": "stored"},
         },
+        platform_admin,
         _expected_status=400,
     )
 
@@ -494,15 +545,16 @@ def test_connection_test_never_sends_a_stored_secret_to_another_url(
 
 
 def test_connection_test_refuses_an_internal_address(
-    admin_request, notify_db_session, public_dns, queue_connection_test
+    admin_request, notify_db_session, public_dns, queue_connection_test, platform_admin
 ):
     public_dns.return_value = [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("10.0.0.1", 443))]
     organisation = create_organisation()
 
-    response = admin_request.post(
-        CONNECTION_TEST,
-        organisation_id=organisation.id,
-        _data={"endpoint_url": ENDPOINT_URL, "auth_method": "api_key", "auth_config": TYPED_API_KEY},
+    response = _test_connection(
+        admin_request,
+        organisation.id,
+        {"endpoint_url": ENDPOINT_URL, "auth_method": "api_key", "auth_config": TYPED_API_KEY},
+        platform_admin,
         _expected_status=400,
     )
 
@@ -517,6 +569,8 @@ def test_connection_test_refuses_an_internal_address(
         {"endpoint_url": ENDPOINT_URL},
         {"endpoint_url": ENDPOINT_URL, "auth_method": "unknown"},
         {"endpoint_url": ENDPOINT_URL, "auth_method": "api_key", "updated_by_id": "nope"},
+        {"endpoint_url": ENDPOINT_URL, "auth_method": "api_key", "started_by_id": "nope"},
+        {"endpoint_url": ENDPOINT_URL, "auth_method": "api_key"},
     ],
 )
 def test_connection_test_validates_its_input(admin_request, notify_db_session, queue_connection_test, data):
@@ -525,49 +579,68 @@ def test_connection_test_validates_its_input(admin_request, notify_db_session, q
     assert not queue_connection_test.called
 
 
-def test_connection_test_for_an_unknown_organisation(admin_request, notify_db_session, queue_connection_test):
-    admin_request.post(
-        CONNECTION_TEST,
-        organisation_id=uuid.uuid4(),
-        _data={"endpoint_url": ENDPOINT_URL, "auth_method": "api_key", "auth_config": TYPED_API_KEY},
+def test_connection_test_for_an_unknown_organisation(
+    admin_request, notify_db_session, queue_connection_test, platform_admin
+):
+    _test_connection(
+        admin_request,
+        uuid.uuid4(),
+        {"endpoint_url": ENDPOINT_URL, "auth_method": "api_key", "auth_config": TYPED_API_KEY},
+        platform_admin,
         _expected_status=404,
     )
 
     assert not queue_connection_test.called
 
 
-def test_connection_test_is_rate_limited_per_organisation(
-    admin_request, notify_db_session, public_dns, queue_connection_test, mocker
+@pytest.mark.parametrize(
+    "refusal, expected_status",
+    [
+        (ConnectionTestBusy("A connection test is already running"), 409),
+        (ConnectionTestLimitReached("Too many connection tests"), 429),
+        (ConnectionTestUnavailable("Connection tests need Redis"), 503),
+    ],
+)
+def test_a_connection_test_that_cannot_start(
+    admin_request,
+    notify_db_session,
+    public_dns,
+    queue_connection_test,
+    start_connection_test,
+    platform_admin,
+    refusal,
+    expected_status,
 ):
-    exceeded = mocker.patch(
-        "app.organisation.letter_provider_rest_nl.redis_store.exceeded_rate_limit", return_value=True
+    start_connection_test.side_effect = refusal
+
+    response = _test_connection(
+        admin_request,
+        create_organisation().id,
+        {"endpoint_url": ENDPOINT_URL, "auth_method": "api_key", "auth_config": TYPED_API_KEY},
+        platform_admin,
+        _expected_status=expected_status,
     )
+
+    assert response["message"] == str(refusal)
+    assert not queue_connection_test.called
+
+
+def test_a_connection_test_that_cannot_be_queued_lets_the_next_one_start(
+    admin_request, notify_db_session, public_dns, queue_connection_test, platform_admin, mocker
+):
+    queue_connection_test.side_effect = RuntimeError("no queue")
+    release = mocker.patch("app.organisation.letter_provider_rest_nl.release_connection_test")
     organisation = create_organisation()
 
-    admin_request.post(
-        CONNECTION_TEST,
-        organisation_id=organisation.id,
-        _data={"endpoint_url": ENDPOINT_URL, "auth_method": "api_key", "auth_config": TYPED_API_KEY},
-        _expected_status=429,
-    )
+    with pytest.raises(RuntimeError):
+        _test_connection(
+            admin_request,
+            organisation.id,
+            {"endpoint_url": ENDPOINT_URL, "auth_method": "api_key", "auth_config": TYPED_API_KEY},
+            platform_admin,
+        )
 
-    exceeded.assert_called_once_with(f"letter-endpoint-connection-test-limit-{organisation.id}", 20, 3600)
-    assert not queue_connection_test.called
-
-
-def test_connection_test_is_refused_without_redis_to_keep_the_result(
-    admin_request, notify_db_session, public_dns, queue_connection_test, mocker
-):
-    mocker.patch("app.organisation.letter_provider_rest_nl.redis_store.active", False)
-
-    admin_request.post(
-        CONNECTION_TEST,
-        organisation_id=create_organisation().id,
-        _data={"endpoint_url": ENDPOINT_URL, "auth_method": "api_key", "auth_config": TYPED_API_KEY},
-        _expected_status=503,
-    )
-
-    assert not queue_connection_test.called
+    release.assert_called_once_with(organisation.id, CONNECTION_TEST_ID)
 
 
 def test_get_connection_test_result(admin_request, notify_db_session, mocker):

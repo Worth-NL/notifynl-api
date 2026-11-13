@@ -1,23 +1,30 @@
 import base64
 import json
 import socket
+import time
+from collections import defaultdict
 
 import pytest
 import requests
 from celery.exceptions import SoftTimeLimitExceeded
 from pypdf import PdfReader
 from redis.exceptions import ConnectionError as RedisConnectionError
-from urllib3.exceptions import ProtocolError
+from redis.exceptions import LockNotOwnedError
+from urllib3.exceptions import MaxRetryError, ProtocolError
 
 from app.letters_nl.letter_endpoint_connection import (
     MAX_BODY_READ,
     MAX_BODY_SHOWN,
     REDACTED,
     TEST_LETTER_PDF,
-    create_connection_test,
+    ConnectionTestBusy,
+    ConnectionTestLimitReached,
+    ConnectionTestUnavailable,
     encrypt_connection_test_settings,
     get_connection_test_result,
+    release_connection_test,
     run_connection_test,
+    start_connection_test,
 )
 from app.models import Notification, NotificationHistory
 from app.models_nl import LetterProviderPin, LetterProviderReference
@@ -45,7 +52,7 @@ def redis_results(notify_api, mocker):
     results = {}
     mocker.patch(
         "app.letters_nl.letter_endpoint_connection.redis_store.set",
-        side_effect=lambda key, value, ex=None: results.__setitem__(key, value),
+        side_effect=lambda key, value, ex=None, **kwargs: results.__setitem__(key, value),
     )
     mocker.patch(
         "app.letters_nl.letter_endpoint_connection.redis_store.get",
@@ -55,10 +62,80 @@ def redis_results(notify_api, mocker):
 
 
 @pytest.fixture(autouse=True)
-def queued_test(redis_results, mocker):
+def queued_test(redis_results):
     # as the API starts one: a test only runs while admin still waits for its result
-    mocker.patch("app.letters_nl.letter_endpoint_connection.uuid4", return_value=CONNECTION_TEST_ID)
-    create_connection_test(ORGANISATION_ID)
+    redis_results[_result_key(CONNECTION_TEST_ID)] = json.dumps({"state": "queued"})
+
+
+def _result_key(test_id, organisation_id=ORGANISATION_ID):
+    return f"letter-endpoint-connection-test-{organisation_id}-{test_id}"
+
+
+class FakeRunLocks:
+    """redis-py Locks as the tests take them: with the test id as token, and only released with it."""
+
+    def __init__(self):
+        self.held = {}
+
+    def get_lock(self, key, **kwargs):
+        held = self.held
+
+        class Lock:
+            def acquire(self, token):
+                if key in held:
+                    return False
+                held[key] = token
+                return True
+
+            def do_release(self, token):
+                if held.get(key) != token:
+                    raise LockNotOwnedError("not owned")
+                del held[key]
+
+        return Lock()
+
+
+class FakeSortedSets:
+    """The sorted set commands of the rate limit, run straight away."""
+
+    def __init__(self):
+        self.sets = defaultdict(dict)
+
+    def pipeline(self):
+        sets, results = self.sets, []
+
+        class Pipeline:
+            def zremrangebyscore(self, key, low, high):
+                expired = [member for member, score in sets[key].items() if score <= high]
+                for member in expired:
+                    del sets[key][member]
+                results.append(len(expired))
+
+            def zcard(self, key):
+                results.append(len(sets[key]))
+
+            def zadd(self, key, members):
+                sets[key].update(members)
+                results.append(len(members))
+
+            def expire(self, key, seconds):
+                results.append(True)
+
+            def execute(self):
+                return results
+
+        return Pipeline()
+
+
+@pytest.fixture
+def live_redis(redis_results, mocker):
+    """Redis as starting a test needs it: active, with locks and the rate limit's sorted sets."""
+    locks = FakeRunLocks()
+    locks.sorted_sets = FakeSortedSets()
+    mocker.patch("app.letters_nl.letter_endpoint_connection.redis_store.active", True)
+    mocker.patch("app.letters_nl.letter_endpoint_connection.redis_store.get_lock", side_effect=locks.get_lock)
+    mocker.patch("app.letters_nl.letter_endpoint_connection.redis_store.redis_store", locks.sorted_sets)
+    return locks
 
 
 def _run(auth_method="api_key", auth_config=None, endpoint_url=ENDPOINT_URL):
@@ -152,7 +229,7 @@ def test_the_outcome_follows_from_the_endpoints_reply(rmock, status_code, expect
         "reason": "The Reason",
         "content_type": None,
         "location": None,
-        "error": None,
+        "error_kind": None,
         "timed_out": False,
         "body": "the reply",
         "body_kind": "text",
@@ -250,6 +327,14 @@ def test_the_endpoint_refusing_the_oauth_token_is_unauthorized(rmock):
     assert result["host"] == "print.example.com"
 
 
+NETWORK_ERROR_KINDS = {
+    "connection-refused": "connect",
+    "dns": "dns",
+    "connect-timeout": "connect_timeout",
+    "read-timeout": "read_timeout",
+    "connection-closed": "closed",
+    "chunked-encoding": "closed",
+}
 NETWORK_ERROR_TEXTS = {
     "connection-refused": "Connection refused",
     "dns": "Failed to resolve 'print.example.com'",
@@ -261,13 +346,13 @@ NETWORK_ERROR_TEXTS = {
 
 
 @pytest.mark.parametrize(
-    "error, expected_outcome, expected_text",
-    [(error, "no_connection", NETWORK_ERROR_TEXTS[name]) for name, error in FAILED_TO_CONNECT.items()]
+    "name, error, expected_outcome",
+    [(name, error, "no_connection") for name, error in FAILED_TO_CONNECT.items()]
     # the endpoint may have got the letter, so it isn't shown as a connection that failed
-    + [(error, "no_reply", NETWORK_ERROR_TEXTS[name]) for name, error in FAILED_AFTER_SENDING.items()],
-    ids=NETWORK_ERROR_TEXTS,
+    + [(name, error, "no_reply") for name, error in FAILED_AFTER_SENDING.items()],
+    ids=[*FAILED_TO_CONNECT, *FAILED_AFTER_SENDING],
 )
-def test_no_http_reply_shows_the_network_error(rmock, error, expected_outcome, expected_text):
+def test_no_http_reply_shows_the_kind_of_network_error(rmock, name, error, expected_outcome):
     rmock.post(ENDPOINT_URL, exc=error)
 
     result = _run()
@@ -275,8 +360,9 @@ def test_no_http_reply_shows_the_network_error(rmock, error, expected_outcome, e
     assert result["outcome"] == expected_outcome
     assert result["host"] == "print.example.com"
     assert result["status_code"] is None
-    assert expected_text in result["error"]
-    assert "MaxRetryError" not in result["error"]
+    assert result["error_kind"] == NETWORK_ERROR_KINDS[name]
+    # only its kind: the text can name internal hosts and certificates
+    assert NETWORK_ERROR_TEXTS[name] not in json.dumps(result)
     assert result["timed_out"] is False
 
 
@@ -329,12 +415,23 @@ def test_the_client_secret_is_removed_from_the_token_urls_reply(rmock):
     assert _run("oauth", OAUTH)["body"] == f"unknown secret {REDACTED}"
 
 
-def test_secrets_are_removed_from_a_redirect_and_a_network_error(rmock):
+def test_secrets_are_removed_from_a_redirect(rmock):
     rmock.post(ENDPOINT_URL, status_code=302, headers={"Location": "https://login.example.com/?key=secret-key"})
     assert _run()["location"] == f"https://login.example.com/?key={REDACTED}"
 
-    rmock.post(ENDPOINT_URL, exc=requests.ConnectionError("failed with secret-key"))
-    assert _run()["error"] == f"failed with {REDACTED}"
+
+def test_a_tls_error_only_says_it_was_tls(rmock):
+    # e.g. after DNS changed between the URL check and the request, to point at an internal host
+    error = requests.exceptions.SSLError(
+        MaxRetryError(None, "/", Exception("certificate verify failed: certificate is not valid for 'db.internal'"))
+    )
+    rmock.post(ENDPOINT_URL, exc=error)
+
+    result = _run()
+
+    assert result["outcome"] == "no_connection"
+    assert result["error_kind"] == "tls"
+    assert "internal" not in json.dumps(result)
 
 
 def test_a_long_reply_is_cut(rmock):
@@ -414,7 +511,7 @@ def test_the_time_limit_while_reading_the_reply_keeps_its_status_and_what_arrive
         "reason": "Accepted",
         "content_type": None,
         "location": None,
-        "error": None,
+        "error_kind": None,
         "timed_out": True,
         "body": DripsUntilTheTimeLimit.FIRST_CHUNK.decode(),
         "body_kind": "text",
@@ -525,11 +622,131 @@ def test_the_result_says_which_host_is_being_waited_on(rmock):
 
     _run()
 
-    assert seen_while_sending == {"state": "running", "host": "print.example.com"}
+    assert seen_while_sending == {
+        "state": "running",
+        "host": "print.example.com",
+        "started_at": seen_while_sending["started_at"],
+    }
 
 
-def test_a_new_test_starts_queued_and_can_only_be_read_by_its_organisation():
-    test_id = create_connection_test(ORGANISATION_ID)
+def test_a_new_test_starts_queued_and_can_only_be_read_by_its_organisation(live_redis):
+    test_id = start_connection_test(ORGANISATION_ID)
 
     assert get_connection_test_result(ORGANISATION_ID, test_id) == {"state": "queued"}
     assert get_connection_test_result("another-organisation", test_id) is None
+
+
+def test_an_organisation_runs_one_test_at_a_time(live_redis):
+    first = start_connection_test(ORGANISATION_ID)
+
+    with pytest.raises(ConnectionTestBusy):
+        start_connection_test(ORGANISATION_ID)
+
+    release_connection_test(ORGANISATION_ID, first)
+    start_connection_test(ORGANISATION_ID)
+
+
+def test_only_a_few_tests_run_at_once_across_organisations(live_redis):
+    first = start_connection_test("organisation-1")
+    start_connection_test("organisation-2")
+
+    with pytest.raises(ConnectionTestBusy):
+        start_connection_test("organisation-3")
+
+    # the refused test didn't keep its organisation's run
+    release_connection_test("organisation-1", first)
+    start_connection_test("organisation-3")
+
+
+def test_a_test_only_releases_what_it_holds(live_redis):
+    start_connection_test(ORGANISATION_ID)
+
+    release_connection_test(ORGANISATION_ID, "another-test")
+
+    with pytest.raises(ConnectionTestBusy):
+        start_connection_test(ORGANISATION_ID)
+
+
+@pytest.mark.parametrize("expired", [False, True])
+def test_a_test_that_ran_or_was_skipped_lets_the_next_one_start(live_redis, redis_results, rmock, expired):
+    rmock.post(ENDPOINT_URL, json={})
+    test_id = start_connection_test(ORGANISATION_ID)
+    if expired:
+        del redis_results[_result_key(test_id)]
+
+    settings = encrypt_connection_test_settings(ENDPOINT_URL, "api_key", API_KEY)
+    run_connection_test(ORGANISATION_ID, test_id, settings, CALLBACK_URL)
+
+    assert rmock.called != expired
+    assert live_redis.held == {}
+    start_connection_test(ORGANISATION_ID)
+
+
+def test_the_rate_limit_counts_only_the_tests_that_start(live_redis):
+    for _ in range(20):
+        release_connection_test(ORGANISATION_ID, start_connection_test(ORGANISATION_ID))
+
+    # clicking on doesn't extend the wait, and doesn't leave the organisation's run held
+    for _ in range(3):
+        with pytest.raises(ConnectionTestLimitReached):
+            start_connection_test(ORGANISATION_ID)
+    assert live_redis.held == {}
+    assert len(live_redis.sorted_sets.sets[f"letter-endpoint-connection-test-limit-{ORGANISATION_ID}"]) == 20
+
+
+def test_the_rate_limit_is_per_organisation(live_redis):
+    for _ in range(20):
+        release_connection_test(ORGANISATION_ID, start_connection_test(ORGANISATION_ID))
+
+    start_connection_test("another-organisation")
+
+
+def test_a_redis_error_when_starting_a_test_refuses_it_and_holds_nothing(live_redis, mocker):
+    mocker.patch(
+        "app.letters_nl.letter_endpoint_connection.redis_store.set", side_effect=RedisConnectionError("Redis is gone")
+    )
+
+    with pytest.raises(ConnectionTestUnavailable):
+        start_connection_test(ORGANISATION_ID)
+    assert live_redis.held == {}
+
+
+def test_a_test_cannot_start_without_redis(redis_results, mocker):
+    mocker.patch("app.letters_nl.letter_endpoint_connection.redis_store.active", False)
+
+    with pytest.raises(ConnectionTestUnavailable):
+        start_connection_test(ORGANISATION_ID)
+
+
+@pytest.mark.parametrize("seconds_ago, expected_state", [(60, "running"), (81, "finished")])
+def test_a_test_killed_by_the_hard_time_limit_is_shown_as_stopped(
+    live_redis, redis_results, seconds_ago, expected_state
+):
+    test_id = start_connection_test(ORGANISATION_ID)
+    redis_results[_result_key(test_id)] = json.dumps(
+        {"state": "running", "host": "print.example.com", "started_at": time.time() - seconds_ago}
+    )
+
+    result = get_connection_test_result(ORGANISATION_ID, test_id)
+
+    assert result["state"] == expected_state
+    if expected_state == "finished":
+        assert result == {
+            "state": "finished",
+            "outcome": "failed",
+            "host": "print.example.com",
+            "error": "The test took longer than a connection test may take and was stopped",
+        }
+        assert json.loads(redis_results[_result_key(test_id)]) == result
+        # nothing else would let the next test start
+        assert live_redis.held == {}
+
+
+def test_a_running_test_without_a_start_time_stays_running(redis_results):
+    # stored by a worker from before started_at
+    redis_results[_result_key(CONNECTION_TEST_ID)] = json.dumps({"state": "running", "host": "print.example.com"})
+
+    assert get_connection_test_result(ORGANISATION_ID, CONNECTION_TEST_ID) == {
+        "state": "running",
+        "host": "print.example.com",
+    }

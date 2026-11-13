@@ -18,6 +18,7 @@ from app.constants import (
 from app.dao.letter_provider_reference_dao import dao_get_notification_id_by_provider_reference
 from app.errors import InvalidRequest, register_errors
 from app.letters_nl.constants import (
+    CONNECTION_TEST_CALLBACK_PREFIX,
     LETTER_PROVIDER_CALLBACK_PATH,
     LETTER_PROVIDER_PINGEN,
     LETTER_PROVIDER_REST_ENDPOINT,
@@ -67,6 +68,17 @@ def process_letter_provider_callback():
 
     data = request.get_json(force=True)
     validate(data, letter_provider_status_schema)
+
+    if notification_id.startswith(CONNECTION_TEST_CALLBACK_PREFIX):
+        # a report on the letter of a connection test ("Verbinding testen"), which has no notification to update
+        connection_test_id = notification_id.removeprefix(CONNECTION_TEST_CALLBACK_PREFIX)
+        current_app.logger.info(
+            "Letter endpoint connection test %s is %s according to its print provider",
+            connection_test_id,
+            data["status"],
+            extra={"connection_test_id": connection_test_id, "notification_status_new": data["status"]},
+        )
+        return {}, 204
 
     _queue_status_update(notification_id, LETTER_PROVIDER_REST_ENDPOINT, data["status"], data.get("reason"))
     return {}, 204

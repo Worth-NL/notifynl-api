@@ -1,9 +1,8 @@
 import re
 
 from cryptography.fernet import InvalidToken
-from flask import Blueprint, jsonify, request
+from flask import Blueprint, current_app, jsonify, request
 
-from app import redis_store
 from app.celery.letter_provider_tasks import check_letter_endpoint_connection
 from app.config import QueueNames
 from app.dao.organisation_dao import dao_get_organisation_by_id
@@ -12,6 +11,7 @@ from app.dao.organisation_letter_provider_dao import (
     dao_get_organisation_letter_provider,
     dao_set_organisation_letter_provider,
 )
+from app.dao.users_dao import get_user_by_id
 from app.errors import InvalidRequest, register_errors
 from app.letters_nl.constants import (
     ADDRESS_PLACEMENTS,
@@ -28,11 +28,11 @@ from app.letters_nl.constants import (
     SECRET_AUTH_CONFIG_FIELDS,
 )
 from app.letters_nl.letter_endpoint_connection import (
-    CONNECTION_TEST_RATE_INTERVAL_SECONDS,
-    CONNECTION_TEST_RATE_LIMIT,
-    create_connection_test,
+    ConnectionTestRefused,
     encrypt_connection_test_settings,
     get_connection_test_result,
+    release_connection_test,
+    start_connection_test,
 )
 from app.letters_nl.url_validation import InvalidLetterEndpointUrl, validate_letter_endpoint_url
 from app.schema_validation import validate
@@ -83,8 +83,9 @@ post_letter_provider_connection_test_schema = {
         "endpoint_url": post_set_organisation_letter_provider_schema["properties"]["endpoint_url"],
         "auth_method": post_set_organisation_letter_provider_schema["properties"]["auth_method"],
         "auth_config": post_set_organisation_letter_provider_schema["properties"]["auth_config"],
+        "started_by_id": uuid,
     },
-    "required": ["endpoint_url", "auth_method"],
+    "required": ["endpoint_url", "auth_method", "started_by_id"],
     "additionalProperties": False,
 }
 
@@ -146,6 +147,9 @@ def start_letter_provider_connection_test(organisation_id):
     data = request.get_json()
     validate(data, post_letter_provider_connection_test_schema)
     dao_get_organisation_by_id(organisation_id)
+    if not get_user_by_id(data["started_by_id"]).platform_admin:
+        # a test presents NotifyNL's client certificate to the host that was typed in, and shows what it replies
+        raise InvalidRequest("Only platform admins can test a print endpoint connection", status_code=403)
 
     endpoint_url = data["endpoint_url"]
     auth_method = data["auth_method"]
@@ -154,22 +158,30 @@ def start_letter_provider_connection_test(organisation_id):
     )
     _validate_rest_endpoint(endpoint_url, auth_method, auth_config, secrets_dropped)
 
-    if not redis_store.active:
-        # without Redis nothing would limit the tests, and the worker's result couldn't reach admin
-        raise InvalidRequest("Connection tests need Redis", status_code=503)
+    try:
+        test_id = start_connection_test(organisation_id)
+    except ConnectionTestRefused as e:
+        raise InvalidRequest(str(e), status_code=e.status_code) from e
+    try:
+        check_letter_endpoint_connection.apply_async(
+            [str(organisation_id), test_id, encrypt_connection_test_settings(endpoint_url, auth_method, auth_config)],
+            queue=QueueNames.SEND_LETTER,
+            MessageGroupId=str(organisation_id),
+        )
+    except Exception:
+        release_connection_test(organisation_id, test_id)
+        raise
 
-    if redis_store.exceeded_rate_limit(
-        f"letter-endpoint-connection-test-limit-{organisation_id}",
-        CONNECTION_TEST_RATE_LIMIT,
-        CONNECTION_TEST_RATE_INTERVAL_SECONDS,
-    ):
-        raise InvalidRequest("Too many connection tests", status_code=429)
-
-    test_id = create_connection_test(organisation_id)
-    check_letter_endpoint_connection.apply_async(
-        [str(organisation_id), test_id, encrypt_connection_test_settings(endpoint_url, auth_method, auth_config)],
-        queue=QueueNames.SEND_LETTER,
-        MessageGroupId=str(organisation_id),
+    current_app.logger.info(
+        "Letter endpoint connection test %s of organisation %s started by user %s",
+        test_id,
+        organisation_id,
+        data["started_by_id"],
+        extra={
+            "connection_test_id": test_id,
+            "organisation_id": str(organisation_id),
+            "user_id": data["started_by_id"],
+        },
     )
     return jsonify(data={"id": test_id}), 201
 

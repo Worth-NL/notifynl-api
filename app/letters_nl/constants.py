@@ -31,6 +31,8 @@ ADDRESS_PLACEMENTS = ["50mm", "60mm"]
 
 # Where a REST endpoint reports back on a letter it accepted (app/notifications/letter_provider_callback.py)
 LETTER_PROVIDER_CALLBACK_PATH = "/notifications/letter/provider-status"
+# What a connection test's callback token holds before the test id, so its reports are recognised as such
+CONNECTION_TEST_CALLBACK_PREFIX = "connection-test:"
 
 # Where Pingen posts its webhooks (app/notifications/letter_provider_callback.py), and the webhook event categories we
 # register there (flask command register-pingen-webhook)

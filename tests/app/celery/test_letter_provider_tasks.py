@@ -1009,14 +1009,15 @@ def test_process_letter_provider_status_never_moves_a_letter_in_notification_his
     assert not mock_callback.called
 
 
-def test_check_letter_endpoint_connection_gives_the_test_a_signed_callback_url(notify_api, mocker):
+def test_check_letter_endpoint_connection_gives_the_test_a_signed_callback_url_marked_as_a_test(notify_api, mocker):
     run = mocker.patch("app.celery.letter_provider_tasks.run_connection_test")
 
     check_letter_endpoint_connection("organisation-id", "test-id", "encrypted")
 
     organisation_id, test_id, encrypted_settings, callback_url = run.call_args.args
     assert (organisation_id, test_id, encrypted_settings) == ("organisation-id", "test-id", "encrypted")
-    assert signing.decode(callback_url.split("?token=")[1]) == "test-id"
+    # marked as a test's, so a report on it isn't taken for an unknown letter
+    assert signing.decode(callback_url.split("?token=")[1]) == "connection-test:test-id"
 
 
 def test_a_provider_reporting_on_a_connection_test_changes_nothing(notify_db_session):

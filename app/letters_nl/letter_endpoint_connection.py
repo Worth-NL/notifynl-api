@@ -2,6 +2,8 @@
 The "Verbinding testen" button on the print endpoint settings: sends a fixed PDF to the endpoint an organisation is
 setting up, with the values typed in the form, and keeps the endpoint's reply for admin to show. Nothing is saved and
 no notification exists for it: the letter only lives in memory and the result expires from Redis.
+
+Only platform admins can start a test: it presents NotifyNL's client certificate to the host that was typed in.
 """
 
 import base64
@@ -11,14 +13,15 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from io import BytesIO
 from pathlib import Path
-from time import monotonic
+from time import monotonic, time
 from urllib.parse import quote, quote_plus, urlsplit
 from uuid import uuid4
 
 import requests
 from celery.exceptions import SoftTimeLimitExceeded
 from flask import current_app
-from urllib3.exceptions import MaxRetryError
+from redis.exceptions import LockError, RedisError
+from urllib3.exceptions import MaxRetryError, NameResolutionError
 
 from app import create_random_identifier, encryption, redis_store
 from app.clients.letter import (
@@ -35,6 +38,16 @@ CONNECTION_TEST_TIMEOUT = (5, 15)
 CONNECTION_TEST_RESULT_TTL_SECONDS = 15 * 60
 CONNECTION_TEST_RATE_LIMIT = 20
 CONNECTION_TEST_RATE_INTERVAL_SECONDS = 60 * 60
+# the letter worker's time limits for a test: an endpoint can drip its reply for as long as each read stays within the
+# read timeout, and these workers send real letters
+CONNECTION_TEST_SOFT_TIME_LIMIT = 60
+CONNECTION_TEST_TIME_LIMIT = 70
+# a test still running this long after it started was killed by the hard time limit, so nothing will finish it
+CONNECTION_TEST_OVERDUE_SECONDS = CONNECTION_TEST_TIME_LIMIT + 10
+# tests take the letter worker's slots from real letters: one at a time per organisation, and only a few overall
+CONNECTION_TEST_GLOBAL_LIMIT = 2
+# held from the start until the test is done, and a test can wait in the queue for as long as its result is kept
+CONNECTION_TEST_LOCK_TTL_SECONDS = CONNECTION_TEST_RESULT_TTL_SECONDS + CONNECTION_TEST_OVERDUE_SECONDS
 # an endpoint decides how much it sends back
 MAX_BODY_READ = 64 * 1024
 MAX_BODY_SHOWN = 10 * 1024
@@ -61,6 +74,35 @@ BODY_EMPTY = "empty"
 BODY_BINARY = "binary"
 BODY_UNUSABLE_TOKEN = "unusable_token"
 
+# what kind of network error a test ran into: its text can name internal hosts and certificates
+ERROR_DNS = "dns"
+ERROR_CONNECT = "connect"
+ERROR_CONNECT_TIMEOUT = "connect_timeout"
+ERROR_TLS = "tls"
+ERROR_READ_TIMEOUT = "read_timeout"
+ERROR_CLOSED = "closed"
+ERROR_OTHER = "other"
+
+STOPPED = "The test took longer than a connection test may take and was stopped"
+
+
+class ConnectionTestRefused(Exception):
+    """A connection test that can't start now. `status_code` is what the API answers."""
+
+    status_code = 400
+
+
+class ConnectionTestBusy(ConnectionTestRefused):
+    status_code = 409
+
+
+class ConnectionTestLimitReached(ConnectionTestRefused):
+    status_code = 429
+
+
+class ConnectionTestUnavailable(ConnectionTestRefused):
+    status_code = 503
+
 
 @dataclass(frozen=True)
 class ConnectionTestSettings:
@@ -82,7 +124,8 @@ class Exchange:
     encoding: str | None = None
     body: bytes = b""
     body_truncated: bool = False
-    error: str | None = None
+    # one of the ERROR_ kinds when no HTTP reply came back
+    error_kind: str | None = None
     # whether the endpoint may have received the request although no reply came back, e.g. after a read timeout
     may_have_arrived: bool = False
     # the worker's time limit stopped this exchange
@@ -128,7 +171,7 @@ class ConnectionTestLetterClient(RestEndpointLetterClient):
             response = super()._request(method, url, sends_the_letter=sends_the_letter, stream=True, **kwargs)
             return _read_reply(response, exchange)
         except LetterClientRetryableException as e:
-            exchange.error = _network_error(e.__cause__)
+            exchange.error_kind = _error_kind(e.__cause__)
             exchange.may_have_arrived = may_have_reached_the_provider(e.__cause__)
             raise
         finally:
@@ -168,12 +211,27 @@ def _read_reply(response: requests.Response, exchange: Exchange) -> requests.Res
     return bounded
 
 
-def _network_error(error: BaseException | None) -> str:
-    """The error underneath: requests' own message mostly repeats the connection pool and the URL around it."""
-    cause = error.args[0] if error and error.args and isinstance(error.args[0], BaseException) else error
-    if isinstance(cause, MaxRetryError) and cause.reason:
-        cause = cause.reason
-    return str(cause)
+def _error_kind(error: BaseException | None) -> str:
+    """
+    Only the kind of network error, not its text: that can name internal hosts and certificates, as the host is
+    resolved again after the URL check (DNS can change in between).
+    """
+    # SSLError and ConnectTimeout are ConnectionErrors too
+    if isinstance(error, requests.exceptions.SSLError):
+        return ERROR_TLS
+    if isinstance(error, requests.ConnectTimeout):
+        return ERROR_CONNECT_TIMEOUT
+    if isinstance(error, requests.ReadTimeout):
+        return ERROR_READ_TIMEOUT
+    if isinstance(error, requests.ConnectionError):
+        cause = error.args[0] if error.args else None
+        if isinstance(cause, MaxRetryError):
+            return ERROR_DNS if isinstance(cause.reason, NameResolutionError) else ERROR_CONNECT
+        # urllib3 only raises errors after the request went out as they are, such as the connection being closed
+        return ERROR_CLOSED
+    if isinstance(error, requests.exceptions.ChunkedEncodingError):
+        return ERROR_CLOSED
+    return ERROR_OTHER
 
 
 def _host(url: str) -> str:
@@ -181,10 +239,94 @@ def _host(url: str) -> str:
     return f"{parts.hostname}:{parts.port}" if parts.port else str(parts.hostname)
 
 
-def create_connection_test(organisation_id) -> str:
+def start_connection_test(organisation_id) -> str:
+    """
+    Stores a new test as queued and returns its id, holding a run for it until release_connection_test. Raises a
+    ConnectionTestRefused when it can't start: rather than without the Redis it needs, or next to the tests already
+    taking the letter worker's slots.
+    """
+    if not redis_store.active:
+        # without Redis nothing would limit the tests, and the worker's result couldn't reach admin
+        raise ConnectionTestUnavailable("Connection tests need Redis")
+
     test_id = str(uuid4())
-    _store_result(organisation_id, test_id, {"state": STATE_QUEUED})
+    try:
+        if not _hold_a_run(organisation_id, test_id):
+            raise ConnectionTestBusy("A connection test is already running")
+        try:
+            if _exceeded_rate_limit(organisation_id, test_id):
+                raise ConnectionTestLimitReached("Too many connection tests")
+            redis_store.set(
+                _result_key(organisation_id, test_id),
+                json.dumps({"state": STATE_QUEUED}),
+                ex=CONNECTION_TEST_RESULT_TTL_SECONDS,
+                raise_exception=True,
+            )
+        except BaseException:
+            release_connection_test(organisation_id, test_id)
+            raise
+    except RedisError as e:
+        raise ConnectionTestUnavailable("Connection tests need Redis") from e
     return test_id
+
+
+def release_connection_test(organisation_id, test_id: str):
+    """Lets the next test start. Only frees what this test holds; what it can't free expires by itself."""
+    if not redis_store.active:
+        return
+    for key in (_organisation_run_key(organisation_id), *map(_global_run_key, range(CONNECTION_TEST_GLOBAL_LIMIT))):
+        try:
+            _run_lock(key).do_release(test_id)
+        except LockError:
+            pass  # not held by this test
+        except RedisError:
+            current_app.logger.warning(
+                "Could not release %s for letter endpoint connection test %s",
+                key,
+                test_id,
+                exc_info=True,
+                extra={"connection_test_id": test_id},
+            )
+
+
+def _hold_a_run(organisation_id, test_id: str) -> bool:
+    if not _run_lock(_organisation_run_key(organisation_id)).acquire(token=test_id):
+        return False
+    if any(_run_lock(_global_run_key(slot)).acquire(token=test_id) for slot in range(CONNECTION_TEST_GLOBAL_LIMIT)):
+        return True
+    _run_lock(_organisation_run_key(organisation_id)).do_release(test_id)
+    return False
+
+
+def _run_lock(key: str):
+    return redis_store.get_lock(key, timeout=CONNECTION_TEST_LOCK_TTL_SECONDS, blocking=False, thread_local=False)
+
+
+def _organisation_run_key(organisation_id) -> str:
+    return f"letter-endpoint-connection-test-running-{organisation_id}"
+
+
+def _global_run_key(slot: int) -> str:
+    return f"letter-endpoint-connection-test-slot-{slot}"
+
+
+def _exceeded_rate_limit(organisation_id, test_id: str) -> bool:
+    """
+    Like RedisClient.exceeded_rate_limit, except that a refused test doesn't count (clicking on would extend the
+    wait), and a Redis error raises instead of allowing the test. Only called while holding the organisation's run.
+    """
+    key = f"letter-endpoint-connection-test-limit-{organisation_id}"
+    now = time()
+    pipe = redis_store.redis_store.pipeline()
+    pipe.zremrangebyscore(key, "-inf", now - CONNECTION_TEST_RATE_INTERVAL_SECONDS)
+    pipe.zcard(key)
+    if pipe.execute()[1] >= CONNECTION_TEST_RATE_LIMIT:
+        return True
+    pipe = redis_store.redis_store.pipeline()
+    pipe.zadd(key, {test_id: now})
+    pipe.expire(key, CONNECTION_TEST_RATE_INTERVAL_SECONDS)
+    pipe.execute()
+    return False
 
 
 def encrypt_connection_test_settings(endpoint_url: str, auth_method: str, auth_config: dict) -> str:
@@ -196,10 +338,29 @@ def encrypt_connection_test_settings(endpoint_url: str, auth_method: str, auth_c
 
 def get_connection_test_result(organisation_id, test_id) -> dict | None:
     result = redis_store.get(_result_key(organisation_id, test_id), skippable=False)
-    return json.loads(result) if result else None
+    if not result:
+        return None
+    result = json.loads(result)
+    # tests stored before started_at existed have none, and expire anyway
+    started_at = result.get("started_at")
+    if result["state"] == STATE_RUNNING and started_at and time() - started_at > CONNECTION_TEST_OVERDUE_SECONDS:
+        # the worker's hard time limit killed the test, so nothing else will finish it
+        result = {"state": STATE_FINISHED, "outcome": OUTCOME_FAILED, "host": result["host"], "error": STOPPED}
+        _store_result(organisation_id, test_id, result)
+        release_connection_test(organisation_id, test_id)
+    return result
 
 
 def run_connection_test(organisation_id, test_id: str, encrypted_settings: str, callback_url: str):
+    try:
+        _run_connection_test(organisation_id, test_id, encrypted_settings, callback_url)
+    finally:
+        # also when it was skipped or failed, so the next test can start straight away
+        release_connection_test(organisation_id, test_id)
+
+
+def _run_connection_test(organisation_id, test_id: str, encrypted_settings: str, callback_url: str):
+    started_at = time()
     try:
         if not _is_awaited(organisation_id, test_id):
             # e.g. it waited behind real letters in the queue for longer than its result is kept: admin already
@@ -214,7 +375,10 @@ def run_connection_test(organisation_id, test_id: str, encrypted_settings: str, 
 
         settings = ConnectionTestSettings(**json.loads(encryption.decrypt(encrypted_settings)))
         client = ConnectionTestLetterClient(
-            current_app, lambda host: _store_result(organisation_id, test_id, {"state": STATE_RUNNING, "host": host})
+            current_app,
+            lambda host: _store_result(
+                organisation_id, test_id, {"state": STATE_RUNNING, "host": host, "started_at": started_at}
+            ),
         )
         letter = Letter(
             notification_id=test_id,
@@ -229,7 +393,7 @@ def run_connection_test(organisation_id, test_id: str, encrypted_settings: str, 
             client.send_test_letter(letter, settings)
         except SoftTimeLimitExceeded:
             # e.g. an endpoint that drips its reply: what arrived until now is still worth showing
-            failure = TimeoutError("The test took longer than a connection test may take and was stopped")
+            failure = TimeoutError(STOPPED)
             if client.exchange:
                 client.exchange.stop_waiting()
         except (LetterClientException, ValueError, KeyError, TypeError, AttributeError) as e:
@@ -278,7 +442,7 @@ def _finished_result(
         "reason": _redact(exchange.reason, secrets),
         "content_type": exchange.content_type,
         "location": _redact(exchange.location, secrets) if exchange.location else None,
-        "error": _redact(exchange.error, secrets) if exchange.error else None,
+        "error_kind": exchange.error_kind,
         "timed_out": exchange.timed_out,
         **_body_fields(exchange, secrets),
     }
