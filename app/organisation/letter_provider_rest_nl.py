@@ -163,7 +163,7 @@ def start_letter_provider_connection_test(organisation_id):
         test_id = start_connection_test(organisation_id)
     except ConnectionTestBusy as e:
         # with the running test's id, so admin can still show its result instead of another test being started
-        return jsonify(result="error", message=str(e), running_test_id=e.running_test_id), e.status_code
+        return jsonify(result="error", message="busy", running_test_id=e.running_test_id), e.status_code
     except ConnectionTestRefused as e:
         raise InvalidRequest(str(e), status_code=e.status_code) from e
     try:

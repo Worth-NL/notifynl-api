@@ -594,11 +594,11 @@ def test_connection_test_for_an_unknown_organisation(
 
 
 @pytest.mark.parametrize(
-    "refusal, expected_status",
+    "refusal, expected_status, expected_message",
     [
-        (ConnectionTestBusy("A connection test is already running"), 409),
-        (ConnectionTestLimitReached("Too many connection tests"), 429),
-        (ConnectionTestUnavailable("Connection tests need Redis"), 503),
+        (ConnectionTestBusy("A connection test is already running"), 409, "busy"),
+        (ConnectionTestLimitReached("Too many connection tests"), 429, "Too many connection tests"),
+        (ConnectionTestUnavailable("Connection tests need Redis"), 503, "Connection tests need Redis"),
     ],
 )
 def test_a_connection_test_that_cannot_start(
@@ -610,6 +610,7 @@ def test_a_connection_test_that_cannot_start(
     platform_admin,
     refusal,
     expected_status,
+    expected_message,
 ):
     start_connection_test.side_effect = refusal
 
@@ -621,7 +622,7 @@ def test_a_connection_test_that_cannot_start(
         _expected_status=expected_status,
     )
 
-    assert response["message"] == str(refusal)
+    assert response["message"] == expected_message
     assert not queue_connection_test.called
 
 
@@ -639,7 +640,7 @@ def test_a_busy_connection_test_names_the_test_that_is_running(
         _expected_status=409,
     )
 
-    assert response["running_test_id"] == running
+    assert response == {"result": "error", "message": "busy", "running_test_id": running}
 
 
 def test_a_connection_test_that_cannot_be_queued_lets_the_next_one_start(
