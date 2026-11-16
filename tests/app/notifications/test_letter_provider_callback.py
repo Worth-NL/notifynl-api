@@ -54,6 +54,16 @@ def test_letter_provider_callback_queues_the_status_update(client, mock_status_t
     )
 
 
+def test_letter_provider_callback_for_a_connection_test_is_only_logged(client, mock_status_task, caplog):
+    # a connection test's letter has no notification, so there is nothing to update
+    response = _post_status(client, signing.encode("connection-test:7b2dd5d6"), {"status": "delivered"})
+
+    assert response.status_code == 204
+    assert not mock_status_task.called
+    assert "Letter endpoint connection test 7b2dd5d6 is delivered according to its print provider" in caplog.messages
+    assert not [record for record in caplog.records if record.levelname == "WARNING"]
+
+
 @pytest.mark.parametrize("token", ["", "not-signed", "tampered"])
 def test_letter_provider_callback_requires_a_signed_token(client, mock_status_task, token):
     if token == "tampered":
