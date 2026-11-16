@@ -597,8 +597,8 @@ def test_connection_test_for_an_unknown_organisation(
     "refusal, expected_status, expected_message",
     [
         (ConnectionTestBusy("A connection test is already running"), 409, "busy"),
-        (ConnectionTestLimitReached("Too many connection tests"), 429, "Too many connection tests"),
-        (ConnectionTestUnavailable("Connection tests need Redis"), 503, "Connection tests need Redis"),
+        (ConnectionTestLimitReached("Too many connection tests"), 429, "rate_limited"),
+        (ConnectionTestUnavailable("Connection tests need Redis"), 503, "unavailable"),
     ],
 )
 def test_a_connection_test_that_cannot_start(

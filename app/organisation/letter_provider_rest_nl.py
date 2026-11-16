@@ -140,6 +140,9 @@ def delete_organisation_letter_provider(organisation_id):
     return "", 204
 
 
+_CONNECTION_TEST_REFUSALS = {429: "rate_limited", 503: "unavailable"}
+
+
 @organisation_letter_provider_blueprint.route(
     "/organisations/<uuid:organisation_id>/letter-provider/connection-test", methods=["POST"]
 )
@@ -165,7 +168,8 @@ def start_letter_provider_connection_test(organisation_id):
         # with the running test's id, so admin can still show its result instead of another test being started
         return jsonify(result="error", message="busy", running_test_id=e.running_test_id), e.status_code
     except ConnectionTestRefused as e:
-        raise InvalidRequest(str(e), status_code=e.status_code) from e
+        # only the kind of refusal, admin shows its own text for it
+        raise InvalidRequest(_CONNECTION_TEST_REFUSALS.get(e.status_code, "refused"), status_code=e.status_code) from e
     try:
         check_letter_endpoint_connection.apply_async(
             [str(organisation_id), test_id, encrypt_connection_test_settings(endpoint_url, auth_method, auth_config)],
