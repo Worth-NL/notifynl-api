@@ -1,9 +1,9 @@
-import json
 import re
 from datetime import datetime, timedelta
 from uuid import UUID
 
 from jsonschema import Draft7Validator, FormatChecker, ValidationError
+from notifications_utils.json import RelaxedContainerJSONEncoder as RCJSONEncoder
 from notifications_utils.recipient_validation.email_address import validate_email_address
 from notifications_utils.recipient_validation.errors import InvalidEmailError, InvalidPhoneError
 from notifications_utils.recipient_validation.notifynl.phone_number import PhoneNumber
@@ -45,7 +45,8 @@ def validate_schema_email_address(instance):
 @format_checker.checks("postage", raises=ValidationError)
 def validate_schema_postage(instance):
     """
-    For validating postage on templates and user requests, where postage can only be `first` or `second`
+    For validating postage on templates and user requests, where postage can only be `netherlands`, `europe` or
+    `rest-of-world`
     """
     if isinstance(instance, str):
         if instance not in [NETHERLANDS, EUROPE, REST_OF_WORLD]:
@@ -146,7 +147,7 @@ def build_error_message(errors):
         fields.append({"error": "ValidationError", "message": field})
     message = {"status_code": 400, "errors": unique_errors(fields)}
 
-    return json.dumps(message)
+    return RCJSONEncoder().encode(message)
 
 
 def unique_errors(dups):

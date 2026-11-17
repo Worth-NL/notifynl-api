@@ -7,7 +7,6 @@ from tests.app.db import create_letter_contact, create_template
 valid_version_kwargs = [{}, {"version": 1}]
 
 
-@pytest.mark.skip(reason="[NOTIFYNL] Needs further testing Postage issue")
 @pytest.mark.parametrize(
     "tmp_type, expected_name, expected_subject,postage",
     [
@@ -75,6 +74,17 @@ def test_get_template_by_id_returns_200(
             {
                 "subject": {"required": True},
                 "content": {"required": True},
+            },
+        ),
+        (
+            {
+                "template_type": EMAIL_TYPE,
+                "subject": "Hello ((name))",
+                "content": "Hello ((name)) again. Your ref is ((reference)).",
+            },
+            {
+                "name": {"required": True},
+                "reference": {"required": True},
             },
         ),
     ],

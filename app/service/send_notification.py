@@ -6,6 +6,7 @@ from notifications_utils.s3 import s3download as utils_s3download
 from sqlalchemy.orm.exc import NoResultFound
 
 from app import create_random_identifier
+from app.celery.letter_provider_tasks import queue_letter_for_delivery
 from app.constants import EMAIL_TYPE, KEY_TYPE_NORMAL, LETTER_TYPE, SMS_TYPE
 from app.dao.notifications_dao import get_notification_by_id
 from app.dao.service_email_reply_to_dao import dao_get_reply_to_by_id
@@ -58,6 +59,7 @@ def _get_reference_from_personalisation(personalisation):
 def send_one_off_notification(service_id, post_data):
     service = dao_fetch_service_by_id(service_id, with_users=False)
     template = dao_get_template_by_id_and_service_id(template_id=post_data["template_id"], service_id=service_id)
+    document_download_count = len(template.email_files) or None
 
     personalisation = post_data.get("personalisation", None)
 
@@ -112,6 +114,7 @@ def send_one_off_notification(service_id, post_data):
         reference=create_one_off_reference(template.template_type),
         postage=postage,
         client_reference=client_reference,
+        document_download_count=document_download_count,
     )
 
     send_notification_to_queue(notification=notification)
@@ -205,5 +208,7 @@ def send_pdf_letter_notification(service_id, post_data):
     )
 
     move_uploaded_pdf_to_letters_bucket(file_location, upload_filename)
+    # [NotifyNL] the uploaded PDF is in the letters bucket: hand the letter to its print provider
+    queue_letter_for_delivery(notification)
 
     return {"id": str(notification.id)}

@@ -2,6 +2,7 @@ import csv
 import io
 from collections import defaultdict
 from datetime import date, datetime, timedelta
+from itertools import pairwise
 
 import jinja2
 import sentry_sdk
@@ -15,10 +16,10 @@ from notifications_utils.clients.zendesk.zendesk_client import (
 )
 from notifications_utils.timezones import convert_utc_to_bst
 from redis.exceptions import LockError
-from sqlalchemy import and_, between, text
+from sqlalchemy import and_, between, quoted_name, text
 from sqlalchemy.exc import SQLAlchemyError
 
-from app import db, dvla_client, notify_celery, redis_store, statsd_client, zendesk_client
+from app import db, dvla_client, notify_celery, redis_store, zendesk_client
 from app.aws import s3
 from app.celery.letters_pdf_tasks import get_pdf_for_templated_letter
 from app.celery.tasks import (
@@ -59,8 +60,11 @@ from app.dao.jobs_dao import (
 )
 from app.dao.notifications_dao import (
     SlowProviderDeliveryReport,
+    dao_letters_in_technical_failure,
     dao_old_letters_with_created_status,
     dao_precompiled_letters_still_pending_virus_check,
+    get_banded_slow_text_message_delivery_reports_by_provider,
+    get_recent_undelivered_notification_ages,
     get_slow_text_message_delivery_reports_by_provider,
     is_delivery_slow_for_providers,
     letters_missing_from_sending_bucket,
@@ -69,13 +73,14 @@ from app.dao.notifications_dao import (
 from app.dao.provider_details_dao import (
     dao_adjust_provider_priority_back_to_resting_points,
     dao_reduce_sms_provider_priority,
+    get_provider_details_by_notification_type,
 )
 from app.dao.services_dao import (
     dao_fetch_service_by_id,
     dao_find_services_sending_to_tv_numbers,
     dao_find_services_with_high_failure_rates,
 )
-from app.dao.template_email_files_dao import dao_get_template_email_files_by_template_id
+from app.dao.template_email_files_dao import dao_archive_pending_files, dao_get_template_email_files_by_template_id
 from app.dao.templates_dao import dao_get_template_by_id
 from app.dao.users_dao import delete_codes_older_created_more_than_a_day_ago, get_users_for_research
 from app.letters.utils import generate_letter_pdf_filename, get_letter_attachment_keys
@@ -84,11 +89,23 @@ from app.models import (
     EmailBranding,
     Event,
     Job,
+    Notification,
     Organisation,
     Service,
     User,
 )
 from app.notifications.process_notifications import persist_notification, send_notification_to_queue
+from app.otel_metrics.notification import (
+    UNDELIVERED_NOTIFICATION_AGE_HISTOGRAM_BUCKETS,
+    record_undelivered_notification_ages,
+)
+from app.otel_metrics.provider import (
+    record_info,
+    record_priority,
+    record_sms_banded_not_delivered_within,
+    record_sms_legacy_not_delivered_within,
+    record_updated_at,
+)
 from app.utils import get_london_midnight_in_utc
 
 
@@ -105,6 +122,21 @@ def run_scheduled_jobs():
             current_app.logger.info("Job ID %s added to process job queue", job.id, extra={"job_id": job.id})
     except SQLAlchemyError:
         current_app.logger.exception("Failed to run scheduled jobs")
+        raise
+
+
+@notify_celery.task(name="archive-pending-files")
+def archive_pending_files():
+    try:
+        number_of_files_archived = dao_archive_pending_files()
+        base_params = {"number_of_files_archived": number_of_files_archived}
+        current_app.logger.info(
+            "Archived %(number_of_files_archived)s files created more than 24 hours ago that are still in pending",
+            base_params,
+            extra={**base_params},
+        )
+    except SQLAlchemyError:
+        current_app.logger.exception("Failed to archive pending files")
         raise
 
 
@@ -234,30 +266,54 @@ def _check_slow_text_message_delivery_reports_and_raise_error_if_needed(reports:
         redis_store.set(CacheKeys.NUMBER_OF_TIMES_OVER_SLOW_SMS_DELIVERY_THRESHOLD, 0)
 
 
+_sms_slow_delivery_bands = tuple(pairwise(timedelta(seconds=30) * 2**i for i in range(6)))
+
+
 @notify_celery.task(name="generate-sms-delivery-stats")
-def generate_sms_delivery_stats():
+def generate_sms_delivery_stats() -> None:
     for delivery_interval in (1, 5, 10):
         providers_slow_delivery_reports = get_slow_text_message_delivery_reports_by_provider(
             created_within_minutes=15, delivered_within_minutes=delivery_interval
         )
 
         for report in providers_slow_delivery_reports:
-            statsd_client.gauge(
-                f"slow-delivery.{report.provider}.delivered-within-minutes.{delivery_interval}.ratio", report.slow_ratio
-            )
-
-        total_notifications = sum(report.total_notifications for report in providers_slow_delivery_reports)
-        slow_notifications = sum(report.slow_notifications for report in providers_slow_delivery_reports)
-        ratio_slow_notifications = slow_notifications / total_notifications
-
-        statsd_client.gauge(
-            f"slow-delivery.sms.delivered-within-minutes.{delivery_interval}.ratio", ratio_slow_notifications
-        )
+            record_sms_legacy_not_delivered_within(report.slow_ratio, report.provider, delivery_interval * 60, 15 * 60)
 
         # For the 5-minute delivery interval, let's check the percentage of all text messages sent that were slow.
         # TODO: delete this when we have a way to raise these alerts from eg grafana, prometheus, something else.
-        if delivery_interval == 5 and current_app.should_check_slow_text_message_delivery:
+        if delivery_interval == 5 and current_app.should_check_slow_text_message_delivery:  # type: ignore[attr-defined]
             _check_slow_text_message_delivery_reports_and_raise_error_if_needed(providers_slow_delivery_reports)
+
+    for provider_name, reports in get_banded_slow_text_message_delivery_reports_by_provider(
+        _sms_slow_delivery_bands,
+        session=db.session_bulk,
+    ).items():
+        for banded_report in reports:
+            record_sms_banded_not_delivered_within(
+                banded_report.slow_ratio,
+                banded_report.slow_notifications,
+                banded_report.total_notifications,
+                provider_name,
+                banded_report.delivered_within.total_seconds(),
+                banded_report.sent_after_ago.total_seconds(),
+            )
+
+    for provider in get_provider_details_by_notification_type(SMS_TYPE, False):
+        record_priority(provider.priority, provider.identifier)
+        record_updated_at(provider.updated_at, provider.identifier)
+        record_info(provider.identifier, provider.active, provider.supports_international, provider.notification_type)
+
+    timedelta_buckets = tuple(timedelta(seconds=s) for s in UNDELIVERED_NOTIFICATION_AGE_HISTOGRAM_BUCKETS)
+    for (provider, notification_type, key_type), counts in get_recent_undelivered_notification_ages(
+        timedelta_buckets,
+        session=db.session_bulk,
+    ).items():
+        record_undelivered_notification_ages(
+            tuple(zip(timedelta_buckets, counts, strict=True)),
+            provider,
+            notification_type,
+            key_type,
+        )
 
 
 @notify_celery.task(name="tend-providers-back-to-middle")
@@ -348,10 +404,83 @@ def replay_created_notifications() -> None:
 
 
 @notify_celery.task(name="check-if-letters-still-pending-virus-check")
-def check_if_letters_still_pending_virus_check(max_minutes_ago_to_check: int = 30):
+def check_if_letters_still_pending_virus_check(max_minutes_ago_to_check: int = 30) -> None:
     # this task runs every ten minutes, so allowing a couple of runs
     # if this task doesn't run for some reason, we may need to manually trigger it with a longer max_minutes_ago value
-    letters = []
+    letters_missing_from_scan_bucket = _attempt_to_rescan_letters_pending_virus_check(max_minutes_ago_to_check)
+
+    if letters_missing_from_scan_bucket:
+        if current_app.should_send_zendesk_alerts:  # type: ignore[attr-defined]
+            ticket = NotifySupportTicket(
+                subject=f"[{current_app.config['NOTIFY_ENVIRONMENT']}] Letters still pending virus check",
+                message=_message_about_letters_pending_virus_check(
+                    letters_to_alert_on_but_not_retry=[],
+                    letters_missing_from_scan_bucket=letters_missing_from_scan_bucket,
+                ),
+                ticket_type=NotifySupportTicket.TYPE_TASK,
+                notify_ticket_type=NotifyTicketType.TECHNICAL,
+                notify_task_type="notify_task_letters_pending_scan",
+            )
+            zendesk_client.send_ticket_to_zendesk(ticket)  # type: ignore[attr-defined]
+
+
+@notify_celery.task(name="check-if-letters-still-pending-virus-check-nightly")
+def check_if_letters_still_pending_virus_check_nightly(
+    max_minutes_ago_to_check_only: int = 7200,
+    max_minutes_ago_to_check_and_rescan: int = 4320,
+) -> None:
+    """
+    This looks for letters pending-virus-check between two time periods.
+    For the older time period, we don't attempt to rescan any letters found, we create a Zendesk ticket about them.
+
+    For the more recent time period, we do the same as the `check-if-letters-still-pending-virus-check` task -
+    attempt to reprocess the letters, but create a Zendesk ticket if the letters couldn't be found.
+
+    This task aims to catch any letters that are still pending-virus-check and have slipped through the net
+    """
+    if max_minutes_ago_to_check_only <= max_minutes_ago_to_check_and_rescan:
+        raise ValueError("max_minutes_ago_to_check_only must be greater than max_minutes_ago_to_check_and_rescan")
+
+    # Check for letters over 3 days old that we won't attempt to rescan or find
+    letters_to_alert_on_but_not_retry = []
+    for letter in dao_precompiled_letters_still_pending_virus_check(
+        max_minutes_ago_to_check=max_minutes_ago_to_check_only,
+        min_minutes_ago_to_check=max_minutes_ago_to_check_and_rescan,
+    ):
+        letters_to_alert_on_but_not_retry.append(letter)
+        current_app.logger.warning(
+            "Letter notification %s is stuck in pending-virus-check and has reached the maximum number of retries.",
+            letter.id,
+            extra={"notification_id": letter.id},
+        )
+
+    # Attempt to reprocess letters less than 3 days old that are still pending-virus-check
+    letters_missing_from_scan_bucket = _attempt_to_rescan_letters_pending_virus_check(
+        max_minutes_ago_to_check=max_minutes_ago_to_check_and_rescan
+    )
+
+    # Create a Zendesk ticket about letters pending-virus-check if necessary
+    has_letters_to_alert_on = letters_to_alert_on_but_not_retry or letters_missing_from_scan_bucket
+    if not has_letters_to_alert_on or not current_app.should_send_zendesk_alerts:  # type: ignore[attr-defined]
+        return
+
+    zendesk_ticket_message = _message_about_letters_pending_virus_check(
+        letters_to_alert_on_but_not_retry=letters_to_alert_on_but_not_retry,
+        letters_missing_from_scan_bucket=letters_missing_from_scan_bucket,
+    )
+
+    ticket = NotifySupportTicket(
+        subject=f"[{current_app.config['NOTIFY_ENVIRONMENT']}] Letters still pending virus check",
+        message=zendesk_ticket_message,
+        ticket_type=NotifySupportTicket.TYPE_TASK,
+        notify_ticket_type=NotifyTicketType.TECHNICAL,
+        notify_task_type="notify_task_letters_pending_scan",
+    )
+    zendesk_client.send_ticket_to_zendesk(ticket)  # type: ignore[attr-defined]
+
+
+def _attempt_to_rescan_letters_pending_virus_check(max_minutes_ago_to_check):
+    letters_not_in_scan_bucket = []
     for letter in dao_precompiled_letters_still_pending_virus_check(max_minutes_ago_to_check):
         # find letter in the scan bucket
         filename = generate_letter_pdf_filename(
@@ -391,26 +520,41 @@ def check_if_letters_still_pending_virus_check(max_minutes_ago_to_check: int = 3
                 letter.id,
                 extra={"notification_id": letter.id},
             )
-            letters.append(letter)
+            letters_not_in_scan_bucket.append(letter)
 
-    if len(letters) > 0:
-        letter_ids = [(str(letter.id), letter.reference) for letter in letters]
+    return letters_not_in_scan_bucket
 
-        msg = f"""{len(letters)} precompiled letters have been pending-virus-check for over 10 minutes
-            We couldn't find them in the scan bucket. We'll need to find out where the files are and kick them off
-            again or move them to technical failure.
 
-            Notifications: {sorted(letter_ids)}"""
+def _message_about_letters_pending_virus_check(
+    letters_to_alert_on_but_not_retry: list[Notification],
+    letters_missing_from_scan_bucket: list[Notification],
+) -> str:
+    msg = ""
 
-        if current_app.should_send_zendesk_alerts:  # type: ignore[attr-defined]
-            ticket = NotifySupportTicket(
-                subject=f"[{current_app.config['NOTIFY_ENVIRONMENT']}] Letters still pending virus check",
-                message=msg,
-                ticket_type=NotifySupportTicket.TYPE_TASK,
-                notify_ticket_type=NotifyTicketType.TECHNICAL,
-                notify_task_type="notify_task_letters_pending_scan",
-            )
-            zendesk_client.send_ticket_to_zendesk(ticket)  # type: ignore[attr-defined]
+    if letters_to_alert_on_but_not_retry:
+        letter_ids = [(str(letter.id), letter.reference) for letter in letters_to_alert_on_but_not_retry]
+
+        msg += f"""
+                {len(letters_to_alert_on_but_not_retry)} precompiled letters have been pending-virus-check for
+                over 3 days and have reached the maximum number of retries for letters in this state. We will need
+                to decide whether to manually retry the letters again, or to change their status to permanent-failure
+
+                Notifications: {sorted(letter_ids)}\n\n\n
+            """
+
+    if letters_missing_from_scan_bucket:
+        letter_ids = [(str(letter.id), letter.reference) for letter in letters_missing_from_scan_bucket]
+
+        msg += f"""
+            {len(letters_missing_from_scan_bucket)} precompiled letters have been pending-virus-check for over
+            10 minutes. We couldn't find them in the scan bucket. We'll need to find out if the files were slow to
+            process and are now in the expected state. If not we'll need to find out where the files are and kick
+            them off again or move them to technical failure.
+
+            Notifications: {sorted(letter_ids)}
+        """
+
+    return msg
 
 
 @notify_celery.task(name="check-if-letters-still-in-created")
@@ -439,6 +583,36 @@ def check_if_letters_still_in_created():
             current_app.logger.error(
                 "%(notification_count)s letter notifications created before 17:30 yesterday "
                 "still have 'created' status",
+                extra,
+                extra=extra,
+            )
+
+
+@notify_celery.task(name="check-if-letters-in-technical-failure")
+def check_if_letters_in_technical_failure():
+    technical_failed_letters = dao_letters_in_technical_failure(session=db.session_bulk, retry_attempts=2)
+
+    if len(technical_failed_letters) > 0:
+        msg = (
+            f"{len(technical_failed_letters)} letters have 'technical-failure' status. "
+            "Follow runbook to resolve: "
+            "https://github.com/alphagov/notifications-manuals/wiki/Support-Runbook"
+            "#fixing-letters-in-technical-failure."
+        )
+
+        if current_app.should_send_zendesk_alerts:
+            ticket = NotifySupportTicket(
+                subject=f"[{current_app.config['NOTIFY_ENVIRONMENT']}] Letters in 'technical-failure' status",
+                message=msg,
+                ticket_type=NotifySupportTicket.TYPE_TASK,
+                notify_ticket_type=NotifyTicketType.TECHNICAL,
+                notify_task_type="notify_task_letters_technical_failure_status",
+            )
+            zendesk_client.send_ticket_to_zendesk(ticket)
+
+            extra = {"notification_count": len(technical_failed_letters)}
+            current_app.logger.error(
+                "%(notification_count)s letter notifications have 'technical-failure' status",
                 extra,
                 extra=extra,
             )
@@ -489,11 +663,13 @@ def check_for_services_with_high_failure_rates_or_sending_to_tv_numbers():
     services_with_failures = dao_find_services_with_high_failure_rates(
         start_date=start_date,
         end_date=end_date,
+        session=db.session_bulk,
         retry_attempts=2,
     )
     services_sending_to_tv_numbers = dao_find_services_sending_to_tv_numbers(
         start_date=start_date,
         end_date=end_date,
+        session=db.session_bulk,
         retry_attempts=2,
     )
 
@@ -809,6 +985,10 @@ def populate_annual_billing(year, missing_services_only):
 
     for service in active_services:
         set_default_free_allowance_for_service(service, year)
+
+    # this table's write volume isn't enough to reliably trigger the autovacuum auto-analyze and
+    # poor statistics on this table can cause very bad query plans
+    db.session.execute(text(f"ANALYZE {quoted_name(AnnualBilling.__table__.name, True)}"))
 
 
 @notify_celery.task(name="run-populate-annual-billing")

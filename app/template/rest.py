@@ -1,10 +1,13 @@
 import base64
+import json
 from io import BytesIO
+from urllib.parse import urlencode
 
 import botocore
 from flask import Blueprint, current_app, jsonify, request
 from flask.ctx import has_request_context
 from notifications_utils import SMS_CHAR_COUNT_LIMIT
+from notifications_utils.json import RelaxedContainerJSONEncoder as RCJSONEncoder
 from notifications_utils.pdf import extract_page_from_pdf
 from notifications_utils.template import (
     LetterPreviewTemplate,
@@ -43,7 +46,6 @@ from app.schema_validation import validate
 from app.schemas import (
     template_history_schema,
     template_schema,
-    template_schema_no_detail,
 )
 from app.template.template_schemas import (
     post_create_template_schema,
@@ -167,7 +169,11 @@ def update_template(service_id, template_id):  # noqa: C901
         file_ids_to_archive = data.get("archive_email_file_ids")
     if file_ids_to_archive:
         for file_id in file_ids_to_archive:
-            file_to_archive = dao_get_template_email_file_by_id(file_id)
+            file_to_archive = dao_get_template_email_file_by_id(
+                service_id=service_id,
+                template_id=template_id,
+                template_email_file_id=file_id,
+            )
             dao_archive_template_email_file(
                 file_to_archive=file_to_archive,
                 archived_by_id=data.get("created_by"),
@@ -188,7 +194,7 @@ def get_precompiled_template_for_service(service_id):
 @template_blueprint.route("", methods=["GET"])
 def get_all_templates_for_service(service_id):
     templates = dao_get_all_templates_for_service(service_id=service_id, no_detail=True)
-    data = template_schema_no_detail.dump(templates, many=True)
+    data = [template.serialize_no_detail() for template in templates]
     return jsonify(data=data)
 
 
@@ -246,13 +252,15 @@ def redact_template(template, data):
     return "null", 200
 
 
-def _overlay_query_string(file_type, page_number, letter_address_placement):
+def _overlay_query_string(file_type, page_number, letter_address_placement, letter_address_window=None):
     params = {} if file_type != "png" else {"page_number": page_number}
     if letter_address_placement:
         params["letter_address_placement"] = letter_address_placement
+    if letter_address_window:
+        params["letter_address_window"] = json.dumps(letter_address_window, separators=(",", ":"))
     if not params:
         return ""
-    return "?" + "&".join(f"{key}={value}" for key, value in params.items())
+    return "?" + urlencode(params)
 
 
 @template_blueprint.route("/preview/<uuid:notification_id>/<file_type>", methods=["GET"])
@@ -286,7 +294,12 @@ def preview_letter_template_by_notification_id(service_id, notification_id, file
 
         if content_outside_printable_area and (file_type == "pdf" or page_is_in_invalid_pages):
             path = f"/precompiled/overlay.{file_type}"
-            query_string = _overlay_query_string(file_type, page_number, notification.service.letter_address_placement)
+            query_string = _overlay_query_string(
+                file_type,
+                page_number,
+                notification.service.effective_letter_address_placement,
+                notification.service.letter_address_window.to_dict(),
+            )
             content = pdf_file
         elif file_type == "png":
             query_string = "?hide_notify=true" if page_number == "1" else ""
@@ -332,7 +345,7 @@ def preview_letter_template_by_notification_id(service_id, notification_id, file
             "values": notification.personalisation,
             "date": notification.created_at.isoformat(),
             "filename": letter_logo_filename,
-            "letter_address_placement": service.letter_address_placement,
+            "letter_address_placement": service.effective_letter_address_placement,
         }
 
         url = "{}/preview.{}{}".format(
@@ -343,13 +356,27 @@ def preview_letter_template_by_notification_id(service_id, notification_id, file
     return jsonify({"content": response_content, "metadata": metadata})
 
 
-def _get_png_preview_or_overlaid_pdf(url, data, notification_id, json=True):
+def template_preview_headers():
+    # [NotifyNL] factored out of _get_png_preview_or_overlaid_pdf: app/letters_nl/upload_validation_rest_nl.py sends
+    # the same headers
     headers = {"Authorization": "Token {}".format(current_app.config["TEMPLATE_PREVIEW_API_KEY"])}
     if has_request_context() and hasattr(request, "get_onwards_request_headers"):
         headers.update(request.get_onwards_request_headers())
+    return headers
+
+
+def _get_png_preview_or_overlaid_pdf(url, data, notification_id, json=True):
+    headers = template_preview_headers()
 
     if json:
-        resp = requests_post(url, json=data, headers=headers)
+        resp = requests_post(
+            url,
+            data=RCJSONEncoder().encode(data),
+            headers={
+                "Content-Type": "application/json",
+                **headers,
+            },
+        )
     else:
         resp = requests_post(url, data=data, headers=headers)
 

@@ -54,7 +54,6 @@ def test_send_one_off_notification_calls_celery_correctly(persist_mock, celery_m
     celery_mock.assert_called_once_with(notification=persist_mock.return_value)
 
 
-@pytest.mark.skip(reason="[NOTIFYNL] Dutch phone number implementation breaks this test")
 def test_send_one_off_notification_calls_persist_correctly_for_sms(persist_mock, celery_mock, notify_db_session):
     service = create_service()
     template = create_template(
@@ -93,6 +92,7 @@ def test_send_one_off_notification_calls_persist_correctly_for_sms(persist_mock,
         postage=None,
         client_reference=None,
         template_has_unsubscribe_link=False,
+        document_download_count=None,
     )
 
 
@@ -157,6 +157,7 @@ def test_send_one_off_notification_calls_persist_correctly_for_email(persist_moc
         postage=None,
         client_reference=None,
         template_has_unsubscribe_link=True,
+        document_download_count=None,
     )
 
 
@@ -198,10 +199,10 @@ def test_send_one_off_notification_calls_persist_correctly_for_email_with_email_
         postage=None,
         client_reference=None,
         template_has_unsubscribe_link=False,
+        document_download_count=2,
     )
 
 
-@pytest.mark.skip(reason="[NOTIFYNL] Dutch postal address implementation")
 def test_send_one_off_notification_calls_persist_correctly_for_letter(
     mocker, persist_mock, celery_mock, notify_db_session
 ):
@@ -247,6 +248,7 @@ def test_send_one_off_notification_calls_persist_correctly_for_letter(
         postage="first",
         client_reference=None,
         template_has_unsubscribe_link=False,
+        document_download_count=None,
     )
 
 
@@ -321,7 +323,7 @@ def test_send_one_off_notification_raises_if_message_too_long(persist_mock, noti
     assert (
         e.value.message == f"Your message is too long. "
         f"Text messages cannot be longer than {SMS_CHAR_COUNT_LIMIT} characters. "
-        f"Your message is {1029} characters long."
+        f"Your message is {2029} characters long."
     )
 
 
@@ -355,7 +357,6 @@ def test_send_one_off_notification_should_add_email_reply_to_text_for_notificati
     assert notification.reply_to_text == reply_to_email.email_address
 
 
-@pytest.mark.skip(reason="[NOTIFYNL] PostalAddress issue")
 def test_send_one_off_letter_notification_should_use_template_reply_to_text(sample_letter_template, celery_mock):
     letter_contact = create_letter_contact(sample_letter_template.service, "Edinburgh, ED1 1AA", is_default=False)
     sample_letter_template.reply_to = str(letter_contact.id)
@@ -379,7 +380,6 @@ def test_send_one_off_letter_notification_should_use_template_reply_to_text(samp
     assert notification.reply_to_text == "Edinburgh, ED1 1AA"
 
 
-@pytest.mark.skip(reason="[NOTIFYNL] Dutch phone number implementation breaks this test")
 def test_send_one_off_sms_notification_should_use_sms_sender_reply_to_text(sample_service, celery_mock):
     template = create_template(service=sample_service, template_type=SMS_TYPE)
     sms_sender = create_service_sms_sender(service=sample_service, sms_sender="07123123123", is_default=False)
@@ -398,7 +398,6 @@ def test_send_one_off_sms_notification_should_use_sms_sender_reply_to_text(sampl
     assert notification.reply_to_text == "447123123123"
 
 
-@pytest.mark.skip(reason="[NOTIFYNL] Dutch phone number implementation breaks this test")
 def test_send_one_off_sms_notification_should_use_default_service_reply_to_text(sample_service, celery_mock):
     template = create_template(service=sample_service, template_type=SMS_TYPE)
     sample_service.service_sms_senders[0].is_default = False

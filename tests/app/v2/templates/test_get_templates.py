@@ -6,7 +6,6 @@ from app.constants import EMAIL_TYPE, TEMPLATE_TYPES
 from tests.app.db import create_template
 
 
-@pytest.mark.skip(reason="[NOTIFYNL] messagebox template type returning NoneType")
 def test_get_all_templates_returns_200(api_client_request, sample_service):
     templates = [
         create_template(
@@ -33,7 +32,6 @@ def test_get_all_templates_returns_200(api_client_request, sample_service):
             assert template["subject"] == templates[index].subject
 
 
-@pytest.mark.skip(reason="[NOTIFYNL] messagebox template type returning NoneType")
 @pytest.mark.parametrize("tmp_type", TEMPLATE_TYPES)
 def test_get_all_templates_for_valid_type_returns_200(api_client_request, sample_service, tmp_type):
     templates = [
@@ -58,7 +56,6 @@ def test_get_all_templates_for_valid_type_returns_200(api_client_request, sample
             assert template["subject"] == templates[index].subject
 
 
-@pytest.mark.skip(reason="[NOTIFYNL] messagebox template type returning NoneType")
 @pytest.mark.parametrize("tmp_type", TEMPLATE_TYPES)
 def test_get_correct_num_templates_for_valid_type_returns_200(api_client_request, sample_service, tmp_type):
     num_templates = 3

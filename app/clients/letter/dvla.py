@@ -10,6 +10,7 @@ import boto3
 import jwt
 import requests
 from flask import current_app
+from notifications_utils.json import RelaxedContainerJSONEncoder as RCJSONEncoder
 from notifications_utils.recipient_validation.notifynl.postal_address import PostalAddress
 from requests.adapters import HTTPAdapter
 from urllib3.util.ssl_ import create_urllib3_context
@@ -112,19 +113,16 @@ class DVLAClient:
 
     name = "dvla"
 
-    statsd_client = None
-
     _jwt_token = None
     _jwt_expires_at = None
 
-    def __init__(self, application, *, statsd_client):
+    def __init__(self, application):
         self.base_url = application.config["DVLA_API_BASE_URL"]
         self.ciphers = application.config["DVLA_API_TLS_CIPHERS"]
         ssm_client = boto3.client("ssm", region_name=application.config["AWS_REGION"])
         self.dvla_username = SSMParameter(key="/notify/api/dvla_username", ssm_client=ssm_client)
         self.dvla_password = SSMParameter(key="/notify/api/dvla_password", ssm_client=ssm_client)
         self.dvla_api_key = SSMParameter(key="/notify/api/dvla_api_key", ssm_client=ssm_client)
-        self.statsd_client = statsd_client
 
         self.session = requests.Session()
         self.session.mount(self.base_url, _SpecifiedCiphersAdapter(ciphers=self.ciphers))
@@ -156,10 +154,13 @@ class DVLAClient:
         with _handle_common_dvla_errors(custom_httperror_exc_handler=_handle_401):
             response = self.session.post(
                 f"{self.base_url}/thirdparty-access/v1/authenticate",
-                json={
-                    "userName": self.dvla_username.get(),
-                    "password": self.dvla_password.get(),
-                },
+                headers={"Content-Type": "application/json"},
+                data=RCJSONEncoder().encode(
+                    {
+                        "userName": self.dvla_username.get(),
+                        "password": self.dvla_password.get(),
+                    }
+                ),
             )
             response.raise_for_status()
 
@@ -215,11 +216,14 @@ class DVLAClient:
             with _handle_common_dvla_errors(custom_httperror_exc_handler=_handle_401):
                 response = self.session.post(
                     f"{self.base_url}/thirdparty-access/v1/password",
-                    json={
-                        "userName": self.dvla_username.get(),
-                        "password": self.dvla_password.get(),
-                        "newPassword": new_password,
-                    },
+                    headers={"Content-Type": "application/json"},
+                    data=RCJSONEncoder().encode(
+                        {
+                            "userName": self.dvla_username.get(),
+                            "password": self.dvla_password.get(),
+                            "newPassword": new_password,
+                        }
+                    ),
                 )
                 response.raise_for_status()
 
@@ -287,17 +291,22 @@ class DVLAClient:
         with _handle_common_dvla_errors(custom_httperror_exc_handler=_handle_http_errors):
             response = self.session.post(
                 f"{self.base_url}/print-request/v1/print/jobs",
-                headers=self._get_auth_headers(),
-                json=self._format_create_print_job_json(
-                    notification_id=notification_id,
-                    reference=reference,
-                    client_reference=client_reference,
-                    address=address,
-                    postage=postage,
-                    service_id=service_id,
-                    organisation_id=organisation_id,
-                    pdf_file=pdf_file,
-                    callback_url=callback_url,
+                headers={
+                    "Content-Type": "application/json",
+                    **self._get_auth_headers(),
+                },
+                data=RCJSONEncoder().encode(
+                    self._format_create_print_job_json(
+                        notification_id=notification_id,
+                        reference=reference,
+                        client_reference=client_reference,
+                        address=address,
+                        postage=postage,
+                        service_id=service_id,
+                        organisation_id=organisation_id,
+                        pdf_file=pdf_file,
+                        callback_url=callback_url,
+                    )
                 ),
             )
             response.raise_for_status()

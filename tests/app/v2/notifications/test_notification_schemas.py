@@ -116,12 +116,10 @@ valid_json_with_optionals = {
 
 
 @pytest.mark.parametrize("input", [valid_json, valid_json_with_optionals])
-@pytest.mark.skip(reason="[NOTIFYNL] Dutch phone number implementation breaks this test")
 def test_post_sms_schema_is_valid(input):
     assert validate(input, post_sms_request_schema) == input
 
 
-@pytest.mark.skip(reason="[NOTIFYNL] Dutch phone number implementation breaks this test")
 def test_post_sms_schema_is_valid_for_landline_if_service_can_send_to_landlines():
     sms_data = {"phone_number": "0117 496 0860", "template_id": str(uuid.uuid4())}
     assert validate(sms_data, post_sms_request_schema) == sms_data
@@ -138,7 +136,6 @@ def test_post_sms_schema_is_valid_for_landline_if_service_can_send_to_landlines(
         "bad_uuid",
     ],
 )
-@pytest.mark.skip(reason="[NOTIFYNL] Dutch phone number implementation breaks this test")
 def test_post_sms_json_schema_bad_uuid(template_id):
     j = {"template_id": template_id, "phone_number": "07515111111"}
     with pytest.raises(ValidationError) as e:
@@ -162,7 +159,6 @@ def test_post_sms_json_schema_bad_uuid_and_missing_phone_number():
     assert {"error": "ValidationError", "message": "template_id is not a valid UUID"} in error["errors"]
 
 
-@pytest.mark.skip(reason="[NOTIFYNL] Dutch phone number implementation breaks this test")
 def test_post_sms_schema_with_personalisation_that_is_not_a_dict():
     j = {
         "phone_number": "07515111111",
@@ -181,7 +177,6 @@ def test_post_sms_schema_with_personalisation_that_is_not_a_dict():
     assert len(error.keys()) == 2
 
 
-@pytest.mark.skip(reason="[NOTIFYNL]  Translation issue")
 @pytest.mark.parametrize(
     "invalid_phone_number, err_msg",
     [
@@ -203,7 +198,6 @@ def test_post_sms_request_schema_invalid_phone_number(invalid_phone_number, err_
     assert {"error": "ValidationError", "message": err_msg} == errors[0]
 
 
-@pytest.mark.skip(reason="[NOTIFYNL] Needs further testing PhoneNumber validation issue")
 def test_post_sms_request_schema_invalid_phone_number_and_missing_template():
     j = {
         "phone_number": "08515111111",
@@ -294,7 +288,6 @@ def valid_email_response():
 
 @pytest.mark.parametrize("schema", [post_email_request_schema, post_sms_request_schema])
 @freeze_time("2017-05-12 13:00:00")
-@pytest.mark.skip(reason="[NOTIFYNL] Dutch phone number implementation breaks this test")
 def test_post_schema_valid_scheduled_for(schema):
     j = {"template_id": str(uuid.uuid4()), "scheduled_for": "2017-05-12 13:15"}
     if schema == post_email_request_schema:
@@ -308,7 +301,6 @@ def test_post_schema_valid_scheduled_for(schema):
     "invalid_datetime", ["13:00:00 2017-01-01", "2017-31-12 13:00:00", "01-01-2017T14:00:00.0000Z"]
 )
 @pytest.mark.parametrize("schema", [post_email_request_schema, post_sms_request_schema])
-@pytest.mark.skip(reason="[NOTIFYNL] Dutch phone number implementation breaks this test")
 def test_post_email_schema_invalid_scheduled_for(invalid_datetime, schema):
     j = {"template_id": str(uuid.uuid4()), "scheduled_for": invalid_datetime}
     if schema == post_email_request_schema:
@@ -330,7 +322,6 @@ def test_post_email_schema_invalid_scheduled_for(invalid_datetime, schema):
 
 
 @freeze_time("2017-05-12 13:00:00")
-@pytest.mark.skip(reason="[NOTIFYNL] Dutch phone number implementation breaks this test")
 def test_scheduled_for_raises_validation_error_when_in_the_past():
     j = {"phone_number": "07515111111", "template_id": str(uuid.uuid4()), "scheduled_for": "2017-05-12 10:00"}
     with pytest.raises(ValidationError) as e:
@@ -341,7 +332,6 @@ def test_scheduled_for_raises_validation_error_when_in_the_past():
 
 
 @freeze_time("2017-05-12 13:00:00")
-@pytest.mark.skip(reason="[NOTIFYNL] Dutch phone number implementation breaks this test")
 def test_scheduled_for_raises_validation_error_when_more_than_24_hours_in_the_future():
     j = {"phone_number": "07515111111", "template_id": str(uuid.uuid4()), "scheduled_for": "2017-05-13 14:00"}
     with pytest.raises(ValidationError) as e:

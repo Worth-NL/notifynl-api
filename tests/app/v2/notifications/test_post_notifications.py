@@ -1,3 +1,4 @@
+import base64
 import uuid
 from unittest.mock import call
 
@@ -30,6 +31,7 @@ from tests.app.db import (
     create_service_sms_sender,
     create_service_with_inbound_number,
     create_template,
+    create_template_email_file,
 )
 
 
@@ -101,7 +103,6 @@ def test_post_sms_notification_uses_inbound_number_as_sender(api_client_request,
     )
 
 
-@pytest.mark.skip(reason="[NOTIFYNL] Dutch phone number implementation breaks this test")
 def test_post_sms_notification_uses_inbound_number_reply_to_as_sender(api_client_request, notify_db_session, mocker):
     service = create_service_with_inbound_number(inbound_number="07123123123")
 
@@ -161,7 +162,6 @@ def test_post_sms_notification_returns_201_with_sms_sender_id(
     )
 
 
-@pytest.mark.skip(reason="[NOTIFYNL] Dutch phone number implementation breaks this test")
 def test_post_sms_notification_uses_sms_sender_id_reply_to(
     api_client_request, sample_template_with_placeholders, mocker
 ):
@@ -194,7 +194,6 @@ def test_post_sms_notification_uses_sms_sender_id_reply_to(
     )
 
 
-@pytest.mark.skip(reason="[NOTIFYNL] Dutch phone number implementation breaks this test")
 def test_notification_reply_to_text_is_original_value_if_sender_is_changed_after_post_notification(
     api_client_request, sample_template, mocker
 ):
@@ -232,7 +231,6 @@ def test_notification_reply_to_text_is_original_value_if_sender_is_changed_after
 # implementation of TimedCaches, so feels a bit more gross than just accepting that this test interacts with time and
 # in rare slow runs, may fail.
 @pytest.mark.flaky(max_runs=3, min_passes=1)
-@pytest.mark.skip(reason="[NOTIFYNL] Dutch phone number implementation breaks this test")
 def test_should_cache_template_lookups_in_memory(mocker, api_client_request, sample_template):
     mock_get_template = mocker.patch(
         "app.dao.templates_dao.dao_get_template_by_id_and_service_id",
@@ -260,7 +258,6 @@ def test_should_cache_template_lookups_in_memory(mocker, api_client_request, sam
     assert Notification.query.count() == 5
 
 
-@pytest.mark.skip(reason="[NOTIFYNL] Dutch phone number implementation breaks this test")
 def test_should_cache_template_and_service_in_redis(mocker, api_client_request, sample_template):
     from app.schemas import service_schema, template_schema
 
@@ -290,8 +287,8 @@ def test_should_cache_template_and_service_in_redis(mocker, api_client_request, 
     expected_templates_key = f"service-{sample_template.service_id}-template-{sample_template.id}-version-None"
 
     assert mock_redis_get.call_args_list == [
-        call(expected_service_key),
-        call(expected_templates_key),
+        call(expected_service_key, skippable=True),
+        call(expected_templates_key, skippable=True),
     ]
 
     service_dict = service_schema.dump(sample_template.service)
@@ -310,7 +307,6 @@ def test_should_cache_template_and_service_in_redis(mocker, api_client_request, 
     assert templates_call[1]["ex"] == 2_419_200
 
 
-@pytest.mark.skip(reason="[NOTIFYNL] Dutch phone number implementation breaks this test")
 def test_should_return_template_if_found_in_redis(mocker, api_client_request, sample_template):
     from app.schemas import service_schema, template_schema
 
@@ -784,13 +780,8 @@ def test_post_email_notification_sanitise_content_for_selected_personalisation(
     "template_type, recipient_dict, has_sanitised_content",
     (
         ("email", {"email_address": "amala@example.com"}, True),
-        pytest.param(
-            "sms",
-            {"phone_number": "07900111222"},
-            False,
-            marks=pytest.mark.skip(reason="[NOTIFYNL] Dutch phone number implementation breaks this test"),
-        ),
-        pytest.param(
+        ("sms", {"phone_number": "07900111222"}, False),
+        (
             "letter",
             {
                 "personalisation": {
@@ -800,7 +791,6 @@ def test_post_email_notification_sanitise_content_for_selected_personalisation(
                 }
             },
             False,
-            marks=pytest.mark.skip(reason="[NOTIFYNL] Dutch postal address implementation breaks this test"),
         ),
     ),
 )
@@ -809,6 +799,7 @@ def test_post_email_notification_response_has_sanitised_content_info_for_emails_
 ):
     template = create_template(service=sample_service, template_type=template_type)
     mocker.patch("app.celery.provider_tasks.deliver_email.apply_async")
+    mocker.patch("app.celery.provider_tasks.deliver_sms.apply_async")
     mocker.patch("app.celery.letters_pdf_tasks.get_pdf_for_templated_letter.apply_async")
     data = {
         "template_id": template.id,
@@ -977,7 +968,6 @@ def test_sanitise_personalisation_item(
         ("07700 900222", "sms"),
     ],
 )
-@pytest.mark.skip(reason="[NOTIFYNL] Dutch phone number implementation breaks this test")
 def test_should_not_persist_or_send_notification_if_simulated_recipient(
     api_client_request, recipient, notification_type, sample_email_template, sample_template, mocker
 ):
@@ -1072,7 +1062,6 @@ def test_returns_a_429_limit_exceeded_if_rate_limit_exceeded_even_if_would_fail_
         [SMS_TYPE, SMS_TO_UK_LANDLINES],
     ],
 )
-@pytest.mark.skip(reason="[NOTIFYNL] Dutch phone number implementation breaks this test")
 def test_post_sms_notification_returns_400_if_not_allowed_to_send_int_sms(
     api_client_request,
     notify_db_session,
@@ -1200,7 +1189,6 @@ def test_post_sms_notification_returns_201_if_allowed_to_send_int_sms(
         [SMS_TYPE, SMS_TO_UK_LANDLINES, INTERNATIONAL_SMS_TYPE],
     ],
 )
-@pytest.mark.skip(reason="[NOTIFYNL] Dutch phone number implementation breaks this test")
 def test_post_sms_notification_returns_201_if_allowed_to_send_to_uk_landlines(
     notify_db_session,
     api_client_request,
@@ -1232,7 +1220,6 @@ def test_post_sms_notification_returns_201_if_allowed_to_send_to_uk_landlines(
         [SMS_TYPE, INTERNATIONAL_SMS_TYPE],
     ],
 )
-@pytest.mark.skip(reason="[NOTIFYNL] Dutch phone number implementation breaks this test")
 def test_post_sms_notification_returns_400_if_not_allowed_to_send_to_uk_landlines(
     notify_db_session,
     api_client_request,
@@ -1415,6 +1402,7 @@ def test_post_email_notification_with_unsubscribe_link_returns_201(api_client_re
     assert mocked.called
 
 
+@pytest.mark.parametrize("has_template_email_files", [True, False])
 @pytest.mark.parametrize(
     "extra, expect_email_confirmation, expect_retention_period",
     (
@@ -1430,18 +1418,37 @@ def test_post_email_notification_with_unsubscribe_link_returns_201(api_client_re
     ),
 )
 def test_post_notification_with_document_upload(
-    api_client_request, notify_db_session, mocker, extra, expect_email_confirmation, expect_retention_period
+    api_client_request,
+    notify_db_session,
+    mocker,
+    extra,
+    expect_email_confirmation,
+    expect_retention_period,
+    has_template_email_files,
+    mock_utils_s3_download,
 ):
     service = create_service(service_permissions=[EMAIL_TYPE])
     service.contact_link = "contact.me@gov.uk"
-    template = create_template(
-        service=service, template_type="email", content="Document 1: ((first_link)). Document 2: ((second_link))"
-    )
+    if has_template_email_files:
+        template = create_template(
+            service=service,
+            template_type="email",
+            content="Document 1: ((first_link)). Document 2: ((second_link)). Hard coded file: ((test.pdf))",
+        )
+        create_template_email_file(template_id=template.id, filename="test.pdf", created_by_id=template.created_by_id)
+    else:
+        template = create_template(
+            service=service, template_type="email", content="Document 1: ((first_link)). Document 2: ((second_link))"
+        )
 
     mocker.patch("app.celery.provider_tasks.deliver_email.apply_async")
+
+    def document_download_link(service_id, content, is_csv=None, **kwargs):
+        return f"{content}-link"
+
     document_download_upload_document_mock = mocker.patch(
         "app.document_download_client.upload_document",
-        side_effect=lambda service_id, content, is_csv, **kwargs: f"{content}-link",
+        side_effect=document_download_link,
     )
 
     data = {
@@ -1461,31 +1468,76 @@ def test_post_notification_with_document_upload(
 
     confirmation_email = data["email_address"] if expect_email_confirmation else None
 
-    assert document_download_upload_document_mock.call_args_list == [
-        call(
-            str(service.id),
-            "abababab",
-            extra.get("is_csv"),
-            confirmation_email=confirmation_email,
-            retention_period=expect_retention_period,
-            filename=None,
-        ),
-        call(
-            str(service.id),
-            "cdcdcdcd",
-            extra.get("is_csv"),
-            confirmation_email=confirmation_email,
-            retention_period=expect_retention_period,
-            filename=None,
-        ),
-    ]
+    if has_template_email_files:
+        assert document_download_upload_document_mock.call_args_list == [
+            call(
+                str(service.id),
+                str(base64.b64encode(bytes("downloaded-from-s3-test.pdf", "utf-8")).decode("utf-8")),
+                confirmation_email=data["email_address"],
+                retention_period="90 weeks",
+                filename="test.pdf",
+            ),
+            call(
+                str(service.id),
+                "abababab",
+                extra.get("is_csv"),
+                confirmation_email=confirmation_email,
+                retention_period=expect_retention_period,
+                filename=None,
+            ),
+            call(
+                str(service.id),
+                "cdcdcdcd",
+                extra.get("is_csv"),
+                confirmation_email=confirmation_email,
+                retention_period=expect_retention_period,
+                filename=None,
+            ),
+        ]
+    else:
+        assert document_download_upload_document_mock.call_args_list == [
+            call(
+                str(service.id),
+                "abababab",
+                extra.get("is_csv"),
+                confirmation_email=confirmation_email,
+                retention_period=expect_retention_period,
+                filename=None,
+            ),
+            call(
+                str(service.id),
+                "cdcdcdcd",
+                extra.get("is_csv"),
+                confirmation_email=confirmation_email,
+                retention_period=expect_retention_period,
+                filename=None,
+            ),
+        ]
 
     notification = Notification.query.one()
     assert notification.status == NOTIFICATION_CREATED
-    assert notification.personalisation == {"first_link": "abababab-link", "second_link": "cdcdcdcd-link"}
-    assert notification.document_download_count == 2
+    assert (
+        notification.personalisation
+        == {
+            "first_link": "abababab-link",
+            "second_link": "cdcdcdcd-link",
+            "test.pdf": "[follow this link]("
+            + str(base64.b64encode(bytes("downloaded-from-s3-test.pdf", "utf-8")).decode("utf-8"))
+            + "-link)",
+        }
+        if has_template_email_files
+        else {"first_link": "abababab-link", "second_link": "cdcdcdcd-link"}
+    )
+    assert notification.document_download_count == 3 if has_template_email_files else 2
 
-    assert resp_json["content"]["body"] == "Document 1: abababab-link. Document 2: cdcdcdcd-link"
+    assert (
+        resp_json["content"]["body"] == "Document 1: abababab-link. Document 2: cdcdcdcd-link. Hard coded file: "
+        "[follow this link]("
+        + str(base64.b64encode(bytes("downloaded-from-s3-test.pdf", "utf-8")).decode("utf-8"))
+        + "-link)"
+        if has_template_email_files
+        else "Document 1: abababab-link. Document 2: cdcdcdcd-link"
+    )
 
 
 def test_post_notification_with_document_upload_simulated(api_client_request, notify_db_session, mocker):

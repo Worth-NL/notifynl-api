@@ -54,6 +54,7 @@ from app.constants import (
     SMS_TYPE,
 )
 from app.dao import jobs_dao, report_requests_dao, service_email_reply_to_dao, service_sms_sender_dao
+from app.dao.notifications_dao import get_notification_by_id
 from app.models import Job, Notification, NotificationHistory, ReturnedLetter
 from app.serialised_models import SerialisedService, SerialisedTemplate
 from app.v2.errors import TooManyRequestsError
@@ -602,7 +603,6 @@ def test_should_process_email_job_with_sender_id(
     assert job.job_status == "finished"
 
 
-@pytest.mark.skip(reason="[NOTIFYNL] Dutch postal address implementation - less lines that uk")
 @freeze_time("2016-01-01 11:09:00.061258")
 def test_should_process_letter_job(sample_letter_job, mocker, mock_celery_task):
     csv = """address_line_1,address_line_2,address_line_3,address_line_4,postcode,name
@@ -1195,7 +1195,16 @@ def test_get_id_task_args_kwargs_for_job_row_when_sender_id_is_provided(mocker, 
     )
 
 
-def test_get_id_task_args_kwargs_for_job_row_when_reference_is_provided(mocker, mock_celery_task, fake_uuid):
+@pytest.mark.parametrize(
+    "reference_field_name",
+    ("reference", "  Reference-  "),
+)
+def test_get_id_task_args_kwargs_for_job_row_when_reference_is_provided(
+    mocker,
+    mock_celery_task,
+    fake_uuid,
+    reference_field_name,
+):
     mocker.patch("app.celery.tasks.create_uuid", return_value="noti_uuid")
     signing_mock = mocker.patch("app.celery.tasks.signing.encode", return_value="foo")
     template = Mock(id="template_id", template_type=SMS_TYPE)
@@ -1204,7 +1213,7 @@ def test_get_id_task_args_kwargs_for_job_row_when_reference_is_provided(mocker, 
 
     get_id_task_args_kwargs_for_job_row(
         Row(
-            {"to": "07900100100", "name": "foo", "reference": "ab1234"},
+            {"to": "07900100100", "name": "foo", reference_field_name: "ab1234"},
             index=0,
             error_fn=lambda k, v: None,
             recipient_column_headers=["to"],
@@ -1376,7 +1385,6 @@ def test_notification_belonging_to_a_job_with_incorrect_number_saved_as_validati
     mock_deliver_sms_task.assert_not_called()
 
 
-@pytest.mark.xfail(reason="[NOTIFYNL] Dutch phone number implementation breaks this test")
 def test_should_save_sms_if_restricted_service_and_valid_number(notify_db_session, mock_celery_task):
     user = create_user(mobile_number="07700 900890")
     service = create_service(user=user, restricted=True)
@@ -1449,6 +1457,29 @@ def test_save_sms_should_save_default_smm_sender_notification_reply_to_text_on(n
 
     persisted_notification = Notification.query.one()
     assert persisted_notification.reply_to_text == "12345"
+
+
+@pytest.mark.parametrize("number_of_files, expected_document_download_count", [(0, None), (1, 1), (4, 4)])
+def test_save_email_with_template_email_files_increments_document_download_count_correctly(
+    mock_celery_task,
+    sample_email_template,
+    mock_utils_s3_download,
+    mock_document_download_client_upload,
+    number_of_files,
+    expected_document_download_count,
+):
+    mock_deliver_email = mock_celery_task(provider_tasks.deliver_email)
+    for _ in range(number_of_files):
+        create_template_email_file(
+            template_id=sample_email_template.id, created_by_id=sample_email_template.created_by_id, pending=False
+        )
+    notification_id = uuid.uuid4()
+    notification = _notification_json(sample_email_template, "example@gov.uk")
+    with _with_message_group_id(save_email, str(sample_email_template.service_id)):
+        save_email(sample_email_template.service_id, notification_id, signing.encode(notification))
+    notification = get_notification_by_id(notification_id)
+    assert notification.document_download_count == expected_document_download_count
+    assert mock_deliver_email.called is True
 
 
 def test_should_not_save_sms_if_restricted_service_and_invalid_number(notify_db_session, mock_celery_task):
@@ -2027,7 +2058,6 @@ def test_save_sms_does_not_send_duplicate_and_does_not_put_in_retry_queue(
         ),
     ),
 )
-@pytest.mark.skip(reason="[NOTIFYNL] Dutch postal address implementation - now on test_tasks_nl")
 def test_save_letter_saves_letter_to_database(
     mocker,
     mock_celery_task,
@@ -2094,7 +2124,6 @@ def test_save_letter_saves_letter_to_database(
         ("SW1 1AA", "economy", "economy", False),
     ],
 )
-@pytest.mark.skip(reason="[NOTIFYNL] Dutch postal address implementation - now on test_tasks_nl")
 def test_save_letter_saves_letter_to_database_with_correct_postage(
     mocker,
     mock_celery_task,
@@ -2134,7 +2163,6 @@ def test_save_letter_saves_letter_to_database_with_correct_postage(
     assert notification_db.international == expected_international
 
 
-@pytest.mark.skip(reason="[NOTIFYNL] Dutch postal address implementation - now on test_tasks_nl")
 def test_save_letter_saves_letter_to_database_with_formatted_postcode(mocker, mock_celery_task, notify_db_session):
     service = create_service(service_permissions=[LETTER_TYPE])
     template = create_template(service=service, template_type=LETTER_TYPE)
@@ -2165,7 +2193,6 @@ def test_save_letter_saves_letter_to_database_with_formatted_postcode(mocker, mo
     assert notification_db.personalisation["postcode"] == "se1 64sa"
 
 
-@pytest.mark.skip(reason="[NOTIFYNL] Dutch postal address implementation - less lines that uk")
 def test_save_letter_saves_letter_to_database_right_reply_to(mocker, mock_celery_task, notify_db_session):
     service = create_service()
     create_letter_contact(service=service, contact_block="Address contact", is_default=True)
@@ -2260,7 +2287,6 @@ def test_save_letter_uses_template_reply_to_text(mocker, mock_celery_task, notif
     assert notification_db.reply_to_text == "Template address contact"
 
 
-@pytest.mark.skip(reason="[NOTIFYNL] Dutch phone number implementation breaks this test")
 def test_save_sms_uses_sms_sender_reply_to_text(mocker, mock_celery_task, notify_db_session):
     service = create_service_with_defined_sms_sender(sms_sender_value="07123123123")
     template = create_template(service=service)
@@ -2409,7 +2435,6 @@ def test_get_sms_template_instance(mocker, mock_celery_task, sample_template, sa
     assert recipient_csv.placeholders == ["phone number"]
 
 
-@pytest.mark.skip(reason="[NOTIFYNL] Dutch postal address implementation - less lines that uk")
 def test_get_letter_template_instance(mocker, mock_celery_task, sample_job):
     mocker.patch(
         "app.celery.tasks.s3.get_job_and_metadata_from_s3",

@@ -13,6 +13,7 @@ from unittest import mock
 
 import click
 import flask
+import requests
 from click_datetime import Datetime as click_dt
 from dateutil import rrule
 from flask import current_app, json
@@ -22,15 +23,24 @@ from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm.exc import NoResultFound
 
-from app import db
+from app import db, get_pingen_client
 from app.aws import s3
 from app.celery.letters_pdf_tasks import (
     get_pdf_for_templated_letter,
     resanitise_pdf,
 )
 from app.celery.tasks import get_id_task_args_kwargs_for_job_row, process_job_row
+from app.clients.letter import LetterClientException
 from app.config import QueueNames
-from app.constants import DEFAULT_POSTAGE, KEY_TYPE_TEST, NETHERLANDS, NOTIFICATION_CREATED, POSTAGE_TYPES, SMS_TYPE
+from app.constants import (
+    DEFAULT_POSTAGE,
+    KEY_TYPE_TEST,
+    NETHERLANDS,
+    NOTIFICATION_CREATED,
+    POSTAGE_TYPES,
+    SMS_TYPE,
+    ServiceCallbackTypes,
+)
 from app.dao.annual_billing_dao import (
     dao_create_or_update_annual_billing_for_year,
     set_default_free_allowance_for_service,
@@ -48,6 +58,11 @@ from app.dao.organisation_dao import (
     dao_get_organisation_by_email_address,
     dao_get_organisation_by_id,
 )
+from app.dao.service_callback_api_dao import (
+    get_service_callback_api_by_callback_type,
+    reset_service_callback_api,
+    save_service_callback_api,
+)
 from app.dao.services_dao import (
     dao_create_service,
     dao_fetch_all_services_by_user,
@@ -63,6 +78,7 @@ from app.dao.users_dao import (
     get_user_by_email,
 )
 from app.functional_tests_fixtures import apply_fixtures
+from app.letters_nl.constants import PINGEN_WEBHOOK_EVENT_CATEGORIES, PINGEN_WEBHOOK_PATH
 from app.models import (
     ApiKey,
     Domain,
@@ -71,6 +87,7 @@ from app.models import (
     Notification,
     Organisation,
     Service,
+    ServiceCallbackApi,
     Template,
     User,
 )
@@ -416,9 +433,10 @@ def populate_notification_postage(start_date):
         # process in ten day chunks
         end_date = start_date + timedelta(days=10)
 
+        # [NotifyNL] 'netherlands' is our domestic postage; upstream's UK 'second' is invalid here
         sql = """
             UPDATE {}
-            SET postage = 'second'
+            SET postage = 'netherlands'
             WHERE notification_type = 'letter' AND
             postage IS NULL AND
             created_at BETWEEN :start AND :end
@@ -679,6 +697,52 @@ def associate_services_to_organisations():
     print("finished associating services to organisations")
 
 
+@notify_command(name="sync-org-boundaries-geojson")
+def sync_org_boundaries_geojson():
+    """Refresh the notifynl-org-boundaries ConfigMap that Grafana reads for the
+    Notifications Volume dashboard's map, from organisation.area_boundary.
+    Run periodically by a CronJob (notifynl-charts-private/notifynl-full) --
+    this is what replaces the old hand-maintained gazetteer file now that
+    the boundary is platform-admin-editable.
+    """
+    organisations = Organisation.query.filter(
+        Organisation.area_boundary.isnot(None),
+        Organisation.active.is_(True),
+    ).all()
+
+    feature_collection = {
+        "type": "FeatureCollection",
+        "features": [
+            {
+                "type": "Feature",
+                "properties": {"organisation_name": organisation.name},
+                "geometry": organisation.area_boundary,
+            }
+            for organisation in organisations
+        ],
+    }
+
+    with open("/var/run/secrets/kubernetes.io/serviceaccount/token") as f:
+        token = f.read().strip()
+    with open("/var/run/secrets/kubernetes.io/serviceaccount/namespace") as f:
+        namespace = f.read().strip()
+
+    api_server = f"https://{os.environ['KUBERNETES_SERVICE_HOST']}:{os.environ['KUBERNETES_SERVICE_PORT']}"
+    response = requests.patch(
+        f"{api_server}/api/v1/namespaces/{namespace}/configmaps/notifynl-org-boundaries",
+        data=json.dumps({"data": {"notifynl-org-boundaries.json": json.dumps(feature_collection)}}),
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/merge-patch+json",
+        },
+        verify="/var/run/secrets/kubernetes.io/serviceaccount/ca.crt",
+        timeout=10,
+    )
+    response.raise_for_status()
+
+    print(f"Synced {len(feature_collection['features'])} organisation boundaries to notifynl-org-boundaries ConfigMap")
+
+
 @notify_command(name="populate-service-volume-intentions")
 @click.option("-f", "--file_name", required=True, help="Pipe delimited file containing service_id, SMS, email, letters")
 def populate_service_volume_intentions(file_name):
@@ -779,7 +843,7 @@ def process_row_from_job(job_id, job_row_number):
         s3.get_job_from_s3(str(job.service_id), str(job.id)),
         template_type=template.template_type,
         placeholders=template.placeholders,
-    ).get_rows():
+    ):
         if row.index == job_row_number:
             notification_id, task_args_kwargs = get_id_task_args_kwargs_for_job_row(row, template, job, job.service)
 
@@ -842,8 +906,7 @@ def functional_test_fixtures():
     It expects the following config to be set:
 
         NOTIFY_ENVIRONMENT
-        MMG_INBOUND_SMS_USERNAME
-        MMG_INBOUND_SMS_AUTH
+        MMG_INBOUND_SMS_CALLBACK_BASIC_AUTH_CREDENTIALS
         SQLALCHEMY_DATABASE_URI
         REDIS_URL
         SECRET_KEY
@@ -1240,3 +1303,97 @@ def create_api_key(service_id, user_id, name, key_type):
     print(full_key)
 
     return full_key
+
+
+@notify_command(name="register-pingen-webhook")
+@click.option(
+    "-u",
+    "--url",
+    default=None,
+    help=f"Where Pingen posts its webhooks (default: API_HOST_NAME{PINGEN_WEBHOOK_PATH})",
+)
+def register_pingen_webhook(url):
+    """
+    Register our Pingen webhook route with Pingen, for every letter event category we act on, signed with
+    PINGEN_WEBHOOK_SIGNING_KEY. Safe to run again: categories already registered for the URL are left alone.
+    """
+    signing_key = current_app.config.get("PINGEN_WEBHOOK_SIGNING_KEY") or ""
+    if not 20 <= len(signing_key) <= 32:
+        raise click.ClickException("PINGEN_WEBHOOK_SIGNING_KEY must be 20 to 32 characters long (a Pingen requirement)")
+    url = url or f"{current_app.config['API_HOST_NAME']}{PINGEN_WEBHOOK_PATH}"
+
+    pingen = get_pingen_client()
+    try:
+        registered = {(webhook["event_category"], webhook["url"]): webhook for webhook in pingen.list_webhooks()}
+        other_signing_key = []
+        for event_category in PINGEN_WEBHOOK_EVENT_CATEGORIES:
+            webhook = registered.get((event_category, url))
+            if webhook is None:
+                webhook_id = pingen.create_webhook(event_category, url, signing_key)
+                print(f"Registered the {event_category} webhook for {url} ({webhook_id})")
+            elif webhook.get("signing_key") != signing_key:
+                other_signing_key.append(f"{event_category} ({webhook['id']})")
+            else:
+                print(f"The {event_category} webhook for {url} is already registered ({webhook['id']})")
+    except LetterClientException as e:
+        raise click.ClickException(str(e)) from e
+
+    if other_signing_key:
+        raise click.ClickException(
+            f"These webhooks for {url} are signed with another key, so their requests would be rejected: "
+            f"{', '.join(other_signing_key)}. Delete them in Pingen and run this command again."
+        )
+
+
+@notify_command(name="register-stub-service-callbacks")
+@click.option("-s", "--service-id", required=True, type=click.UUID, help="ID of the service")
+@click.option(
+    "-u",
+    "--url",
+    default="http://localhost:6300/service-callback",
+    show_default=True,
+    help="The stub's service callback route (meta-repo .devcontainer/config/mockoon)",
+)
+@click.option(
+    "-t",
+    "--bearer-token",
+    default="stub-callback-token",
+    show_default=True,
+    help="The stub accepts stub-callback-token, responds 500 to stub-callback-fail and 401 to anything else",
+)
+@click.option(
+    "-c",
+    "--callback-type",
+    "callback_types",
+    multiple=True,
+    type=click.Choice([callback_type.value for callback_type in ServiceCallbackTypes]),
+    help="Only register these callback types (default: all of them)",
+)
+def register_stub_service_callbacks(service_id, url, bearer_token, callback_types):
+    """
+    Local development only: point a service's callbacks at the devcontainer's stub, which admin can't do because
+    callback URLs must be https. Safe to run again: existing callbacks are repointed.
+    """
+    if current_app.config["NOTIFY_ENVIRONMENT"] != "development":
+        raise click.ClickException("This command is for local development only")
+    try:
+        service = dao_fetch_service_by_id(service_id)
+    except NoResultFound as e:
+        raise click.ClickException(f"Service {service_id} not found") from e
+
+    for callback_type in callback_types or [callback_type.value for callback_type in ServiceCallbackTypes]:
+        callback_api = get_service_callback_api_by_callback_type(service.id, callback_type)
+        if callback_api:
+            reset_service_callback_api(callback_api, service.created_by_id, url=url, bearer_token=bearer_token)
+            print(f"Pointed the {callback_type} callback of {service.name} at {url}")
+        else:
+            save_service_callback_api(
+                ServiceCallbackApi(
+                    service_id=service.id,
+                    url=url,
+                    bearer_token=bearer_token,
+                    updated_by_id=service.created_by_id,
+                    callback_type=callback_type,
+                )
+            )
+            print(f"Registered the {callback_type} callback of {service.name} at {url}")

@@ -60,6 +60,7 @@ def test_get_notification_by_id_returns_200(api_client_request, sample_template,
         "scheduled_for": None,
         "postage": None,
         "one_click_unsubscribe_url": None,
+        "print_provider": None,
         "is_cost_data_ready": True if billable_units else False,
         "cost_in_pounds": 0.0227 * billable_units if billable_units else None,
         "cost_details": (
@@ -115,6 +116,7 @@ def test_get_notification_by_id_with_placeholders_returns_200(
         "scheduled_for": None,
         "postage": None,
         "one_click_unsubscribe_url": None,
+        "print_provider": None,
         "is_cost_data_ready": True,
         "cost_in_pounds": 0.00,
         "cost_details": {},
@@ -212,7 +214,6 @@ def test_get_notification_by_id_invalid_id(api_client_request, sample_notificati
     }
 
 
-@pytest.mark.skip(reason="[NOTIFYNL]  Needs further testing")
 @pytest.mark.parametrize(
     "created_at_month, postage, estimated_delivery",
     [
@@ -390,7 +391,6 @@ def test_get_all_notifications_filter_by_single_status(api_client_request, sampl
     assert json_response["notifications"][0]["status"] == "pending"
 
 
-@pytest.mark.skip(reason="[NOTIFYNL] Needs further testing PostalAddress issue")
 @pytest.mark.parametrize(
     "internal_status, filter_status, expect_num_notifications",
     (
@@ -590,7 +590,6 @@ def test_get_all_notifications_filter_multiple_query_parameters(api_client_reque
     assert json_response["notifications"][0]["id"] == str(older_notification.id)
 
 
-@pytest.mark.skip(reason="[NOTIFYNL] Needs further testing PostalAddress issue")
 def test_get_all_notifications_renames_letter_statuses(
     api_client_request,
     sample_letter_notification,
@@ -629,7 +628,6 @@ def test_get_all_notifications_returns_cost_datarmation(api_client_request, samp
     }
 
 
-@pytest.mark.skip(reason="[NOTIFYNL]  Needs further testing")
 @pytest.mark.parametrize(
     "db_status,expected_status",
     [
@@ -654,6 +652,62 @@ def test_get_notification_by_id_renames_letter_statuses(
     )
 
     assert json_response["status"] == expected_status
+
+
+@pytest.mark.parametrize(
+    "key_type",
+    ("test", "team", pytest.param("normal", marks=pytest.mark.xfail)),
+)
+def test_get_notification_by_id_logs_on_different_key_type(
+    api_client_request,
+    sample_template,
+    sms_rate,
+    caplog,
+    key_type,
+):
+    notification = create_notification(template=sample_template, key_type="normal")
+
+    with caplog.at_level("WARNING"):
+        api_client_request.get(
+            notification.service_id,
+            "v2_notifications.get_notification_by_id",
+            notification_id=notification.id,
+            _api_key_type=key_type,
+        )
+    assert (
+        f"Key type for get_notification_by_id ({key_type}) does not match key type used to send notification (normal)"
+    ) in caplog.messages
+
+
+@pytest.mark.parametrize(
+    "key_type",
+    ("test", "team", pytest.param("normal", marks=pytest.mark.xfail)),
+)
+def test_get_pdf_for_notification_logs_on_different_key_type(
+    api_client_request,
+    sample_letter_template,
+    letter_rate,
+    caplog,
+    key_type,
+    mocker,
+):
+    mocker.patch(
+        "app.v2.notifications.get_notifications.get_letter_pdf_and_metadata",
+        return_value=(b"foo", {"message": "", "invalid_pages": "", "page_count": "1"}),
+    )
+    notification = create_notification(template=sample_letter_template, key_type="normal")
+
+    with caplog.at_level("WARNING"):
+        api_client_request.get(
+            notification.service_id,
+            "v2_notifications.get_pdf_for_notification",
+            notification_id=notification.id,
+            _api_key_type=key_type,
+            _expected_content_type="application/pdf",
+        )
+    assert (
+        f"Key type for get_pdf_for_notification ({key_type}) does not match key type used to send notification (normal)"
+    ) in caplog.messages
 
 
 def test_get_pdf_for_notification_returns_pdf_content(

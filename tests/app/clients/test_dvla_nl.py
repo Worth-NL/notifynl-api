@@ -1,5 +1,4 @@
 import time
-from unittest.mock import Mock
 
 import boto3
 import jwt
@@ -37,7 +36,7 @@ def ssm():
 
 @pytest.fixture
 def dvla_client(notify_api, client, ssm):
-    dvla_client = DVLAClient(notify_api, statsd_client=Mock())
+    dvla_client = DVLAClient(notify_api)
     yield dvla_client
 
 

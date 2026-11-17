@@ -408,6 +408,8 @@ pyrightconfig.json
 [Ll]ib64
 [Ll]ocal
 [Ss]cripts
+# [NOTIFYNL] re-include the repo's own scripts/ dir (the rule above targets Windows venv Scripts\)
+!/scripts/
 pyvenv.cfg
 pip-selfcheck.json
 
@@ -909,3 +911,6 @@ docker-compose.yml
 .env
 application.log.json
 .claude/settings.local.json
+
+### Vulnerability scan ###
+.vulnerability-scan/

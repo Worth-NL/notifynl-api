@@ -1618,6 +1618,9 @@ components:
           enum: [sms, email, letter, messagebox]
         status:
           type: string
+          description: >-
+            Voor brieven: `accepted` = door NotifyNL geaccepteerd, `sent` = door de printleverancier geaccepteerd
+            (zie `print_provider`), `received` = aan de post overgedragen.
           enum:
             - created
             - sending
@@ -1671,6 +1674,13 @@ components:
           format: date-time
           nullable: true
           description: Geschatte bezorgdatum (alleen bij brieven).
+        print_provider:
+          type: string
+          nullable: true
+          enum: [pingen, rest-endpoint]
+          description: >-
+            Printleverancier die de brief heeft geaccepteerd: `pingen` of de eigen printleverancier van de organisatie
+            (`rest-endpoint`). Alleen bij brieven.
         one_click_unsubscribe_url:
           type: string
           format: uri

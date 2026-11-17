@@ -172,8 +172,8 @@ def test_should_cache_template_and_service_in_redis_nl(mocker, api_client_reques
     expected_templates_key = f"service-{sample_template.service_id}-template-{sample_template.id}-version-None"
 
     assert mock_redis_get.call_args_list == [
-        call(expected_service_key),
-        call(expected_templates_key),
+        call(expected_service_key, skippable=True),
+        call(expected_templates_key, skippable=True),
     ]
 
     service_dict = service_schema.dump(sample_template.service)
@@ -255,50 +255,42 @@ def test_should_not_persist_or_send_notification_if_simulated_recipient_nl(
     assert Notification.query.count() == 0
 
 
-def test_post_email_notification_response_has_sanitised_content_info_for_sms_nl(
-    api_client_request, sample_service, mocker
+@pytest.mark.parametrize(
+    "template_type, recipient_dict, has_sanitised_content",
+    (
+        ("sms", {"phone_number": "0612345678"}, False),
+        (
+            "letter",
+            {
+                "personalisation": {
+                    "address_line_1": "Amala Pidge",
+                    "address_line_2": "6 Dove St",
+                    "address_line_3": "1234 AB Amsterdam",
+                }
+            },
+            False,
+        ),
+    ),
+)
+def test_post_email_notification_response_has_sanitised_content_info_for_emails_only(
+    api_client_request, sample_service, mocker, template_type, recipient_dict, has_sanitised_content
 ):
-    template = create_template(service=sample_service, template_type="sms")
-    mocker.patch("app.celery.provider_tasks.deliver_sms.apply_async")
-
-    data = {
-        "template_id": template.id,
-        "phone_number": "0612345678",
-    }
-
-    response = api_client_request.post(
-        template.service_id,
-        "v2_notifications.post_notification",
-        notification_type="sms",
-        _data=data,
-        _api_key_type="test",
-    )
-
-    assert "sanitised_content" not in response
-
-
-def test_post_email_notification_response_has_sanitised_content_info_for_letter_nl(
-    api_client_request, sample_service, mocker
-):
-    template = create_template(service=sample_service, template_type="letter")
+    template = create_template(service=sample_service, template_type=template_type)
+    mocker.patch("app.celery.provider_tasks.deliver_email.apply_async")
     mocker.patch("app.celery.letters_pdf_tasks.get_pdf_for_templated_letter.apply_async")
+    # test-key sends queue these in NotifyNL
+    mocker.patch("app.celery.provider_tasks.deliver_sms.apply_async")
     mocker.patch("app.celery.research_mode_tasks.create_fake_letter_callback.apply_async")
-
     data = {
         "template_id": template.id,
-        "personalisation": {
-            "address_line_1": "Amala Pidge",
-            "address_line_2": "6 Dove St",
-            "address_line_3": "1234 AB Amsterdam",
-        },
-    }
+    } | recipient_dict
 
     response = api_client_request.post(
         template.service_id,
         "v2_notifications.post_notification",
-        notification_type="letter",
+        notification_type=template_type,
         _data=data,
         _api_key_type="test",
     )
 
-    assert "sanitised_content" not in response
+    assert ("sanitised_content" in response) == has_sanitised_content

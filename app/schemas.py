@@ -2,6 +2,7 @@ from datetime import datetime, timedelta
 from uuid import UUID
 
 from dateutil.parser import parse
+from flask import current_app
 from flask_marshmallow.fields import fields
 from marshmallow import (
     EXCLUDE,
@@ -26,6 +27,7 @@ from app.clients.messagebox.ebms_adapter import get_messagebox_failure_reason
 from app.dao.permissions_dao import permission_dao
 from app.dao.template_email_files_dao import dao_get_template_email_files_by_template_id
 from app.letters.utils import get_letter_failure_reason
+from app.letters_nl.constants import LETTER_PROVIDERS
 from app.models import ServicePermission
 from app.utils import DATETIME_FORMAT, DATETIME_FORMAT_NO_TIMEZONE, parse_and_format_phone_number
 
@@ -330,6 +332,26 @@ class ServiceSchema(BaseSchema, UUIDsAsStringsMixin):
             "_email_sender_local_part",
         )
 
+    @post_dump(pass_original=True)
+    def dump_effective_letter_address_placement(self, data, service, **kwargs):
+        # [NotifyNL] with letters going straight to print providers, the organisation's provider decides
+        if "letter_address_placement" in data:
+            data["letter_address_placement"] = service.effective_letter_address_placement
+            # tells notifynl-admin the service can't choose it (dump-only: unknown keys aren't loaded)
+            data["letter_address_placement_decided_by_provider"] = bool(
+                current_app.config.get("LETTER_DELIVERY_VIA_PROVIDERS")
+            )
+            # the window its precompiled letters are checked against, so admin can explain a rejected letter
+            data["letter_address_window"] = service.letter_address_window.to_dict()
+        return data
+
+    @pre_load
+    def ignore_letter_address_placement_decided_by_provider(self, data, **kwargs):
+        # [NotifyNL] the dumped (effective) value mustn't be written back over the service's own setting
+        if current_app.config.get("LETTER_DELIVERY_VIA_PROVIDERS") and isinstance(data, dict):
+            data.pop("letter_address_placement", None)
+        return data
+
     @validates("letter_address_placement")
     def validate_letter_address_placement(self, value, data_key):
         if value is not None and value not in {"50mm", "60mm"}:
@@ -485,18 +507,6 @@ class TemplateSchema(BaseTemplateSchema, UUIDsAsStringsMixin):
             subject = data.get("subject")
             if not subject or subject.strip() == "":
                 raise ValidationError("Invalid template subject", "subject")
-
-
-class TemplateSchemaNoDetail(TemplateSchema):
-    class Meta(TemplateSchema.Meta):
-        fields = [
-            "folder",
-            "id",
-            "is_precompiled_letter",
-            "name",
-            "template_type",
-        ]
-        exclude: list[str] = []
 
 
 class TemplateHistorySchema(BaseTemplateSchema, UUIDsAsStringsMixin):
@@ -674,6 +684,17 @@ class NotificationWithTemplateSchema(BaseSchema):
         return data
 
     @post_dump
+    def add_print_provider(self, data, **kwargs):
+        # [NotifyNL] the print provider that accepted a letter (see Notification.print_provider); always present as
+        # a key for notifynl-admin's JSONModel, like the failure reasons
+        data["print_provider"] = (
+            data.get("sent_by")
+            if data.get("notification_type") == app.constants.LETTER_TYPE and data.get("sent_by") in LETTER_PROVIDERS
+            else None
+        )
+        return data
+
+    @post_dump
     def add_letter_failure_reason(self, data, **kwargs):
         # Decodes a letter's raw detailed_status_code (set when validation-failed or
         # virus-scan-failed) into a human-readable reason, mirroring
@@ -829,7 +850,6 @@ user_update_password_schema_load_json = UserUpdatePasswordSchema(only=("_passwor
 service_schema = ServiceSchema()
 detailed_service_schema = DetailedServiceSchema()
 template_schema = TemplateSchema()
-template_schema_no_detail = TemplateSchemaNoDetail()
 template_email_files_schema = TemplateEmailFilesSchema()
 api_key_schema = ApiKeySchema()
 job_schema = JobSchema()

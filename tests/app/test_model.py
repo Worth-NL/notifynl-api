@@ -289,6 +289,12 @@ def test_sms_notification_serializes_without_subject(client, sample_template):
 def test_email_notification_serializes_with_subject(client, sample_email_template):
     res = sample_email_template.serialize_for_v2()
     assert res["subject"] == "Email Subject"
+    assert res["personalisation"] == {}
+
+
+def test_template_serializes_personalisation_placeholders(client, sample_email_template_with_placeholders):
+    res = sample_email_template_with_placeholders.serialize_for_v2()
+    assert res["personalisation"] == {"name": {"required": True}}
 
 
 def test_letter_notification_serializes_with_subject(client, sample_letter_template):
@@ -310,7 +316,6 @@ def test_notification_serialize_with_cost_data_for_sms(client, sample_template, 
     assert response["cost_in_pounds"] == 0.0454
 
 
-@pytest.mark.skip(reason="[NOTIFYNL]  Needs further testing")
 @pytest.mark.parametrize("status", ["created", "sending", "delivered", "returned-letter"])
 def test_notification_serialize_with_cost_data_for_letter(client, sample_letter_template, letter_rate, status):
     notification = create_notification(sample_letter_template, billable_units=1, postage="second", status=status)
@@ -361,7 +366,6 @@ def test_notification_serialize_with_cost_data_uses_cache_to_get_sms_rate(client
     assert response["cost_in_pounds"] == 0.0454
 
 
-@pytest.mark.skip(reason="[NOTIFYNL]  Needs further testing")
 @freeze_time("2024-07-10 12:11:04.000000")
 def test_notification_serialize_with_cost_data_uses_cache_to_get_letter_rate(
     client, mocker, sample_letter_template, letter_rate, notify_db_session
@@ -434,7 +438,6 @@ def test_notification_serialize_with_cost_data_for_sms_when_data_not_ready(clien
     assert response["cost_in_pounds"] is None
 
 
-@pytest.mark.skip(reason="[NOTIFYNL] postage issue")
 @pytest.mark.parametrize("status", ["created", "pending-virus-check"])
 def test_notification_serialize_with_cost_data_for_letter_when_data_not_ready(
     client, sample_letter_template, letter_rate, status
@@ -448,7 +451,6 @@ def test_notification_serialize_with_cost_data_for_letter_when_data_not_ready(
     assert response["cost_in_pounds"] is None
 
 
-@pytest.mark.skip(reason="[NOTIFYNL] postage issue")
 @pytest.mark.parametrize("status", ["validation-failed", "technical-failure", "cancelled", "virus-scan-failed"])
 def test_notification_serialize_with_with_cost_data_for_letter_that_wasnt_sent(
     client, sample_letter_template, letter_rate, status
@@ -886,6 +888,8 @@ def test_organisation_serializes_with_all_fields(notify_db_session):
         "billing_contact_names": "Contact Name",
         "billing_contact_email_addresses": "billing@example.com",
         "billing_reference": "REF123",
+        "area_boundary": None,
+        "letter_provider": None,
         "can_approve_own_go_live_requests": True,
         "permissions": [],
     }
@@ -925,6 +929,8 @@ def test_organisation_serializes_with_minimal_fields(notify_db_session):
         "billing_contact_names": None,
         "billing_contact_email_addresses": None,
         "billing_reference": None,
+        "area_boundary": None,
+        "letter_provider": None,
         "can_approve_own_go_live_requests": False,
         "permissions": [],
     }
@@ -1360,6 +1366,7 @@ def test_notification_serialization_returns_all_fields(client, notify_db_session
         "scheduled_for": None,
         "postage": None,
         "one_click_unsubscribe_url": None,
+        "print_provider": None,
     }
 
 

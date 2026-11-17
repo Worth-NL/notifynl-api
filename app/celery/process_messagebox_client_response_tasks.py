@@ -5,7 +5,7 @@ from datetime import datetime
 import sentry_sdk
 from flask import current_app
 
-from app import notify_celery, statsd_client
+from app import notify_celery
 from app.clients import ClientException
 from app.clients.messagebox.ebms_adapter import get_messagebox_responses
 from app.config import TaskNamesNL
@@ -14,6 +14,7 @@ from app.dao import notifications_dao
 from app.notifications.notifications_ses_callback import (
     check_and_queue_callback_task,
 )
+from app.otel_metrics.notification import record_deliver_duration
 
 
 @notify_celery.task(
@@ -133,14 +134,15 @@ def _process_for_status(
         extra=log_extra,
     )
 
-    statsd_client.incr(f"callback.{client_name.lower()}.{notification_status}")
-
-    if notification.sent_at:
-        statsd_client.timing_with_dates(
-            f"callback.{client_name.lower()}.{notification_status}.elapsed-time",
-            datetime.utcnow(),
-            notification.sent_at,
-        )
+    # ebMS status responses carry no delivery timestamp, so only the callback duration is recorded
+    record_deliver_duration(
+        callback_duration=(datetime.utcnow() - notification.created_at).total_seconds(),
+        deliver_duration=None,
+        key_type=notification.key_type,
+        notification_status=notification_status,
+        notification_type="messagebox",
+        provider_name=client_name.lower(),
+    )
 
     if notification_status != NOTIFICATION_PENDING:
         check_and_queue_callback_task(notification)

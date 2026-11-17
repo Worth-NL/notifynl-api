@@ -1,8 +1,8 @@
 import uuid
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
-from itertools import groupby
+from itertools import chain, groupby, product
 from operator import attrgetter
 
 from botocore.exceptions import ClientError
@@ -33,6 +33,7 @@ from app.constants import (
     LETTER_TYPE,
     MESSAGEBOX_TERMINAL_STATUSES,
     MESSAGEBOX_TYPE,
+    NOTIFICATION_CANCELLED,
     NOTIFICATION_CREATED,
     NOTIFICATION_DELIVERED,
     NOTIFICATION_PENDING,
@@ -43,6 +44,7 @@ from app.constants import (
     NOTIFICATION_STATUS_TYPES,
     NOTIFICATION_STATUS_TYPES_COMPLETED,
     NOTIFICATION_STATUS_TYPES_DEPRECATED,
+    NOTIFICATION_TECHNICAL_FAILURE,
     NOTIFICATION_TEMPORARY_FAILURE,
     SMS_TYPE,
 )
@@ -50,6 +52,7 @@ from app.dao.dao_utils import autocommit
 from app.letters.utils import LetterPDFNotFound, find_letter_pdf_in_s3
 from app.models import (
     FactNotificationStatus,
+    KeyTypes,
     LetterCostThreshold,
     Notification,
     NotificationHistory,
@@ -253,6 +256,157 @@ def update_notification_status_by_id(
         detailed_status_code=detailed_status_code,
         messagebox_stadium=messagebox_stadium,
     )
+
+
+# [NotifyNL] print provider letter delivery: cancelling, claiming, marking sent and finding stranded or stuck letters
+@autocommit
+def dao_cancel_letter_if_still_cancellable(notification_id):
+    """
+    Cancel a letter only if it is still cancellable at write time, under a row lock. A letter can be handed to the
+    print provider (created -> sending) between a caller's letter_can_be_cancelled() check and this update, and a
+    letter that has already been sent must never be marked cancelled. Returns None if nothing was cancelled.
+    """
+    notification = (
+        Notification.query.with_for_update()
+        .filter(
+            Notification.id == notification_id,
+            Notification.status.in_([NOTIFICATION_CREATED, NOTIFICATION_PENDING_VIRUS_CHECK]),
+        )
+        .first()
+    )
+    if not notification:
+        return None
+
+    notification.status = NOTIFICATION_CANCELLED
+    dao_update_notification(notification)
+    return notification
+
+
+@autocommit
+def dao_claim_letter_for_sending(notification_id) -> bool:
+    """
+    Atomically move a letter from created to sending, so only one delivery attempt can hand it to the print provider.
+    Returns whether this caller claimed it.
+    """
+    return (
+        Notification.query.filter(
+            Notification.id == notification_id,
+            Notification.notification_type == LETTER_TYPE,
+            Notification.status == NOTIFICATION_CREATED,
+        ).update({"status": NOTIFICATION_SENDING, "updated_at": datetime.utcnow()}, synchronize_session=False)
+        == 1
+    )
+
+
+@autocommit
+def dao_mark_letter_sent(notification_id, sent_by) -> bool:
+    """A letter claimed for sending was accepted by its print provider. Returns whether it was still sending."""
+    now = datetime.utcnow()
+    return (
+        Notification.query.filter(
+            Notification.id == notification_id,
+            Notification.status == NOTIFICATION_SENDING,
+        ).update(
+            {"status": NOTIFICATION_SENT, "sent_by": sent_by, "sent_at": now, "updated_at": now},
+            synchronize_session=False,
+        )
+        == 1
+    )
+
+
+@autocommit
+def dao_update_letter_status_from_provider(
+    notification_id, status, from_statuses, provider, detailed_status_code=None
+) -> bool:
+    """
+    Apply a print provider's report on a letter if it is still in one of `from_statuses`. The status is checked in the
+    update itself, so of two reports processed at the same time only one gets through. Letters can be reported on
+    after they moved to notification_history. Returns whether the letter was updated.
+    """
+    now = datetime.utcnow()
+    for model in (Notification, NotificationHistory):
+        values = {
+            "status": status,
+            # the provider can report back before the delivery task marked the letter sent (which it then won't)
+            "sent_by": func.coalesce(model.sent_by, provider),
+            "sent_at": func.coalesce(model.sent_at, now),
+            "updated_at": now,
+        }
+        if detailed_status_code:
+            values["detailed_status_code"] = detailed_status_code
+        if model.query.filter(model.id == notification_id, model.status.in_(from_statuses)).update(
+            values, synchronize_session=False
+        ):
+            return True
+        if db.session.query(model.query.filter(model.id == notification_id).exists()).scalar():
+            return False
+    return False
+
+
+@autocommit
+def dao_touch_notification(notification_id):
+    Notification.query.filter(Notification.id == notification_id).update(
+        {"updated_at": datetime.utcnow()}, synchronize_session=False
+    )
+
+
+def dao_get_letters_ready_to_send_since(cutoff_time, limit=1000):
+    """Ids of letters ready to hand to a print provider that haven't changed since `cutoff_time`."""
+    return [
+        row.id
+        for row in db.session.query(Notification.id)
+        .filter(
+            Notification.notification_type == LETTER_TYPE,
+            Notification.status == NOTIFICATION_CREATED,
+            Notification.key_type == KEY_TYPE_NORMAL,
+            Notification.billable_units > 0,
+            func.coalesce(Notification.updated_at, Notification.created_at) < cutoff_time,
+        )
+        .order_by(Notification.created_at)
+        .limit(limit)
+    ]
+
+
+def dao_get_letters_stuck_sending(cutoff_time):
+    """
+    Letters claimed for sending that haven't been accepted by their print provider nor failed by `cutoff_time`. Only
+    letters going straight to a print provider: those have no sent_by until the provider accepts them, while letters
+    that went through notifynl-dvla-service got sent_by "dvla" when they became `sending`.
+    """
+    return (
+        Notification.query.filter(
+            Notification.notification_type == LETTER_TYPE,
+            Notification.status == NOTIFICATION_SENDING,
+            Notification.sent_by.is_(None),
+            Notification.key_type == KEY_TYPE_NORMAL,
+            func.coalesce(Notification.updated_at, Notification.created_at) < cutoff_time,
+        )
+        .order_by(Notification.created_at)
+        .all()
+    )
+
+
+def dao_get_letters_abandoned_sending(cutoff_time, not_before, limit=1000):
+    """
+    Ids of letters claimed for sending that no delivery attempt touched since `cutoff_time` (every attempt and retry
+    does), e.g. because the worker died during the attempt. Letters left alone since before `not_before` are left to
+    the stuck-sending alert instead.
+    """
+    last_touched = func.coalesce(Notification.updated_at, Notification.created_at)
+    return [
+        row.id
+        for row in db.session.query(Notification.id)
+        .filter(
+            Notification.notification_type == LETTER_TYPE,
+            Notification.status == NOTIFICATION_SENDING,
+            Notification.sent_by.is_(None),
+            Notification.key_type == KEY_TYPE_NORMAL,
+            last_touched < cutoff_time,
+            last_touched >= not_before,
+        )
+        .order_by(Notification.created_at)
+        .limit(limit)
+    ]
 
 
 @autocommit
@@ -668,16 +822,6 @@ class SlowProviderDeliveryReport:
 def get_slow_text_message_delivery_reports_by_provider(
     created_within_minutes, delivered_within_minutes
 ) -> list[SlowProviderDeliveryReport]:
-    """
-    Returns a dict of providers with the ratio of their messages sent in the
-    last `created_within_minutes` minutes that took over
-    `delivered_within_minutes` minutes to be delivered
-
-    {
-        'mmg': 0.4,
-        'firetext': 0.12
-    }
-    """
     created_since = datetime.utcnow() - timedelta(minutes=created_within_minutes)
     delivery_time = timedelta(minutes=delivered_within_minutes)
     slow_notification_counts = (
@@ -724,6 +868,164 @@ def get_slow_text_message_delivery_reports_by_provider(
         )
 
     return providers_slow_delivery_reports
+
+
+@dataclass
+class BandedSlowProviderDeliveryReport:
+    provider: str
+    slow_ratio: float
+    slow_notifications: int
+    total_notifications: int
+    sent_after_ago: timedelta
+    delivered_within: timedelta
+
+
+@retryable_query()
+def get_banded_slow_text_message_delivery_reports_by_provider(
+    bands: Sequence[tuple[timedelta, timedelta]],
+    *,
+    created_sent_difference_allowance: timedelta = timedelta(minutes=15),
+    session: Session | scoped_session = db.session,
+) -> Mapping[str, Sequence[BandedSlowProviderDeliveryReport]]:
+    for delivered_within, sent_after_ago in bands:
+        if sent_after_ago <= delivered_within:
+            raise ValueError("sent_after_ago must be greater than delivered_within")
+
+    uniform_now = datetime.utcnow()
+
+    created_after = uniform_now - (
+        max(sent_after_ago for delivered_within, sent_after_ago in bands) + created_sent_difference_allowance
+    )
+
+    # created_at can't be after sent_at so no allowance needed here
+    created_before = uniform_now - min(delivered_within for delivered_within, sent_after_ago in bands)
+
+    band_terms = tuple(
+        chain.from_iterable(
+            (
+                func.count()
+                .filter(
+                    and_(
+                        Notification.sent_at >= uniform_now - sent_after_ago,
+                        Notification.sent_at < uniform_now - delivered_within,
+                        or_(
+                            Notification.status != NOTIFICATION_DELIVERED,
+                            Notification.updated_at - Notification.sent_at >= delivered_within,
+                        ),
+                    )
+                )
+                .label(f"count_slow_band_{i}"),
+                func.count()
+                .filter(
+                    and_(
+                        Notification.sent_at >= uniform_now - sent_after_ago,
+                        Notification.sent_at < uniform_now - delivered_within,
+                    )
+                )
+                .label(f"count_total_band_{i}"),
+            )
+            for i, (delivered_within, sent_after_ago) in enumerate(bands)
+        )
+    )
+
+    # all bands collected in a single query using multiple count() aggregations each with
+    # different FILTER clauses corresponding to their bands. this is because a lot of the
+    # retrieved notifications will overlap due to the significant
+    # created_sent_difference_allowance and this way we can calculate all bands in a single
+    # pass.
+    slow_notification_counts = (
+        session.query(
+            ProviderDetails.identifier.label("provider_identifier"),
+            *band_terms,
+        )
+        .select_from(ProviderDetails)
+        .outerjoin(
+            Notification,
+            and_(
+                Notification.notification_type == SMS_TYPE,
+                Notification.sent_by == ProviderDetails.identifier,
+                # filtering by created_at has the additional benefit of being able to use created_at's index
+                Notification.created_at >= created_after,
+                Notification.created_at < created_before,
+                Notification.status.in_([NOTIFICATION_DELIVERED, NOTIFICATION_PENDING, NOTIFICATION_SENDING]),
+                Notification.key_type != KEY_TYPE_TEST,
+            ),
+        )
+        .filter(ProviderDetails.notification_type == "sms", ProviderDetails.active)
+        .group_by(ProviderDetails.identifier)
+    )
+
+    return {
+        row.provider_identifier: tuple(
+            BandedSlowProviderDeliveryReport(
+                provider=row.provider_identifier,
+                slow_ratio=getattr(row, f"count_slow_band_{i}") / (getattr(row, f"count_total_band_{i}") or 1),
+                slow_notifications=getattr(row, f"count_slow_band_{i}"),
+                total_notifications=getattr(row, f"count_total_band_{i}"),
+                sent_after_ago=sent_after_ago,
+                delivered_within=delivered_within,
+            )
+            for i, (delivered_within, sent_after_ago) in enumerate(bands)
+        )
+        for row in slow_notification_counts
+    }
+
+
+@retryable_query()
+def get_recent_undelivered_notification_ages(
+    age_le_buckets: Sequence[timedelta],
+    *,
+    created_sent_difference_allowance: timedelta = timedelta(minutes=15),
+    session: Session | scoped_session = db.session,
+) -> Mapping[tuple[str, str, str], Sequence[int]]:
+    uniform_now = datetime.utcnow()
+    sent_after = uniform_now - max(age_le_buckets)
+    created_after = sent_after - created_sent_difference_allowance
+
+    # can't just rely on whatever rows are present in the aggregation because we need
+    # to fill in holes with zeros so the gauge doesn't just propagate a bin's value
+    # from a previous time period when it did have a value
+    providers = session.query(ProviderDetails).all()
+    key_types = session.query(KeyTypes).all()
+
+    # start with zero-values for all valid series
+    series_map: dict[tuple[str, str, str], Sequence[int]] = {
+        (provider.identifier, provider.notification_type, key_type.name): (0,) * len(age_le_buckets)
+        for provider, key_type in product(providers, key_types)
+    }
+
+    # all buckets collected in a single query using multiple count() aggregations each with
+    # different FILTER clauses corresponding to their limits. this is because a lot of the
+    # retrieved notifications will overlap due to the significant
+    # created_sent_difference_allowance and this way we can calculate all buckets in a single
+    # pass.
+    for provider, notification_type, key_type, *counts in (
+        session.query(
+            Notification.sent_by,
+            Notification.notification_type,
+            Notification.key_type,
+            *(
+                func.count().filter(uniform_now - Notification.sent_at <= age_le).label(f"age_le_count_{i}")
+                for i, age_le in enumerate(age_le_buckets)
+            ),
+        )
+        .filter(
+            Notification.sent_at >= sent_after,
+            Notification.sent_at < uniform_now,
+            # filtering against created_at allows us to use its index
+            Notification.created_at >= created_after,
+            Notification.status.in_([NOTIFICATION_PENDING, NOTIFICATION_SENDING]),
+        )
+        .group_by(
+            Notification.notification_type,
+            Notification.sent_by,
+            Notification.key_type,
+        )
+        .all()
+    ):
+        series_map[(provider, notification_type, key_type)] = tuple(counts)
+
+    return series_map
 
 
 @autocommit
@@ -988,6 +1290,23 @@ def dao_old_letters_with_created_status():
 
 
 @retryable_query()
+def dao_letters_in_technical_failure(session: Session | scoped_session = db.session):
+    start_dt = datetime.utcnow() - timedelta(days=3)
+    end_dt = datetime.utcnow()
+    return (
+        session.query(Notification)
+        .filter(
+            Notification.notification_type == LETTER_TYPE,
+            Notification.status == NOTIFICATION_TECHNICAL_FAILURE,
+            Notification.created_at >= start_dt,
+            Notification.created_at < end_dt,
+        )
+        .order_by(Notification.created_at)
+        .all()
+    )
+
+
+@retryable_query()
 def _letters_missing_from_sending_bucket_inner(
     start_dt: datetime,
     end_dt: datetime,
@@ -1035,14 +1354,17 @@ def letters_missing_from_sending_bucket(
     return notifications
 
 
-def dao_precompiled_letters_still_pending_virus_check(max_minutes_ago_to_check):
+def dao_precompiled_letters_still_pending_virus_check(
+    max_minutes_ago_to_check: int,
+    min_minutes_ago_to_check: int = 10,
+):
     earliest_timestamp_to_check = datetime.utcnow() - timedelta(minutes=max_minutes_ago_to_check)
-    ten_minutes_ago = datetime.utcnow() - timedelta(minutes=10)
+    latest_timestamp_to_check = datetime.utcnow() - timedelta(minutes=min_minutes_ago_to_check)
 
     notifications = (
         Notification.query.filter(
-            Notification.created_at > earliest_timestamp_to_check,
-            Notification.created_at < ten_minutes_ago,
+            Notification.created_at >= earliest_timestamp_to_check,
+            Notification.created_at < latest_timestamp_to_check,
             Notification.status == NOTIFICATION_PENDING_VIRUS_CHECK,
             Notification.notification_type == LETTER_TYPE,
         )

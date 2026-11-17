@@ -3,6 +3,7 @@ name: PR
 on:
   pull_request:
     branches:
+      - main
       - develop
     types:
       - opened
@@ -81,17 +82,19 @@ jobs:
           enable-cache: true
           cache-dependency-glob: |
             requirements_nl.txt
-            requirements_nl_test.txt
 
       - name: Install application requirements (pip)
         run: uv pip install -r requirements_nl_test.txt
 
       - uses: astral-sh/ruff-action@v3
         with:
-          version-file: requirements_for_test.txt
+          version-file: requirements_nl_test.txt
 
       - name: Generate version file
         run: make generate-version-file
+
+      - name: Check superseded_tests_nl.toml
+        run: uv run pytest --collect-only -qq --nl-verify
 
       - uses: pavelzw/pytest-action@v2
         with:
@@ -101,68 +104,15 @@ jobs:
           custom-arguments: --junitxml=reports/pytest-unit.xml
           custom-pytest: uv run pytest
 
-      - uses: dorny/test-reporter@v2
+      # dorny/test-reporter, with xfailed and superseded tests counted separately from skipped
+      - uses: Worth-NL/ci-workflows/.github/actions/pytest-report@main
         if: ${{ !cancelled() }}
-        with:
-          name: PyTest Tests
-          path: reports/pytest-*.xml
-          reporter: java-junit
-          only-summary: true
-          use-actions-summary: false
-          badge-title: PYTEST
 
-  docker-test:
+  build:
+    if: github.event.pull_request.draft == false && github.base_ref == 'develop'
     runs-on: ubuntu-latest
 
     needs: unit-test
-
-    strategy:
-      matrix:
-        python-version: ["3.13"]
-        dockerfile-target: ["test", "concourse_tests"]
-
-    steps:
-      - uses: szenius/set-timezone@v2.0
-        with:
-          timezoneLinux: "Europe/Amsterdam"
-
-      - uses: actions/checkout@v4
-
-      - uses: gerlero/apt-install@v1
-        with:
-          packages: build-essential git libcurl4-openssl-dev curl libssl-dev
-          install-recommends: false
-
-      - uses: astral-sh/setup-uv@v6
-        with:
-          python-version: ${{ matrix.python-version }}
-          activate-environment: true
-          enable-cache: true
-          cache-dependency-glob: |
-            requirements_nl.txt
-            requirements_nl_test.txt
-
-      - name: Install application requirements (pip)
-        run: uv pip install -r requirements_nl_test.txt
-
-      - uses: docker/setup-qemu-action@v3
-
-      - uses: docker/setup-buildx-action@v3
-
-      - uses: docker/build-push-action@v6
-        with:
-          file: docker/Dockerfile
-          load: true
-          tags: ${{ env.IMAGE }}:test-${{ matrix.dockerfile-target }}
-          platforms: linux/amd64
-          provenance: false
-          target: ${{ matrix.dockerfile-target }}
-
-  build:
-    if: github.event.pull_request.draft == false
-    runs-on: ubuntu-latest
-
-    needs: docker-test
 
     permissions:
       contents: read
@@ -187,17 +137,18 @@ jobs:
 
       - uses: docker/build-push-action@v6
         with:
-          file: docker/Dockerfile
+          file: docker/Dockerfile_nl
           push: true
           tags: ${{ env.IMAGE }}:${{ steps.set-tag.outputs.tag }}
           platforms: linux/amd64
           provenance: false
+          target: production
 
     outputs:
       tag: ${{ steps.set-tag.outputs.tag }}
 
   deploy:
-    if: github.event.pull_request.draft == false
+    if: github.event.pull_request.draft == false && github.base_ref == 'develop'
     runs-on: ubuntu-latest
     needs: build
 
@@ -230,6 +181,7 @@ jobs:
         --set apps.apiWorkerReportRequestsNotificationsTasks.image.tag=${{ needs.build.outputs.tag }}
         --set apps.celeryBeat.image.tag=${{ needs.build.outputs.tag }}
         --set migrations.apiUpgrade.image.tag=${{ needs.build.outputs.tag }}
+        --set orgBoundariesSync.image.tag=${{ needs.build.outputs.tag }}
 
     steps:
       # Order matters: actions/checkout defaults to `clean: true`, which runs
@@ -272,13 +224,12 @@ jobs:
         with:
           version: v4.2.2
 
-      - name: Add chart repositories
-        run: |
-          helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
-          helm repo add grafana https://grafana.github.io/helm-charts
-
-      - name: Helm chart dependency build
-        run: helm dependency build
+      # `update` (unlike `build`) fetches any repository listed in
+      # notifynl-full's Chart.yaml on its own, so new chart dependencies
+      # need no `helm repo add` here. Versions there are pinned exactly, so
+      # it resolves the same charts Chart.lock records.
+      - name: Helm chart dependency update
+        run: helm dependency update
         working-directory: ${{ github.workspace }}/notifynl-full
 
       # notifynl-full pins migrations.apiUpgrade.{alphagovRevision,nlRevision}
@@ -300,6 +251,8 @@ jobs:
       # (required/fail template checks included) without persisting anything
       # or scheduling any pods. Uses the exact same flags as the real deploy
       # below so it can't drift out of sync and give a false pass.
+      # stdout (the rendered manifests, Secrets included) is discarded; errors
+      # still reach the log via stderr and the exit code still gates the deploy.
       - name: Pre-flight validation (dry-run, no cluster mutation)
         id: helm-dry-run
         run: |
@@ -311,7 +264,8 @@ jobs:
           --set migrations.apiUpgrade.alphagovRevision=${{ steps.migration-revisions.outputs.alphagov-revision }} \
           --set migrations.apiUpgrade.nlRevision=${{ steps.migration-revisions.outputs.nl-revision }} \
           --rollback-on-failure \
-          --dry-run=server
+          --dry-run=server \
+          > /dev/null
 
       - name: Deploy new tag
         id: helm-deploy
@@ -368,3 +322,21 @@ jobs:
               issue_number: context.issue.number,
               body
             })
+
+  smoke-test:
+    needs: deploy
+    if: github.event.pull_request.draft == false
+
+    # Must match what the called workflow's job requests -- a reusable
+    # workflow can only maintain or reduce the caller's permissions, never
+    # elevate them, and this workflow's top-level block grants contents: read
+    # alone.
+    permissions:
+      contents: read
+      checks: write
+      pull-requests: write
+
+    uses: Worth-NL/ci-workflows/.github/workflows/run-smoke-tests.yml@main
+    with:
+      project: api
+    secrets: inherit

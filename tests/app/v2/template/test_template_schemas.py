@@ -13,7 +13,7 @@ from app.v2.template.template_schemas import (
     post_template_preview_response,
 )
 
-valid_json_get_response = {
+valid_json_get_response: dict[str, object] = {
     "id": str(uuid.uuid4()),
     "type": SMS_TYPE,
     "created_at": "2017-01-10T18:25:43.511Z",
@@ -22,9 +22,10 @@ valid_json_get_response = {
     "created_by": "someone@test.com",
     "body": "some body",
     "name": "some name",
+    "personalisation": {},
 }
 
-valid_json_get_response_with_optionals = {
+valid_json_get_response_with_optionals: dict[str, object] = {
     "id": str(uuid.uuid4()),
     "type": EMAIL_TYPE,
     "created_at": "2017-01-10T18:25:43.511Z",
@@ -35,6 +36,7 @@ valid_json_get_response_with_optionals = {
     "subject": "some subject",
     "name": "some name",
     "postage": "first",
+    "personalisation": {"name": {"required": True}},
 }
 
 valid_request_args = [{"id": str(uuid.uuid4()), "version": 1}, {"id": str(uuid.uuid4())}]
@@ -93,7 +95,6 @@ def test_get_template_request_schema_against_invalid_args_is_invalid(args, error
         assert error["message"] in error_message
 
 
-@pytest.mark.skip(reason="[NOTIFYNL] Needs further testing Postage issue")
 @pytest.mark.parametrize("template_type", TEMPLATE_TYPES)
 @pytest.mark.parametrize("response", [valid_json_get_response, valid_json_get_response_with_optionals])
 @pytest.mark.parametrize("updated_datetime", [None, "2017-01-11T18:25:43.511Z"])
@@ -122,7 +123,6 @@ def test_post_template_preview_against_invalid_args_is_invalid(args, error_messa
         assert error["message"] in error_messages
 
 
-@pytest.mark.skip(reason="[NOTIFYNL] Needs further testing Postage issue")
 @pytest.mark.parametrize("template_type", TEMPLATE_TYPES)
 @pytest.mark.parametrize("response", [valid_json_post_response, valid_json_post_response_with_optionals])
 def test_post_template_preview_response_schema_is_valid(response, template_type):

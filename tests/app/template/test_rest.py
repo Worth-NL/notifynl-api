@@ -35,7 +35,6 @@ from tests.app.db import (
 from tests.conftest import set_config_values
 
 
-@pytest.mark.skip(reason="[NOTIFYNL] Postage issue")
 @pytest.mark.parametrize(
     "template_type, subject",
     [
@@ -114,7 +113,6 @@ def test_create_a_new_template_for_a_service_adds_folder_relationship(client, sa
     assert template.folder == parent_folder
 
 
-@pytest.mark.skip(reason="[NOTIFYNL] Postage issue")
 @pytest.mark.parametrize(
     "template_type, expected_postage", [(SMS_TYPE, None), (EMAIL_TYPE, None), (LETTER_TYPE, "second")]
 )
@@ -335,7 +333,6 @@ def test_must_have_a_subject_on_an_email_or_letter_template(client, sample_user,
     assert json_resp["errors"][0]["message"] == "subject is a required property"
 
 
-@pytest.mark.skip(reason="[NOTIFYNL] Postage issue")
 def test_update_should_update_a_template(client, sample_user):
     service = create_service(service_permissions=[LETTER_TYPE])
     template = create_template(service, template_type="letter", postage="second")
@@ -842,7 +839,6 @@ def test_create_a_template_with_reply_to(admin_request, sample_user):
     assert th.service_letter_contact_id == letter_contact.id
 
 
-@pytest.mark.skip(reason="[NOTIFYNL] Postage issue")
 def test_create_template_bilingual_letter(admin_request, sample_service_full_permissions, sample_user):
     letter_contact = create_letter_contact(sample_service_full_permissions, "Edinburgh, ED1 1AA")
     json_resp = admin_request.post(
@@ -892,7 +888,6 @@ def test_create_a_template_with_foreign_service_reply_to(admin_request, sample_u
     )
 
 
-@pytest.mark.skip(reason="[NOTIFYNL] Postage issue")
 @pytest.mark.parametrize(
     "post_data, expected_errors",
     [
@@ -937,7 +932,6 @@ def test_create_template_validates_against_json_schema(
     assert response["errors"] == expected_errors
 
 
-@pytest.mark.skip(reason="[NOTIFYNL] Postage issue")
 def test_create_template_validates_qr_code_too_long(
     admin_request,
     sample_service_full_permissions,
@@ -1084,6 +1078,31 @@ def test_update_template_content_and_archive_just_one_of_two_email_files(
     assert remaining_file.archived_by_id == None  # noqa
     assert remaining_file.version == 1
     assert remaining_file.template_version == 1
+
+
+def test_update_template_does_not_archive_email_file_from_another_template(
+    client, sample_email_template_with_template_email_files, sample_user, sample_service
+):
+    template = sample_email_template_with_template_email_files
+    other_template = create_template(service=sample_service, template_type=EMAIL_TYPE, template_name="other template")
+    other_file = create_template_email_file(
+        other_template.id, created_by_id=sample_user.id, filename="other.pdf", pending=False
+    )
+
+    auth_header = create_admin_authorization_header()
+    data = {
+        "content": "New content",
+        "created_by": str(sample_user.id),
+        "archive_email_file_ids": [str(other_file.id)],
+    }
+    response = client.post(
+        f"/service/{template.service_id}/template/{template.id}",
+        data=json.dumps(data),
+        headers=[("Content-Type", "application/json"), auth_header],
+    )
+
+    assert response.status_code == 404
+    assert other_file.archived_at is None
 
 
 def test_update_template_reply_to(client, sample_letter_template):

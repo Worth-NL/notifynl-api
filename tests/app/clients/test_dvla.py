@@ -5,7 +5,6 @@ import sys
 import time
 from collections import namedtuple
 from datetime import UTC, datetime
-from unittest.mock import Mock
 
 import boto3
 import freezegun
@@ -54,7 +53,7 @@ def ssm():
 
 @pytest.fixture
 def dvla_client(notify_api, client, ssm):
-    dvla_client = DVLAClient(notify_api, statsd_client=Mock())
+    dvla_client = DVLAClient(notify_api)
     yield dvla_client
 
 
@@ -463,7 +462,6 @@ def test_format_create_print_job_json_adds_callback_key_if_url_provided(dvla_cli
     }
 
 
-@pytest.mark.skip(reason="[NOTIFYNL] POSTAGE issue")
 def test_format_create_print_job_json_adds_despatchMethod_key_for_first_class_post(dvla_client):
     formatted_json = dvla_client._format_create_print_job_json(
         notification_id="my_notification_id",
@@ -479,7 +477,6 @@ def test_format_create_print_job_json_adds_despatchMethod_key_for_first_class_po
     assert formatted_json["standardParams"]["despatchMethod"] == "FIRST"
 
 
-@pytest.mark.skip(reason="[NOTIFYNL] POSTAGE issue")
 @pytest.mark.parametrize(
     "address, recipient, unstructured_address",
     [
@@ -636,7 +633,6 @@ def test_send_international_letter(dvla_client, dvla_authenticate, postage, desp
     }
 
 
-@pytest.mark.skip(reason="[NOTIFYNL] PostalAddress issue -  no BFPO")
 def test_send_bfpo_letter(dvla_client, dvla_authenticate, rmock):
     print_mock = rmock.post(
         f"{current_app.config['DVLA_API_BASE_URL']}/print-request/v1/print/jobs",
@@ -959,10 +955,7 @@ class TestDVLAApiClientRestrictedCiphers:
             method="GET",
         ).respond_with_data("OK")
 
-        dvla_client = DVLAClient(
-            fake_app,
-            statsd_client=mocker.Mock(),
-        )
+        dvla_client = DVLAClient(fake_app)
 
         with ca.cert_pem.tempfile() as ca_temp_path:
             response = dvla_client.session.get(
@@ -975,7 +968,7 @@ class TestDVLAApiClientRestrictedCiphers:
     def test_invalid_ciphers(self, mocker, server_base_url, fake_app):
         with pytest.raises(ssl.SSLError) as e:
             fake_app.config["DVLA_API_TLS_CIPHERS"] = "not-a-valid-cipher"
-            DVLAClient(fake_app, statsd_client=mocker.Mock())
+            DVLAClient(fake_app)
 
         assert "No cipher can be selected." in e.value.args
 
@@ -991,10 +984,7 @@ class TestDVLAApiClientRestrictedCiphers:
         fake_app,
     ):
         fake_app.config["DVLA_API_TLS_CIPHERS"] = ":".join(cipherlist.allowlist)
-        dvla_client = DVLAClient(
-            fake_app,
-            statsd_client=mocker.Mock(),
-        )
+        dvla_client = DVLAClient(fake_app)
 
         httpserver.expect_request(
             "/test",
@@ -1021,10 +1011,7 @@ class TestDVLAApiClientRestrictedCiphers:
         fake_app,
     ):
         fake_app.config["DVLA_API_TLS_CIPHERS"] = ":".join(cipherlist.blocklist)
-        dvla_client = DVLAClient(
-            fake_app,
-            statsd_client=mocker.Mock(),
-        )
+        dvla_client = DVLAClient(fake_app)
 
         httpserver.expect_request(
             "/test",
@@ -1041,7 +1028,6 @@ class TestDVLAApiClientRestrictedCiphers:
         assert "alert handshake failure" in str(e.value)
 
 
-@pytest.mark.skip(reason="[NOTIFYNL] Postage issue - no ECONONY")
 def test_format_create_print_job_json_adds_despatchMethod_key_for_economy_class_post(dvla_client):
     formatted_json = dvla_client._format_create_print_job_json(
         notification_id="my_notification_id",

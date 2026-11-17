@@ -2,7 +2,7 @@ name: Merge
 
 on:
   push:
-    branches: 
+    branches:
       - develop
       - main
 
@@ -44,11 +44,12 @@ jobs:
 
       - uses: docker/build-push-action@v6
         with:
-          file: docker/Dockerfile
+          file: docker/Dockerfile_nl
           push: true
           tags: ${{ env.IMAGE }}:${{ steps.set-tag.outputs.tag }}
           platforms: linux/amd64
           provenance: false
+          target: production
 
       - name: Release
         if: github.ref_name == 'main'

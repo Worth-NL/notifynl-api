@@ -8,8 +8,43 @@ from app.dao.organisation_dao import (
 )
 from app.dao.services_dao import dao_fetch_service_by_id
 from tests.app.db import (
+    create_organisation,
     create_user,
 )
+
+VALID_POLYGON = {
+    "type": "Polygon",
+    "coordinates": [[[4.30, 52.07], [4.32, 52.07], [4.32, 52.09], [4.30, 52.09], [4.30, 52.07]]],
+}
+
+
+def test_update_organisation_area_boundary(admin_request, notify_db_session):
+    org = create_organisation(name="Gemeente Den Haag")
+
+    assert org.area_boundary is None
+
+    admin_request.post(
+        "organisation.update_organisation",
+        _data={"area_boundary": VALID_POLYGON},
+        organisation_id=org.id,
+        _expected_status=204,
+    )
+
+    assert org.area_boundary == VALID_POLYGON
+
+
+def test_update_organisation_area_boundary_rejects_non_polygon_geometry(admin_request, notify_db_session):
+    org = create_organisation(name="Gemeente Rotterdam")
+
+    response = admin_request.post(
+        "organisation.update_organisation",
+        _data={"area_boundary": {"type": "Point", "coordinates": [4.3, 52.07]}},
+        organisation_id=org.id,
+        _expected_status=400,
+    )
+
+    assert response["errors"][0]["error"] == "ValidationError"
+    assert org.area_boundary is None
 
 
 def test_notify_org_users_of_request_to_go_live(

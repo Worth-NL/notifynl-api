@@ -4,9 +4,10 @@ from datetime import datetime, timedelta
 from celery import Task
 from celery.exceptions import Retry
 from flask import current_app, json
+from notifications_utils.json import RelaxedContainerJSONEncoder as RCJSONEncoder
 from sqlalchemy.orm.exc import NoResultFound
 
-from app import notify_celery, statsd_client
+from app import notify_celery
 from app.clients.email.aws_ses import get_aws_responses
 from app.config import QueueNames
 from app.constants import NOTIFICATION_PENDING, NOTIFICATION_SENDING
@@ -92,14 +93,18 @@ def process_ses_results(  # noqa: C901
             return
 
         if bounce_message:
+            bounce_message_bounce = bounce_message.get("bounce") or {}
             current_app.logger.info(
                 "SES bounce for notification ID %s",
                 notification.id,
                 extra={
                     "notification_id": notification.id,
-                    "bounce_message": json.dumps(bounce_message),
+                    "bounce_message": RCJSONEncoder().encode(bounce_message),
                     "bounced_at": delivery_dt,
                     "bounced_ago": (uniform_now - delivery_dt).total_seconds() if delivery_dt is not None else None,
+                    "bounce_message_type": bounce_message_bounce.get("bounceType"),
+                    "bounce_message_sub_type": bounce_message_bounce.get("bounceSubType"),
+                    "bounce_message_remote_mta_ip": bounce_message_bounce.get("remoteMtaIp"),
                     **common_extra,
                 },
             )
@@ -123,8 +128,6 @@ def process_ses_results(  # noqa: C901
                 references=[reference], update_dict={"status": notification_status}
             )
 
-        statsd_client.incr(f"callback.ses.{notification_status}")
-
         record_deliver_duration(
             callback_duration=(receipt_dt - notification.created_at).total_seconds() if receipt_dt else None,
             deliver_duration=(delivery_dt - notification.created_at).total_seconds() if delivery_dt else None,
@@ -134,12 +137,7 @@ def process_ses_results(  # noqa: C901
             provider_name="ses",
         )
 
-        if notification.sent_at:
-            statsd_client.timing_with_dates(
-                f"callback.ses.{notification_status}.elapsed-time", datetime.utcnow(), notification.sent_at
-            )
-
-        check_and_queue_callback_task(notification)
+        check_and_queue_callback_task(notification, receipt_dt=receipt_dt)
 
         return True
 

@@ -1,11 +1,15 @@
 import datetime
 from itertools import chain
+from uuid import UUID
 
-from sqlalchemy import select
+from flask import current_app
+from sqlalchemy import and_, or_, select
+from sqlalchemy.orm import Session, scoped_session
 
 from app import db
 from app.dao.dao_utils import VersionOptions, autocommit, version_class
 from app.models import Template, TemplateEmailFile, TemplateEmailFileHistory, TemplateHistory
+from app.utils import retryable_query
 
 
 @autocommit
@@ -47,9 +51,72 @@ def dao_get_template_email_files_by_template_id(template_id, template_version=No
     ).all()
 
 
-@autocommit
-def dao_get_template_email_file_by_id(template_email_file_id):
-    return TemplateEmailFile.query.filter(TemplateEmailFile.id == template_email_file_id).one()
+@retryable_query()
+def dao_get_template_email_file_by_id(
+    service_id,
+    template_id,
+    template_email_file_id,
+    session: Session | scoped_session = db.session,
+):
+    return (
+        session.query(TemplateEmailFile)
+        .join(Template, Template.id == TemplateEmailFile.template_id)
+        .filter(
+            TemplateEmailFile.id == template_email_file_id,
+            Template.service_id == service_id,
+            TemplateEmailFile.template_id == template_id,
+        )
+        .one()
+    )
+
+
+@retryable_query()
+def dao_get_archived_template_email_files_older_than(
+    session: Session | scoped_session = db.session,
+    *,
+    archived_before: datetime.datetime,
+    archived_after: datetime.datetime | None = None,
+    page_size: int | None = None,
+    older_than: UUID | None = None,
+):
+    if page_size is None:
+        page_size = current_app.config.get("API_PAGE_SIZE")
+
+    next_page_filter = []
+    if older_than is not None:
+        last_archived_at = (
+            session.query(TemplateEmailFile.archived_at).filter(TemplateEmailFile.id == older_than).scalar()
+        )
+
+        if last_archived_at is None:
+            return []
+
+        next_page_filter.append(
+            or_(
+                TemplateEmailFile.archived_at > last_archived_at,
+                and_(
+                    TemplateEmailFile.archived_at == last_archived_at,
+                    TemplateEmailFile.id > older_than,
+                ),
+            ),
+        )
+
+    return (
+        session.query(TemplateEmailFile, Template.service_id)
+        .join(Template, Template.id == TemplateEmailFile.template_id)
+        .filter(
+            TemplateEmailFile.archived_at.is_not(None),
+            *(() if archived_after is None else (TemplateEmailFile.archived_at >= archived_after,)),
+            TemplateEmailFile.archived_at <= archived_before,
+            *next_page_filter,
+        )
+        .order_by(
+            TemplateEmailFile.archived_at.asc(),
+            TemplateEmailFile.id.asc(),
+        )
+        .limit(page_size)
+        .all()
+    )
 
 
 @autocommit
@@ -85,6 +152,25 @@ def dao_make_pending_template_email_file_live(template_email_file: TemplateEmail
     VersionOptions(TemplateEmailFile, history_class=TemplateEmailFileHistory),
 )
 def dao_archive_template_email_file(file_to_archive, archived_by_id, template_version):
+    _archive_template_email_file(file_to_archive, archived_by_id, template_version)
+
+
+@autocommit
+def dao_archive_pending_files():
+    files_in_pending = TemplateEmailFile.query.filter(
+        TemplateEmailFile.pending,
+        TemplateEmailFile.archived_at == None,  # noqa: E711
+        datetime.datetime.utcnow() - TemplateEmailFile.created_at
+        > datetime.timedelta(hours=current_app.config.get("TEMPLATE_EMAIL_FILE_ARCHIVE_PERIOD_IN_HOURS")),
+    ).all()
+    for file in files_in_pending:
+        _archive_template_email_file(file, file.created_by_id)
+    return len(files_in_pending)
+
+
+def _archive_template_email_file(file_to_archive, archived_by_id, template_version=None):
+    if not template_version:
+        template_version = Template.query.get(file_to_archive.template_id).version
     if not file_to_archive.archived_at:
         file_to_archive.archived_at = datetime.datetime.utcnow()
         file_to_archive.archived_by_id = archived_by_id

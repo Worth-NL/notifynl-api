@@ -6,7 +6,12 @@ from typing import Any
 from celery.schedules import crontab
 from kombu import Exchange, Queue
 
-from app.constants import EMAIL_TYPE, INTERNATIONAL_SMS_TYPE, LETTER_TYPE, SMS_TYPE
+from app.constants import (
+    EMAIL_TYPE,
+    INTERNATIONAL_SMS_TYPE,
+    LETTER_TYPE,
+    SMS_TYPE,
+)
 
 
 class QueueNames:
@@ -137,6 +142,13 @@ class Config:
     # MMG Callback URL for delivery receipts
     # If this is not set, MMG will send to the URL that they have set up in their system
     MMG_RECEIPT_URL = os.getenv("MMG_RECEIPT_URL")
+    MMG_DELIVERY_STATUS_CALLBACK_BASIC_AUTH_CREDENTIALS = json.loads(
+        os.environ.get("MMG_DELIVERY_STATUS_CALLBACK_BASIC_AUTH_CREDENTIALS") or "null"
+    )
+    # expected to be a dict of usernames -> bcrypt hash of password
+    MMG_DELIVERY_STATUS_CALLBACK_ALLOWED_BASIC_AUTH_CREDENTIALS = json.loads(
+        os.environ.get("MMG_DELIVERY_STATUS_CALLBACK_ALLOWED_BASIC_AUTH_CREDENTIALS") or "{}"
+    )
 
     # Firetext API Key
     FIRETEXT_API_KEY = os.getenv("FIRETEXT_API_KEY")
@@ -145,6 +157,13 @@ class Config:
     # Firetext Callback URL for delivery receipts
     # If this is not set, Firetext will send to the URL that is set in the Firetext dashboard
     FIRETEXT_RECEIPT_URL = os.getenv("FIRETEXT_RECEIPT_URL")
+    FIRETEXT_DELIVERY_STATUS_CALLBACK_BASIC_AUTH_CREDENTIALS = json.loads(
+        os.environ.get("FIRETEXT_DELIVERY_STATUS_CALLBACK_BASIC_AUTH_CREDENTIALS") or "null"
+    )
+    # expected to be a dict of usernames -> bcrypt hash of password
+    FIRETEXT_DELIVERY_STATUS_CALLBACK_ALLOWED_BASIC_AUTH_CREDENTIALS = json.loads(
+        os.environ.get("FIRETEXT_DELIVERY_STATUS_CALLBACK_ALLOWED_BASIC_AUTH_CREDENTIALS") or "{}"
+    )
 
     # Prefix to identify queues in SQS
     NOTIFICATION_QUEUE_PREFIX = os.getenv("NOTIFICATION_QUEUE_PREFIX")
@@ -152,6 +171,8 @@ class Config:
     # URL of redis instance
     REDIS_URL = os.getenv("REDIS_URL")
     REDIS_ENABLED = False if os.environ.get("REDIS_ENABLED") == "0" else True
+    REDIS_SOCKET_TIMEOUT = 5
+    REDIS_SOCKET_CONNECT_TIMEOUT = 5
 
     ENABLE_SQS_MESSAGE_GROUP_IDS = os.environ.get("ENABLE_SQS_MESSAGE_GROUP_IDS", "1") == "1"
 
@@ -167,6 +188,7 @@ class Config:
     NOTIFY_LOG_LEVEL = os.getenv("NOTIFY_LOG_LEVEL", "INFO")
     NOTIFY_LOG_LEVEL_HANDLERS = os.getenv("NOTIFY_LOG_LEVEL_HANDLERS", NOTIFY_LOG_LEVEL)
 
+    NOTIFY_REQUEST_LOG_INCLUDE_BASIC_AUTH_USERNAME = True
     NOTIFY_REQUEST_LOG_LEVEL = os.getenv("NOTIFY_REQUEST_LOG_LEVEL", "INFO")
 
     # Cronitor
@@ -234,6 +256,8 @@ class Config:
     MAX_VERIFY_CODE_COUNT = 5
     MAX_FAILED_LOGIN_COUNT = 10
 
+    TEMPLATE_EMAIL_FILE_ARCHIVE_PERIOD_IN_HOURS = 24
+
     # these should always add up to 100%
     SMS_PROVIDER_RESTING_POINTS = {"mmg": 51, "firetext": 49}
 
@@ -247,6 +271,7 @@ class Config:
     ALREADY_REGISTERED_EMAIL_TEMPLATE_ID = "0880fbb1-a0c6-46f0-9a8e-36c986381ceb"
     CHANGE_EMAIL_CONFIRMATION_TEMPLATE_ID = "eb4d9930-87ab-4aef-9bce-786762687884"
     SERVICE_NOW_LIVE_TEMPLATE_ID = "618185c6-3636-49cd-b7d2-6f6f5eb3bdde"
+    MANAGING_YOUR_SERVICE_TEMPLATE_ID = "999813a9-d7d2-4b61-bc68-73b59937ca4e"
     ORGANISATION_INVITATION_EMAIL_TEMPLATE_ID = "203566f0-d835-47c5-aa06-932439c86573"
     TEAM_MEMBER_EDIT_EMAIL_TEMPLATE_ID = "c73f1d71-4049-46d5-a647-d013bdeca3f0"
     TEAM_MEMBER_EDIT_MOBILE_TEMPLATE_ID = "8a31520f-4751-4789-8ea1-fe54496725eb"
@@ -262,6 +287,7 @@ class Config:
     LETTERS_VOLUME_EMAIL_TEMPLATE_ID = "11fad854-fd38-4a7c-bd17-805fb13dfc12"
     NHS_EMAIL_BRANDING_ID = "a7dc4e56-660b-4db7-8cff-12c37b12b5ea"
     NHS_LETTER_BRANDING_ID = "2cd354bb-6b85-eda3-c0ad-6b613150459f"
+    NHS_NOTIFY_ORG_ID = "477f8870-af2b-4b81-9a2c-1fad12028919"
     REQUEST_INVITE_TO_SERVICE_TEMPLATE_ID = "77677459-f862-44ee-96d9-b8cb2323d407"
     RECEIPT_FOR_REQUEST_INVITE_TO_SERVICE_TEMPLATE_ID = "38bcd263-6ce8-431f-979d-8e637c1f0576"
     USER_RESEARCH_EMAIL_FOR_NEW_USERS_TEMPLATE_ID = "55bcb671-4924-46c5-a00d-1a9d48458008"
@@ -287,6 +313,7 @@ class Config:
         },
         "result_expires": 0,
         "timezone": "UTC",
+        "worker_max_tasks_per_child": int(os.getenv("CELERYD_WORKER_MAX_TASKS_PER_CHILD", 20_000)),
         "imports": [
             "app.celery.tasks",
             "app.celery.scheduled_tasks",
@@ -414,23 +441,42 @@ class Config:
                 # since we mark jobs as archived
                 "options": {"queue": QueueNames.PERIODIC},
             },
+            "remove-archived-letter-attachments-from-s3": {
+                "task": "remove-archived-letter-attachments-from-s3",
+                "schedule": crontab(hour=4, minute=30),
+                "options": {"queue": QueueNames.PERIODIC},
+            },
+            "remove-archived-template-email-files-from-s3": {
+                "task": "remove-archived-template-email-files-from-s3",
+                "schedule": crontab(hour=4, minute=40),
+                "options": {"queue": QueueNames.PERIODIC},
+            },
             "check-if-letters-still-in-created": {
                 "task": "check-if-letters-still-in-created",
                 "schedule": crontab(day_of_week="mon-fri", hour=7, minute=0),
                 "options": {"queue": QueueNames.PERIODIC},
             },
+            "check-if-letters-in-technical-failure": {
+                "task": "check-if-letters-in-technical-failure",
+                "schedule": crontab(hour=7, minute=0),
+                "options": {"queue": QueueNames.PERIODIC},
+            },
             "check-if-letters-still-pending-virus-check-ten-minutely": {
                 "task": "check-if-letters-still-pending-virus-check",
                 "schedule": crontab(minute="*/10"),
-                # check last half hour, every ten minutes
-                "kwargs": {"max_minutes_ago_to_check": 30},
+                # check last two hours, every ten minutes
+                "kwargs": {"max_minutes_ago_to_check": 120},
                 "options": {"queue": QueueNames.PERIODIC},
             },
             "check-if-letters-still-pending-virus-check-nightly": {
-                "task": "check-if-letters-still-pending-virus-check",
+                "task": "check-if-letters-still-pending-virus-check-nightly",
                 "schedule": crontab(hour=20, minute=0),
-                # check back two entire days, once per day, just in case things slipped through the net somehow
-                "kwargs": {"max_minutes_ago_to_check": 60 * 24 * 2},
+                # check back 5 entire days, attempting to rescan the last 3 days, once per day,
+                # just in case things slipped through the net somehow
+                "kwargs": {
+                    "max_minutes_ago_to_check_only": 60 * 24 * 5,
+                    "max_minutes_ago_to_check_and_rescan": 60 * 24 * 3,
+                },
                 "options": {"queue": QueueNames.PERIODIC},
             },
             "check-for-services-with-high-failure-rates-or-sending-to-tv-numbers": {
@@ -478,6 +524,11 @@ class Config:
                 "schedule": crontab(hour=10, minute=0, day_of_week="wed"),
                 "options": {"queue": QueueNames.PERIODIC},
             },
+            "archive-pending-files": {
+                "task": "archive-pending-files",
+                "schedule": crontab(hour=3, minute=33),
+                "options": {"queue": QueueNames.PERIODIC},
+            },
             # first tuesday of every month
             "change-dvla-api-key": {
                 "task": "change-dvla-api-key",
@@ -497,10 +548,6 @@ class Config:
     if os.getenv("CELERYD_PREFETCH_MULTIPLIER"):
         CELERY["worker_prefetch_multiplier"] = os.getenv("CELERYD_PREFETCH_MULTIPLIER")
 
-    STATSD_HOST = os.getenv("STATSD_HOST")
-    STATSD_PORT = 8125
-    STATSD_ENABLED = bool(STATSD_HOST)
-
     SENDING_NOTIFICATIONS_TIMEOUT_PERIOD = 259200  # 3 days
 
     SIMULATED_EMAIL_ADDRESSES = (
@@ -514,10 +561,23 @@ class Config:
     FREE_SMS_TIER_FRAGMENT_COUNT = 250000
 
     SMS_INBOUND_WHITELIST = json.loads(os.environ.get("SMS_INBOUND_WHITELIST", "[]"))
-    FIRETEXT_INBOUND_SMS_AUTH = json.loads(os.environ.get("FIRETEXT_INBOUND_SMS_AUTH", "[]"))
-    MMG_INBOUND_SMS_AUTH = json.loads(os.environ.get("MMG_INBOUND_SMS_AUTH", "[]"))
-    MMG_INBOUND_SMS_USERNAME = json.loads(os.environ.get("MMG_INBOUND_SMS_USERNAME", "[]"))
+    # both expected to be a dict of usernames -> bcrypt hash of password
+    MMG_INBOUND_SMS_CALLBACK_ALLOWED_BASIC_AUTH_CREDENTIALS = json.loads(
+        os.environ.get("MMG_INBOUND_SMS_CALLBACK_ALLOWED_BASIC_AUTH_CREDENTIALS", "{}")
+    )
+    FIRETEXT_INBOUND_SMS_CALLBACK_ALLOWED_BASIC_AUTH_CREDENTIALS = json.loads(
+        os.environ.get("FIRETEXT_INBOUND_SMS_CALLBACK_ALLOWED_BASIC_AUTH_CREDENTIALS", "{}")
+    )
     LOW_INBOUND_SMS_NUMBER_THRESHOLD = 50
+
+    # not normally needed as we're generally only *checking* these credentials,
+    # for which the hashes from the _ALLOWED_ settings are enough
+    MMG_INBOUND_SMS_CALLBACK_BASIC_AUTH_CREDENTIALS = json.loads(
+        os.environ.get("MMG_INBOUND_SMS_CALLBACK_BASIC_AUTH_CREDENTIALS", "null")
+    )
+    FIRETEXT_INBOUND_SMS_CALLBACK_BASIC_AUTH_CREDENTIALS = json.loads(
+        os.environ.get("FIRETEXT_INBOUND_SMS_CALLBACK_BASIC_AUTH_CREDENTIALS", "null")
+    )
 
     TEMPLATE_PREVIEW_API_HOST = os.environ.get("TEMPLATE_PREVIEW_API_HOST", "http://localhost:6013")
     TEMPLATE_PREVIEW_API_KEY = os.environ.get("TEMPLATE_PREVIEW_API_KEY", "my-secret-key")
@@ -529,6 +589,13 @@ class Config:
     MMG_URL = os.environ.get("MMG_URL", "https://api.mmg.co.uk/jsonv2a/api.php")
     FIRETEXT_URL = os.environ.get("FIRETEXT_URL", "https://www.firetext.co.uk/api/sendsms/json")
     SES_STUB_URL = os.environ.get("SES_STUB_URL")
+
+    RESEARCH_MODE_SELF_CALLBACK_MMG_BASIC_AUTH_CREDENTIALS = json.loads(
+        os.environ.get("RESEARCH_MODE_SELF_CALLBACK_MMG_BASIC_AUTH_CREDENTIALS") or "null"
+    )
+    RESEARCH_MODE_SELF_CALLBACK_FIRETEXT_BASIC_AUTH_CREDENTIALS = json.loads(
+        os.environ.get("RESEARCH_MODE_SELF_CALLBACK_FIRETEXT_BASIC_AUTH_CREDENTIALS") or "null"
+    )
 
     DVLA_API_BASE_URL = os.environ.get("DVLA_API_BASE_URL", "https://uat.driver-vehicle-licensing.api.gov.uk")
     DVLA_API_TLS_CIPHERS = os.environ.get("DVLA_API_TLS_CIPHERS")
@@ -555,6 +622,7 @@ class Config:
     S3_BUCKET_INVALID_PDF = os.environ.get("S3_BUCKET_INVALID_PDF")
     S3_BUCKET_TRANSIENT_UPLOADED_LETTERS = os.environ.get("S3_BUCKET_TRANSIENT_UPLOADED_LETTERS")
     S3_BUCKET_LETTER_SANITISE = os.environ.get("S3_BUCKET_LETTER_SANITISE")
+    S3_BUCKET_LETTER_ATTACHMENTS = os.environ.get("S3_BUCKET_LETTER_ATTACHMENTS", "local-letter-attachments")
 
     S3_BUCKET_REPORT_REQUESTS_DOWNLOAD = os.environ.get("S3_BUCKET_REPORT_REQUESTS_DOWNLOAD")
 
@@ -613,6 +681,7 @@ class Development(Config):
     S3_BUCKET_INVALID_PDF = "development-letters-invalid-pdf"
     S3_BUCKET_TRANSIENT_UPLOADED_LETTERS = "development-transient-uploaded-letters"
     S3_BUCKET_LETTER_SANITISE = "development-letters-sanitise"
+    S3_BUCKET_LETTER_ATTACHMENTS = "development-letter-attachments"
 
     S3_BUCKET_REPORT_REQUESTS_DOWNLOAD = "development-report-requests-download"
     S3_BUCKET_NOTIFICATION_DEEP_HISTORY = "development-notification-deep-history"
@@ -627,8 +696,12 @@ class Development(Config):
     DANGEROUS_SALT = "dev-notify-salt"
     ENCRYPTION_SECRET_KEY = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
 
-    MMG_INBOUND_SMS_AUTH = ["testkey"]
-    MMG_INBOUND_SMS_USERNAME = ["username"]
+    MMG_INBOUND_SMS_CALLBACK_ALLOWED_BASIC_AUTH_CREDENTIALS = {
+        "username": "$2b$04$JqCB477L3RTbIiENavb2EOPyv9dkWdL0XjSSCftcw7wynETJa/HgO",  # "testkey"
+    }
+    FIRETEXT_INBOUND_SMS_CALLBACK_ALLOWED_BASIC_AUTH_CREDENTIALS = {
+        "notify": "$2b$04$JqCB477L3RTbIiENavb2EOPyv9dkWdL0XjSSCftcw7wynETJa/HgO",  # "testkey"
+    }
 
     NOTIFY_ENVIRONMENT = "development"
     NOTIFY_EMAIL_DOMAIN = "notify.tools"
@@ -673,6 +746,7 @@ class Test(Development):
     S3_BUCKET_INVALID_PDF = "test-letters-invalid-pdf"
     S3_BUCKET_TRANSIENT_UPLOADED_LETTERS = "test-transient-uploaded-letters"
     S3_BUCKET_LETTER_SANITISE = "test-letters-sanitise"
+    S3_BUCKET_LETTER_ATTACHMENTS = "test-letter-attachments"
 
     S3_BUCKET_REPORT_REQUESTS_DOWNLOAD = "test-report-requests-download"
     S3_BUCKET_NOTIFICATION_DEEP_HISTORY = "test-notification-deep-history"
@@ -697,7 +771,6 @@ class Test(Development):
     API_HOST_NAME_INTERNAL = "http://localhost:6011"
 
     SMS_INBOUND_WHITELIST = ["203.0.113.195"]
-    FIRETEXT_INBOUND_SMS_AUTH = ["testkey"]
     TEMPLATE_PREVIEW_API_HOST = "http://localhost:9999"
 
     MMG_URL = "https://example.com/mmg"
@@ -765,6 +838,12 @@ class TaskNamesNL(TaskNames):
     MESSAGEBOX_VIRUS_SCAN_FAILED = "messagebox.virus-scan-failed"
     MESSAGEBOX_PROCESS_UNPROCESSED = "messagebox.process-unprocessed"
     MESSAGEBOX_CHECK_STILL_PENDING = "messagebox.check-still-pending"
+    DELIVER_LETTER_VIA_PROVIDER = "deliver-letter-via-provider"
+    CHECK_LETTER_ENDPOINT_CONNECTION = "check-letter-endpoint-connection"
+    DISPATCH_STRANDED_LETTERS = "dispatch-stranded-letters"
+    CHECK_LETTERS_STUCK_SENDING = "check-letters-stuck-sending"
+    CHECK_PROVIDER_LETTERS_IN_TECHNICAL_FAILURE = "check-provider-letters-in-technical-failure"
+    PROCESS_LETTER_PROVIDER_STATUS = "process-letter-provider-status"
     # Precompiled letters submitted as multiple PDFs, merged into one letter before delivery -
     # own dedicated task flow, parallel to (and independent of) the single-PDF SCAN_FILE/
     # SANITISE_LETTER/PROCESS_VIRUS_SCAN_* flow above.
@@ -782,6 +861,60 @@ class TaskNamesNL(TaskNames):
     PROCESS_VIRUS_SCAN_SUCCESS_LETTER_ATTACHMENTS = "process-virus-scan-success-letter-attachments"
     PROCESS_VIRUS_SCAN_FAILED_LETTER_ATTACHMENTS = "process-virus-scan-failed-letter-attachments"
     PROCESS_VIRUS_SCAN_ERROR_LETTER_ATTACHMENTS = "process-virus-scan-error-letter-attachments"
+
+
+# Beat tasks that only make sense when letters are delivered through notifynl-dvla-service. Print provider letters
+# have their own alerts (check-letters-stuck-sending, check-provider-letters-in-technical-failure) instead of the
+# DVLA-runbook ones.
+DVLA_LETTER_BEAT_TASKS = (
+    "check-time-to-collate-letters",
+    "change-dvla-api-key",
+    "change-dvla-password",
+    "raise-alert-if-letter-notifications-still-sending",
+    "check-if-letters-in-technical-failure",
+)
+
+
+def build_letter_beat_schedule(beat_schedule, delivery_via_providers, collation_frequency):
+    """
+    Letters go either through notifynl-dvla-service (DVLA collation) or straight to each organisation's print
+    provider (app/celery/letter_provider_tasks.py), never both, depending on LETTER_DELIVERY_VIA_PROVIDERS.
+    """
+    schedule = {key: value for key, value in beat_schedule.items() if key not in DVLA_LETTER_BEAT_TASKS}
+    if delivery_via_providers:
+        schedule[TaskNamesNL.DISPATCH_STRANDED_LETTERS] = {
+            "task": TaskNamesNL.DISPATCH_STRANDED_LETTERS,
+            "schedule": crontab(minute="*/5"),
+            "options": {"queue": QueueNamesNL.PERIODIC},
+        }
+        schedule[TaskNamesNL.CHECK_LETTERS_STUCK_SENDING] = {
+            "task": TaskNamesNL.CHECK_LETTERS_STUCK_SENDING,
+            "schedule": crontab(hour=9, minute=15),
+            "options": {"queue": QueueNamesNL.PERIODIC},
+        }
+        schedule[TaskNamesNL.CHECK_PROVIDER_LETTERS_IN_TECHNICAL_FAILURE] = {
+            "task": TaskNamesNL.CHECK_PROVIDER_LETTERS_IN_TECHNICAL_FAILURE,
+            "schedule": crontab(hour=7, minute=0),
+            "options": {"queue": QueueNamesNL.PERIODIC},
+        }
+    else:
+        schedule |= {key: value for key, value in beat_schedule.items() if key in DVLA_LETTER_BEAT_TASKS}
+        schedule["check-time-to-collate-letters"] = {
+            "task": "check-time-to-collate-letters",
+            "schedule": crontab(minute=collation_frequency),
+            "options": {"queue": QueueNamesNL.PERIODIC},
+        }
+    return schedule
+
+
+# Logius's pre-production GLOBE ebMS endpoints (preprod-globe-ebms-internet, ...). A `*` matches within one DNS label.
+PREPROD_GLOBE_EBMS_HOSTS = "preprod-globe-ebms-*.procesinfrastructuur.nl"
+
+
+def _comma_separated(value: str | None, default: tuple[str, ...]) -> tuple[str, ...]:
+    """A comma-separated env value as a tuple, or the default when the variable is unset or empty."""
+    items = tuple(item.strip() for item in (value or "").split(",") if item.strip())
+    return items or default
 
 
 class ConfigNL(Config):
@@ -805,25 +938,21 @@ class ConfigNL(Config):
     SPRYNG_API_KEY = os.getenv("SPRYNG_API_KEY")
     # Spryng Callback URL for delivery receipts
     # At the moment, Spryng only supports callbacks to a URL configured on their
-    # dashboard
-    # SPRYNG_RECEIPT_URL = os.getenv("SPRYNG_RECEIPT_URL")
+    # dashboard, so SPRYNG_RECEIPT_URL is deliberately not read from the environment.
 
     # Celery overrides
     BROKER_TRANSPORT_OPTIONS = {
         key: value for key, value in Config.CELERY["broker_transport_options"].items() if key != "predefined_queues"
     }
 
-    BEAT_SCHEDULE = {
-        key: value for key, value in Config.CELERY["beat_schedule"].items() if key != "check-time-to-collate-letters"
-    }
-
+    # Deliver letters straight to each organisation's print provider (Pingen or its own REST endpoint) instead of
+    # through notifynl-dvla-service. Off until an environment's letter providers are configured.
+    LETTER_DELIVERY_VIA_PROVIDERS = os.getenv("LETTER_DELIVERY_VIA_PROVIDERS", "0") == "1"
     LETTER_COLLATION_FREQUENCY = os.getenv("LETTER_COLLATION_FREQUENCY", "*/5")
 
-    BEAT_SCHEDULE["check-time-to-collate-letters"] = {
-        "task": "check-time-to-collate-letters",
-        "schedule": crontab(minute=LETTER_COLLATION_FREQUENCY),  # every 5 minutes, adjust as needed
-        "options": {"queue": QueueNamesNL.PERIODIC},
-    }
+    BEAT_SCHEDULE = build_letter_beat_schedule(
+        Config.CELERY["beat_schedule"], LETTER_DELIVERY_VIA_PROVIDERS, LETTER_COLLATION_FREQUENCY
+    )
 
     # The ebms-adapter has no true push callback -- delivery status is retrieved by polling the ebms-adapter for
     # unprocessed messages. 5 minutes matches the existing tend-providers-back-to-middle cadence and balances adapter
@@ -842,7 +971,11 @@ class ConfigNL(Config):
         "options": {"queue": QueueNamesNL.PERIODIC},
     }
 
-    CELERY_IMPORTS = Config.CELERY["imports"] + ["app.celery.messagebox_tasks", "app.celery.messagebox_scheduled_tasks"]
+    CELERY_IMPORTS = Config.CELERY["imports"] + [
+        "app.celery.messagebox_tasks",
+        "app.celery.messagebox_scheduled_tasks",
+        "app.celery.letter_provider_tasks",
+    ]
 
     CELERY = {
         **Config.CELERY,
@@ -851,10 +984,35 @@ class ConfigNL(Config):
         "imports": CELERY_IMPORTS,
     }
 
-    # Client-side SSL setup
-    # NOTE: For mTLS setup, trusted certificates should be added to the system certificates.
-    # For a custom bundle to be used, override the CURL_CA_BUNDLE environment variable.
+    # Letter providers: organisation admins configure their own REST endpoint, so only https URLs resolving to
+    # public addresses are allowed (see app/letters_nl/url_validation.py). Local development only: allow http and
+    # private hosts, for the local letter endpoint stub.
+    LETTER_ENDPOINT_ALLOW_INSECURE = False
+
+    # Pingen, the default letter provider (app/clients/letter/pingen.py). Staging unless configured otherwise: letters
+    # sent to Pingen's staging environment are never printed.
+    PINGEN_API_URL = os.getenv("PINGEN_API_URL", "https://api-staging.pingen.com")
+    PINGEN_IDENTITY_URL = os.getenv("PINGEN_IDENTITY_URL", "https://identity-staging.pingen.com")
+    PINGEN_CLIENT_ID = os.getenv("PINGEN_CLIENT_ID")
+    PINGEN_CLIENT_SECRET = os.getenv("PINGEN_CLIENT_SECRET")
+    PINGEN_ORGANISATION_ID = os.getenv("PINGEN_ORGANISATION_ID")
+    PINGEN_WEBHOOK_SIGNING_KEY = os.getenv("PINGEN_WEBHOOK_SIGNING_KEY")
+    PINGEN_DELIVERY_PRODUCT = os.getenv("PINGEN_DELIVERY_PRODUCT", "cheap")
+    PINGEN_PRINT_MODE = os.getenv("PINGEN_PRINT_MODE", "simplex")
+    PINGEN_PRINT_SPECTRUM = os.getenv("PINGEN_PRINT_SPECTRUM", "color")
+
+    # Client-side SSL setup for service callbacks and letter REST endpoints (see app/utils_nl.py)
+    # Per-hostname client certificates, named "<hostname with dots replaced by dashes>.pem"
     SSL_CERT_DIR = os.getenv("SSL_CERT_DIR", "/ssl")
+    # Client certificate for hosts without their own, unless listed in the comma-separated excluded hostnames
+    SSL_DEFAULT_CLIENT_CERT = os.getenv("SSL_DEFAULT_CLIENT_CERT")
+    SSL_DEFAULT_CLIENT_CERT_EXCLUDED_HOSTNAMES = frozenset(
+        hostname.strip().lower()
+        for hostname in os.getenv("SSL_DEFAULT_CLIENT_CERT_EXCLUDED_HOSTNAMES", "").split(",")
+        if hostname.strip()
+    )
+    # CA bundle for verifying those hosts' server certificates; notifynl-full sets CURL_CA_BUNDLE to its trust bundle
+    SSL_CA_BUNDLE = os.getenv("CURL_CA_BUNDLE")
 
     # these should always add up to 100%
     SMS_PROVIDER_RESTING_POINTS = {"mmg": 0, "firetext": 0, "spryng": 100}
@@ -878,8 +1036,8 @@ class ConfigNL(Config):
     SMS_CODE_TEMPLATE_ID = "f8209d70-9aa2-4a8c-89f9-00514492fa27"
 
     # Dutch phones
-    # TODO: To be fixed with unit tests
-    # SIMULATED_SMS_NUMBERS = ("+31612345678", "+31623456789", "+31634567890")
+    # TODO: once the unit tests are fixed, simulate these Dutch numbers instead of the UK ones:
+    # +31612345678, +31623456789 and +31634567890
 
     ASSET_PATH = "https://static.notifynl.nl/"
 
@@ -911,11 +1069,58 @@ class ConfigNL(Config):
     # free text, and the generic ebms_adapter_client default ("bericht") is
     # not itself a registered type in any known environment.
     EBMS_BERICHTENBOX_MESSAGE_TYPE = os.getenv("EBMS_BERICHTENBOX_MESSAGE_TYPE", "bericht")
+    # Messagebox CPAs managed in platform admin (app/messagebox/cpa_nl.py). EBMS_PUBLIC_ENDPOINT is this environment's
+    # own ebMS endpoint: a CPA naming any other endpoint for us would send Logius's replies to another environment, so
+    # selecting a CPA is refused while it's unset. The host allowlists name the Logius endpoints a CPA may deliver to,
+    # per purpose: `live` (normal API keys) and `team` (team keys, Logius pre-production). Only ProdNL allows
+    # Logius's production endpoint; everywhere else both purposes are pre-production only.
+    EBMS_PUBLIC_ENDPOINT = os.getenv("EBMS_PUBLIC_ENDPOINT", "")
+    EBMS_LIVE_ENDPOINT_HOSTS = _comma_separated(os.getenv("EBMS_LIVE_ENDPOINT_HOSTS"), (PREPROD_GLOBE_EBMS_HOSTS,))
+    EBMS_PREPROD_ENDPOINT_HOSTS = _comma_separated(
+        os.getenv("EBMS_PREPROD_ENDPOINT_HOSTS"), (PREPROD_GLOBE_EBMS_HOSTS,)
+    )
 
 
 class DevNL(ConfigNL):
     DEBUG = True
     SQLALCHEMY_ECHO = False
+
+    LETTER_ENDPOINT_ALLOW_INSECURE = True
+
+    # The devcontainer no longer runs notifynl-dvla-service, so local letters go straight to the print providers
+    # (stubbed by Mockoon below) unless the env says otherwise.
+    LETTER_DELIVERY_VIA_PROVIDERS = os.getenv("LETTER_DELIVERY_VIA_PROVIDERS", "1") == "1"
+
+    # Third-party APIs point at the devcontainer's Mockoon stub (meta-repo .devcontainer/config/mockoon) rather than the
+    # real SMS providers and Pingen's staging environment, unless the env says otherwise.
+    MMG_URL = os.getenv("MMG_URL", "http://localhost:6300/mmg")
+    FIRETEXT_URL = os.getenv("FIRETEXT_URL", "http://localhost:6300/firetext")
+    SPRYNG_URL = os.getenv("SPRYNG_URL", "http://localhost:6300/spryng")
+    PINGEN_API_URL = os.getenv("PINGEN_API_URL", "http://localhost:6300/pingen/api")
+    PINGEN_IDENTITY_URL = os.getenv("PINGEN_IDENTITY_URL", "http://localhost:6300/pingen/identity")
+    PINGEN_CLIENT_ID = os.getenv("PINGEN_CLIENT_ID", "stub")
+    PINGEN_CLIENT_SECRET = os.getenv("PINGEN_CLIENT_SECRET", "stub")
+    PINGEN_ORGANISATION_ID = os.getenv("PINGEN_ORGANISATION_ID", "00000000-0000-0000-0000-000000000000")
+
+    # Local development reaches the Test environment's ebms-core through a port-forward (scripts/port-forward-ebms.sh),
+    # so its CPAs name the Test endpoint as ours.
+    EBMS_PUBLIC_ENDPOINT = os.getenv("EBMS_PUBLIC_ENDPOINT", "https://ebms.test.notifynl.nl/ebms")
+
+    # Mockoon's MMG and Firetext delivery receipts (and research mode's own) authenticate as notify:testkey
+    MMG_DELIVERY_STATUS_CALLBACK_ALLOWED_BASIC_AUTH_CREDENTIALS = json.loads(
+        os.getenv("MMG_DELIVERY_STATUS_CALLBACK_ALLOWED_BASIC_AUTH_CREDENTIALS")
+        or '{"notify": "$2b$04$JqCB477L3RTbIiENavb2EOPyv9dkWdL0XjSSCftcw7wynETJa/HgO"}'
+    )
+    FIRETEXT_DELIVERY_STATUS_CALLBACK_ALLOWED_BASIC_AUTH_CREDENTIALS = json.loads(
+        os.getenv("FIRETEXT_DELIVERY_STATUS_CALLBACK_ALLOWED_BASIC_AUTH_CREDENTIALS")
+        or '{"notify": "$2b$04$JqCB477L3RTbIiENavb2EOPyv9dkWdL0XjSSCftcw7wynETJa/HgO"}'
+    )
+    RESEARCH_MODE_SELF_CALLBACK_MMG_BASIC_AUTH_CREDENTIALS = json.loads(
+        os.getenv("RESEARCH_MODE_SELF_CALLBACK_MMG_BASIC_AUTH_CREDENTIALS") or '["notify", "testkey"]'
+    )
+    RESEARCH_MODE_SELF_CALLBACK_FIRETEXT_BASIC_AUTH_CREDENTIALS = json.loads(
+        os.getenv("RESEARCH_MODE_SELF_CALLBACK_FIRETEXT_BASIC_AUTH_CREDENTIALS") or '["notify", "testkey"]'
+    )
 
     CELERY_WORKER_LOG_LEVEL = "INFO"
 
@@ -924,6 +1129,10 @@ class DevNL(ConfigNL):
     # set here explicitly rather than relying on the env var like other AWS clients do.
     CELERY = {
         **ConfigNL.CELERY,
+        # ConfigNL's schedule was built for its own LETTER_DELIVERY_VIA_PROVIDERS, so rebuild it for ours
+        "beat_schedule": build_letter_beat_schedule(
+            ConfigNL.CELERY["beat_schedule"], LETTER_DELIVERY_VIA_PROVIDERS, ConfigNL.LETTER_COLLATION_FREQUENCY
+        ),
         "broker_url": os.getenv("AWS_ENDPOINT_URL", "http://ministack:4566"),
         "broker_transport_options": {
             **ConfigNL.CELERY["broker_transport_options"],
@@ -1041,6 +1250,13 @@ class AccNL(ConfigNL):
 
 class ProdNL(ConfigNL):
     DEBUG = False
+
+    PINGEN_API_URL = os.getenv("PINGEN_API_URL", "https://api.pingen.com")
+    PINGEN_IDENTITY_URL = os.getenv("PINGEN_IDENTITY_URL", "https://identity.pingen.com")
+
+    EBMS_LIVE_ENDPOINT_HOSTS = _comma_separated(
+        os.getenv("EBMS_LIVE_ENDPOINT_HOSTS"), ("globe-ebms-internet.procesinfrastructuur.nl",)
+    )
 
     NOTIFY_EMAIL_DOMAIN = "notifynl.nl"
     FROM_NUMBER = "NOTIFYNL"

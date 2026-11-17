@@ -30,12 +30,11 @@ RUN echo "Install OS dependencies for python app requirements" &&  \
     rm -rf /var/lib/apt/lists/* /tmp/*
 
 COPY requirements.txt .
-COPY requirements_nl.txt .
 
 ENV UV_CACHE_DIR='/tmp/uv-cache/'
 RUN echo "Installing python requirements" && \
     python3 -m venv /opt/venv && \
-    uv pip sync --python /opt/venv/bin/python requirements_nl.txt
+    uv pip sync --python /opt/venv/bin/python requirements.txt
 
 COPY . .
 RUN make generate-version-file  # This file gets copied across
@@ -87,9 +86,9 @@ RUN mkdir -p app
 COPY --from=python_build --chown=notify:notify /opt/venv /opt/venv
 
 # Install dev/test requirements
-COPY --chown=notify:notify Makefile requirements_for_test.txt requirements_nl_test.txt ./
+COPY --chown=notify:notify Makefile requirements_for_test.txt ./
 ENV UV_CACHE_DIR='/tmp/uv-cache/'
-RUN make bootstrap-nl
+RUN make bootstrap
 
 COPY --chown=notify:notify . .
 
@@ -126,12 +125,12 @@ COPY --chown=notify:notify . .
 ENV SQLALCHEMY_DATABASE_URI=postgresql+psycopg2://postgres:postgres@localhost:5432/
 
 ENV UV_CACHE_DIR='/tmp/uv-cache/'
-RUN uv pip sync requirements_nl_test.txt
+RUN uv pip sync requirements_for_test.txt
 
 USER root
 
 ENV POSTGRES_VERSION=15 \
-    POSTGRES_REPO_FINGERPRINT=B97B0AFCAA1A47F044F244A07FCC7D46ACCC4CF8
+    POSTGRES_REPO_KEY=B97B0AFCAA1A47F044F244A07FCC7D46ACCC4CF8
 
 RUN \
     apt-get update \
@@ -145,10 +144,10 @@ RUN \
 RUN set -x \
     && export GNUPGHOME="$(mktemp -d)" \
     && ( \
-      gpg --batch --keyserver hkps://keyserver.ubuntu.com --recv-keys "$POSTGRES_REPO_FINGERPRINT" \
-      || gpg --batch --keyserver hkps://pgp.mit.edu --recv-keys "$POSTGRES_REPO_FINGERPRINT" \
+      gpg --batch --keyserver hkps://keyserver.ubuntu.com --recv-keys "$POSTGRES_REPO_KEY" \
+      || gpg --batch --keyserver hkps://pgp.mit.edu --recv-keys "$POSTGRES_REPO_KEY" \
     ) \
-    && gpg --batch --export "$POSTGRES_REPO_FINGERPRINT" > /etc/apt/trusted.gpg.d/postgres.gpg \
+    && gpg --batch --export "$POSTGRES_REPO_KEY" > /etc/apt/trusted.gpg.d/postgres.gpg \
     && command -v gpgconf > /dev/null && gpgconf --kill all \
     &&rm -rf "$GNUPGHOME" \
     && apt-key list
@@ -159,7 +158,17 @@ RUN \
     && apt-get update \
     && apt-get install -y --no-install-recommends \
         postgresql-$POSTGRES_VERSION \
+        postgresql-$POSTGRES_VERSION-wal2json \
     && rm -rf /var/lib/apt/lists/* /tmp/*
+
+# add WAL configuration to postgresql.conf to enable logical replication
+RUN printf '%s\n' \
+    "wal_level = logical" \
+    "output_plugin_libraries = 'pgoutput, test_decoding, wal2json'" \
+    "max_replication_slots = 10" \
+    "max_wal_senders = 10" \
+    "max_slot_wal_keep_size = 1GB" \
+    >> /etc/postgresql/$POSTGRES_VERSION/main/postgresql.conf
 
 RUN \
     service postgresql start \

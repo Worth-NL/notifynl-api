@@ -335,17 +335,10 @@ def fetch_usage_for_service_by_month(service_id, year):
     The "postage" field is "none" except for letters. Each subquery takes care
     of anything specific to the notification type e.g. rate multipliers for SMS.
 
-    Since the data in ft_billing is only refreshed once a day for all services,
-    we also update the table on-the-fly if we need accurate data for this year.
+    [NOTIFYNL] Reads ft_billing only. Upstream recomputes today's rows on every call (1,152 queries plus a write on
+    the primary database), which made the usage page hang. The hourly update-ft-billing-for-today task keeps today's
+    rows current, as fetch_usage_for_organisation already relies on.
     """
-    _, year_end = get_financial_year_dates(year)
-    today = convert_utc_to_bst(datetime.utcnow()).date()
-
-    # if year end date is less than today, we are calculating for data in the past and have no need for deltas.
-    if year_end >= today:
-        data = fetch_billing_data_for_day(process_day=today, service_ids=[service_id], check_permissions=True)
-        update_ft_billing(billing_data=data, process_day=today)
-
     return (
         db.session.query(
             union(
@@ -658,7 +651,8 @@ def _query_for_billing_data(notification_type, start_dt, end_dt, service_ids, ch
             )
             .filter(
                 NotificationAllTimeView.status.in_(NOTIFICATION_STATUS_TYPES_SENT_MESSAGEBOX),
-                NotificationAllTimeView.key_type.in_((KEY_TYPE_NORMAL, KEY_TYPE_TEAM)),
+                # [NotifyNL] team keys send messagebox to Logius pre-production, which isn't billed
+                NotificationAllTimeView.key_type == KEY_TYPE_NORMAL,
                 NotificationAllTimeView.created_at >= start_dt,
                 NotificationAllTimeView.created_at < end_dt,
                 NotificationAllTimeView.notification_type == notification_type,

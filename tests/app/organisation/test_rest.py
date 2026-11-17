@@ -92,6 +92,8 @@ def test_get_organisation_by_id(admin_request, notify_db_session):
         "billing_contact_email_addresses",
         "billing_reference",
         "purchase_order_number",
+        "area_boundary",
+        "letter_provider",
         "can_approve_own_go_live_requests",
         "permissions",
     }
@@ -307,7 +309,7 @@ def test_post_create_organisation_existing_name_raises_400(admin_request, sample
             },
             (
                 "organisation_type foo is not one of "
-                "[central, local, nhs_central, nhs_local, nhs_gp, emergency_service, school_or_college, "
+                "[central, local, nhs_central, nhs_local, nhs_gp, nhs_notify, emergency_service, school_or_college, "
                 "other]"
             ),
         ),
@@ -1230,7 +1232,6 @@ def test_remove_letter_branding_from_organisation_pool_cannot_remove_default_bra
     assert sample_organisation.letter_branding_pool == [branding]
 
 
-@pytest.mark.skip(reason="[NOTIFYNL] using nl email internationalization ")
 def test_notify_org_users_of_request_to_go_live(
     mocker,
     admin_request,

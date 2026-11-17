@@ -1,21 +1,22 @@
-import json
 import logging
-import os
 from contextvars import ContextVar
-from urllib.parse import urlparse
+from datetime import datetime
 
 import requests
 from flask import current_app
+from notifications_utils.json import RelaxedContainerJSONEncoder as RCJSONEncoder
 from notifications_utils.local_vars import LazyLocalGetter
 from werkzeug.local import LocalProxy
 
 from app import memo_resetters, notify_celery, signing
 from app.config import QueueNames
-from app.constants import MESSAGEBOX_TYPE
+from app.constants import MESSAGEBOX_TYPE, ServiceCallbackTypes
 from app.dao.inbound_sms_dao import dao_get_inbound_sms_by_id
 from app.dao.returned_letters_dao import fetch_returned_letter_callback_data_dao
 from app.dao.service_callback_api_dao import get_service_callback_api_by_callback_type
+from app.otel_metrics.service_callback import record_service_callback_forward_duration
 from app.utils import DATETIME_FORMAT
+from app.utils_nl import get_ca_bundle, get_client_certificate
 
 # thread-local copies of persistent requests.Session
 _requests_session_context_var: ContextVar[requests.Session] = ContextVar("service_callback_requests_session")
@@ -57,7 +58,9 @@ def send_returned_letter_to_service(self, encoded_returned_letter):
 @notify_celery.task(
     bind=True, name="send-delivery-status", max_retries=5, default_retry_delay=300, early_log_level=logging.DEBUG
 )
-def send_delivery_status_to_service(self, notification_id, encoded_status_update):
+def send_delivery_status_to_service(
+    self, notification_id, encoded_status_update, *, receipt_iso_timestamp: str | None = None
+):
     status_update = signing.decode(encoded_status_update)
 
     data = {
@@ -78,14 +81,25 @@ def send_delivery_status_to_service(self, notification_id, encoded_status_update
         "template_version": status_update["template_version"],
     }
 
-    _send_data_to_service_callback_api(
-        self,
-        data,
-        status_update["service_callback_api_url"],
-        status_update["service_callback_api_bearer_token"],
-        data["id"],
-        {"notification_id": data["id"]},
-    )
+    start_dt = datetime.utcnow()
+
+    try:
+        _send_data_to_service_callback_api(
+            self,
+            data,
+            status_update["service_callback_api_url"],
+            status_update["service_callback_api_bearer_token"],
+            data["id"],
+            {"notification_id": data["id"]},
+        )
+    finally:
+        if receipt_iso_timestamp:
+            record_service_callback_forward_duration(
+                (start_dt - datetime.fromisoformat(receipt_iso_timestamp)).total_seconds(),
+                str(ServiceCallbackTypes.delivery_status),
+                self.request.retries,
+                status_update["notification_type"],
+            )
 
 
 @notify_celery.task(bind=True, name="send-complaint", max_retries=5, default_retry_delay=300)
@@ -112,7 +126,7 @@ def send_complaint_to_service(self, complaint_data):
 
 @notify_celery.task(bind=True, name="send-inbound-sms", max_retries=5, default_retry_delay=300)
 def send_inbound_sms_to_service(self, inbound_sms_id, service_id):
-    inbound_api = get_service_callback_api_by_callback_type(service_id, "inbound_sms")
+    inbound_api = get_service_callback_api_by_callback_type(service_id, str(ServiceCallbackTypes.inbound_sms))
 
     if not inbound_api:
         # No API data has been set for this service
@@ -128,9 +142,18 @@ def send_inbound_sms_to_service(self, inbound_sms_id, service_id):
         "date_received": inbound_sms.provider_date.strftime(DATETIME_FORMAT),
     }
 
-    _send_data_to_service_callback_api(
-        self, data, inbound_api.url, inbound_api.bearer_token, data["id"], {"inbound_sms_id": data["id"]}
-    )
+    start_dt = datetime.utcnow()
+
+    try:
+        _send_data_to_service_callback_api(
+            self, data, inbound_api.url, inbound_api.bearer_token, data["id"], {"inbound_sms_id": data["id"]}
+        )
+    finally:
+        record_service_callback_forward_duration(
+            (start_dt - inbound_sms.created_at).total_seconds(),
+            str(ServiceCallbackTypes.inbound_sms),
+            self.request.retries,
+        )
 
 
 def _send_data_to_service_callback_api(self, data, service_callback_url, token, id_display, log_extra):
@@ -143,22 +166,17 @@ def _send_data_to_service_callback_api(self, data, service_callback_url, token, 
         request_kwargs = {
             "method": "POST",
             "url": service_callback_url,
-            "data": json.dumps(data),
+            "data": RCJSONEncoder().encode(data),
             "headers": {"Content-Type": "application/json", "Authorization": f"Bearer {token}"},
             "timeout": 5,
         }
 
-        ### [NotifyNL] #################################################################################################
-        certificate_name = f"{urlparse(service_callback_url).hostname.replace('.', '-')}.pem"
-        certificate_path = f"{current_app.config.get('SSL_CERT_DIR')}/{certificate_name}"
-
-        if os.path.exists(certificate_path):
-            current_app.logger.info(
-                "Certificate [%s] found for [%s], using as client certificate.", certificate_name, service_callback_url
-            )
-
-            request_kwargs["cert"] = certificate_path
-        ################################################################################################################
+        # [NotifyNL] mTLS: send a client certificate when one exists for the callback's host
+        client_certificate = get_client_certificate(service_callback_url)
+        log_extra["client_certificate_source"] = client_certificate.source
+        if client_certificate.path:
+            request_kwargs["cert"] = client_certificate.path
+        request_kwargs["verify"] = get_ca_bundle()
 
         response = requests_session.request(**request_kwargs)
 
@@ -213,7 +231,10 @@ def create_delivery_status_callback_data(notification, service_callback_api):
         # URL, encrypted or not: it's meaningless ciphertext to the receiving
         # service, and decrypting it just to re-send over HTTP would reintroduce
         # exposure this change is meant to close.
-        "notification_to": None if notification.notification_type == MESSAGEBOX_TYPE else notification.to,
+        # [NotifyNL] NotificationHistory has no `to` column; a provider can report back after the move to history.
+        "notification_to": (
+            None if notification.notification_type == MESSAGEBOX_TYPE else getattr(notification, "to", None)
+        ),
         "notification_status": notification.status,
         "notification_detailed_status_code": notification.detailed_status_code,
         "notification_created_at": notification.created_at.strftime(DATETIME_FORMAT),

@@ -411,7 +411,6 @@ def test_persist_notification_does_not_increment_cache_if_test_key(
     assert not daily_limit_cache.called
 
 
-@pytest.mark.skip(reason="[NOTIFYNL] UK phone numbers considered international now, which adds another call")
 @pytest.mark.parametrize(
     "recipient, notification_type",
     [
@@ -462,7 +461,6 @@ def test_persist_notification_increments_cache_for_trial_or_live_service(
         ]
 
 
-@pytest.mark.skip(reason="[NOTIFYNL] UK phone numbers considered international now, which adds another call")
 @pytest.mark.parametrize("restricted_service", [True, False])
 @freeze_time("2016-01-01 11:09:00.061258")
 def test_persist_notification_sets_daily_limit_cache_if_one_does_not_exist(
@@ -529,7 +527,6 @@ def test_persist_notification_increments_cache_for_international_sms(notify_api,
         ]
 
 
-@pytest.mark.skip(reason="[NOTIFYNL] UK phone numbers considered international now, which adds another call")
 @freeze_time("2016-01-01 11:09:00.061258")
 def test_persist_notification_doesnt_increment_cache_for_international_sms_when_num_is_crown_dependency(
     notify_api, notify_db_session, mocker
@@ -621,6 +618,60 @@ def test_persist_notification_increments_cache_for_international_sms_if_the_cach
             mocker.call(f"{service.id}-sms-2016-01-01-count", 1, ex=86400),
             mocker.call(f"{service.id}-international_sms-2016-01-01-count", 1, ex=86400),
         ]
+
+
+@pytest.mark.parametrize(
+    "unformatted_recipient, normalised_recipient, prefix, should_log",
+    [
+        ("+447111111111", "447111111111", "71111", True),  # protected block number
+        ("+447700900001", "447700900001", "", False),  # normal tv number
+        ("+447700900111", "447700900111", "", False),  # smoke test number
+        ("+447988957616", "447988957616", "", False),  # non-protected uk number
+        ("+48697894064", "48697894064", "", False),  # international number
+    ],
+)
+def test_persist_notification_logs_when_sms_sent_to_uk_number_in_ofcom_protected_range(
+    notify_api,
+    notify_db_session,
+    mocker,
+    sample_template,
+    sample_api_key,
+    sample_job,
+    caplog,
+    unformatted_recipient,
+    normalised_recipient,
+    prefix,
+    should_log,
+):
+    caplog.set_level("INFO")
+    mocker.patch("app.notifications.process_notifications.redis_store.get", return_value=None)
+    persist_notification(
+        template_id=sample_template.id,
+        template_version=sample_template.version,
+        recipient={
+            "unformatted_recipient": unformatted_recipient,
+            "normalised_to": normalised_recipient,
+            "international": False,
+            "phone_prefix": "44",
+            "rate_multiplier": 1,
+        },
+        service=sample_template.service,
+        personalisation={},
+        notification_type=SMS_TYPE,
+        api_key_id=sample_api_key.id,
+        key_type=sample_api_key.key_type,
+        job_id=sample_job.id,
+        job_row_number=100,
+        reference="ref",
+        reply_to_text=sample_template.service.get_default_sms_sender(),
+    )
+    if should_log:
+        assert (
+            caplog.records[0].message
+            == f"Service {sample_template.service.id} tried to send to UK mobile number in ofcom protected range. Prefix without leading zero: {prefix}"  # noqa: E501
+        )
+    else:
+        assert caplog.records == []
 
 
 @pytest.mark.parametrize(
@@ -717,7 +768,6 @@ def test_send_notification_to_queue_throws_exception_deletes_notification(sample
         ("valid_email@test.com", EMAIL_TYPE, False),
     ],
 )
-@pytest.mark.skip(reason="[NOTIFYNL] Dutch phone number implementation breaks this test")
 def test_simulated_recipient(notify_api, to_address, notification_type, expected):
     """
     The values where the expected = 'research-mode' are listed in the config['SIMULATED_EMAIL_ADDRESSES']

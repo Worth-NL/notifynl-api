@@ -5,7 +5,7 @@ import uuid
 from flask import current_app, url_for
 from jsonschema import ValidationError, validate
 from notifications_utils.insensitive_dict import InsensitiveDict
-from notifications_utils.letter_timings import get_letter_timings
+from notifications_utils.letter_timings import LetterTimings
 from notifications_utils.recipient_validation.email_address import validate_email_address
 from notifications_utils.recipient_validation.errors import InvalidRecipientError
 from notifications_utils.recipient_validation.notifynl.phone_number import PhoneNumber
@@ -76,6 +76,8 @@ from app.constants import (
 )
 from app.hashing import check_hash, hashpw
 from app.history_meta import Versioned
+from app.letters_nl.address_windows import letter_address_window_for
+from app.letters_nl.constants import LETTER_PROVIDER_PINGEN, LETTER_PROVIDERS, PINGEN_ADDRESS_PLACEMENT
 from app.models_types import (
     LetterCostDetails,
     SerializedAnnualBilling,
@@ -106,6 +108,7 @@ from app.models_types import (
     SerializedServiceSmsSender,
     SerializedTemplateEmailFile,
     SerializedTemplateFolder,
+    SerializedTemplateNoDetail,
     SerializedUnsubscribeRequestReport,
     SerializedUser,
     SerializedUserForList,
@@ -491,6 +494,7 @@ class Organisation(db.Model):
     billing_contact_names = db.Column(db.Text, nullable=True)
     billing_contact_email_addresses = db.Column(db.Text, nullable=True)
     billing_reference = db.Column(db.String(255), nullable=True)
+    area_boundary = db.Column(JSONB, nullable=True)
 
     @property
     def live_services(self):
@@ -528,6 +532,8 @@ class Organisation(db.Model):
             billing_contact_names=self.billing_contact_names,
             billing_contact_email_addresses=self.billing_contact_email_addresses,
             billing_reference=self.billing_reference,
+            area_boundary=self.area_boundary,
+            letter_provider=self.letter_provider.serialize_summary() if self.letter_provider else None,
             can_approve_own_go_live_requests=self.can_approve_own_go_live_requests,
             permissions=[x.permission for x in self.permissions],
         )
@@ -599,6 +605,8 @@ class Service(db.Model, Versioned):
     # default delivery provider whenever a service's organisation has no custom Printstraat
     # integration configured). See notifications_utils BaseLetterTemplate._extras.
     letter_address_placement = db.Column(db.String(5), index=False, unique=False, nullable=True, default="60mm")
+    # [NotifyNL] send the letter's client reference to the print provider instead of the generated reference
+    send_client_reference_to_letter_provider = db.Column(db.Boolean, nullable=False, default=False)
     sms_message_limit = db.Column(db.BigInteger, index=False, unique=False, nullable=False, default=999_999_999)
     international_sms_message_limit = db.Column(
         db.BigInteger, index=False, unique=False, nullable=False, default=250_000
@@ -617,6 +625,7 @@ class Service(db.Model, Versioned):
     go_live_user = db.relationship("User", foreign_keys=[go_live_user_id])
     go_live_at = db.Column(db.DateTime, nullable=True)
     has_active_go_live_request = db.Column(db.Boolean, default=False, nullable=False)
+    confirmed_service_name = db.Column(db.Boolean, default=False, nullable=False)
     confirmed_unique = db.Column(db.Boolean, default=False, nullable=False)
 
     organisation_id = db.Column(UUID(as_uuid=True), db.ForeignKey("organisation.id"), index=True, nullable=True)
@@ -707,6 +716,36 @@ class Service(db.Model, Versioned):
     def get_default_letter_contact(self):
         default_letter_contact = [x for x in self.letter_contacts if x.is_default]
         return default_letter_contact[0].contact_block if default_letter_contact else None
+
+    @property
+    def effective_letter_address_placement(self):
+        """
+        [NotifyNL] Where the address goes on this service's letters. Once letters go straight to print providers
+        (LETTER_DELIVERY_VIA_PROVIDERS), the organisation's provider decides: its envelopes fix the window.
+        """
+        return self._effective_letter_provider_and_placement()[1]
+
+    @property
+    def effective_letter_provider(self):
+        """[NotifyNL] The print provider of this service's letters: None while LETTER_DELIVERY_VIA_PROVIDERS is off."""
+        return self._effective_letter_provider_and_placement()[0]
+
+    @property
+    def letter_address_window(self):
+        """[NotifyNL] The address window template-preview checks this service's precompiled letters against."""
+        return letter_address_window_for(*self._effective_letter_provider_and_placement())
+
+    def _effective_letter_provider_and_placement(self):
+        """
+        [NotifyNL] The print provider and address placement of this service's letters, decided together: the
+        organisation's own provider if complete_letter_provider accepts it, otherwise Pingen.
+        """
+        if not current_app.config.get("LETTER_DELIVERY_VIA_PROVIDERS"):
+            return None, self.letter_address_placement
+        letter_provider = complete_letter_provider(self.organisation.letter_provider if self.organisation else None)
+        if letter_provider:
+            return letter_provider.provider.identifier, letter_provider.address_placement
+        return LETTER_PROVIDER_PINGEN, PINGEN_ADDRESS_PLACEMENT
 
     def has_permission(self, permission):
         return permission in [p.permission for p in self.permissions]
@@ -1267,6 +1306,15 @@ class Template(TemplateBase):
         fields["folder"] = folder
         return cls(**fields)
 
+    def serialize_no_detail(self) -> SerializedTemplateNoDetail:
+        return SerializedTemplateNoDetail(
+            folder=str(self.folder.id) if self.folder else None,
+            id=str(self.id),
+            is_precompiled_letter=self.is_precompiled_letter,
+            name=self.name,
+            template_type=self.template_type,
+        )
+
 
 class TemplateRedacted(db.Model):
     __tablename__ = "template_redacted"
@@ -1389,6 +1437,7 @@ class ProviderDetails(db.Model):
     updated_at = db.Column(db.DateTime, nullable=True, onupdate=datetime.datetime.utcnow)
     created_by_id = db.Column(UUID(as_uuid=True), db.ForeignKey("users.id"), index=True, nullable=True)
     created_by = db.relationship("User")
+    reason = db.Column(db.String, nullable=True)
     supports_international = db.Column(db.Boolean, nullable=False, default=False)
 
     def serialize(self):
@@ -1412,6 +1461,7 @@ class ProviderDetailsHistory(db.Model):
     updated_at = db.Column(db.DateTime, nullable=True, onupdate=datetime.datetime.utcnow)
     created_by_id = db.Column(UUID(as_uuid=True), db.ForeignKey("users.id"), index=True, nullable=True)
     created_by = db.relationship("User")
+    reason = db.Column(db.String, nullable=True)
     supports_international = db.Column(db.Boolean, nullable=False, default=False)
 
     @classmethod
@@ -1746,6 +1796,7 @@ class Notification(db.Model):
                 "permanent-failure": "Permanent failure",
                 "sending": "Accepted",
                 "created": "Accepted",
+                "sent": "Accepted by print provider",  # [NotifyNL]
                 "delivered": "Received",
                 "returned-letter": "Returned",
             },
@@ -1761,6 +1812,13 @@ class Notification(db.Model):
             },
         }[self.template.template_type].get(self.status, self.status)
 
+    @property
+    def print_provider(self):
+        """[NotifyNL] The print provider that accepted this letter, if it went straight to one."""
+        if self.notification_type == LETTER_TYPE and self.sent_by in LETTER_PROVIDERS:
+            return self.sent_by
+        return None
+
     def get_letter_status(self):
         """
         Return the notification_status, as we should present for letters. The distinction between created and sending is
@@ -1770,6 +1828,7 @@ class Notification(db.Model):
         """
         # this should only ever be called for letter notifications - it makes no sense otherwise and I'd rather not
         # get the two code flows mixed up at all
+        # [NotifyNL] `sent` (accepted by the print provider, see print_provider) is presented as is
         assert self.notification_type == LETTER_TYPE
 
         if self.status in [NOTIFICATION_CREATED, NOTIFICATION_SENDING]:
@@ -1837,6 +1896,7 @@ class Notification(db.Model):
             one_click_unsubscribe_url=self.get_unsubscribe_link_for_headers(
                 template_has_unsubscribe_link=self.template.has_unsubscribe_link
             ),
+            print_provider=self.print_provider,
         )
 
         if self.notification_type == LETTER_TYPE:
@@ -1851,7 +1911,7 @@ class Notification(db.Model):
                 serialized["postcode"],
             ) = (personalisation.get(line) for line in address_lines_1_to_5_and_postcode_keys)
 
-            serialized["estimated_delivery"] = get_letter_timings(
+            serialized["estimated_delivery"] = LetterTimings(
                 serialized["created_at"], postage=self.postage
             ).latest_delivery.strftime(DATETIME_FORMAT)
 
@@ -2918,3 +2978,11 @@ class ReportRequest(db.Model):
             created_at=self.created_at.strftime(DATETIME_FORMAT),
             updated_at=get_dt_string_or_none(self.updated_at),
         )
+
+
+# [NotifyNL] NL-only models, imported here so they're always mapped with the rest
+from app.models_nl import (  # noqa: E402, F401
+    LetterProviderReference,
+    OrganisationLetterProvider,
+    complete_letter_provider,
+)

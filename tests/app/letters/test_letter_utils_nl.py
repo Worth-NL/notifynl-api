@@ -3,9 +3,6 @@ from datetime import datetime
 import pytest
 from flask import current_app
 
-from app.constants import (
-    PRECOMPILED_TEMPLATE_NAME,
-)
 from app.letters.utils import (
     build_letter_part_filename,
     generate_letter_pdf_filename,
@@ -41,34 +38,6 @@ def test_generate_letter_pdf_filename_returns_tomorrows_filename(notify_api):
     filename = generate_letter_pdf_filename(reference="foo", created_at=created_at)
 
     assert filename == "2017-12-05/NOTIFY.FOO.D.1.C.20171204173100.PDF"
-
-
-@pytest.mark.parametrize(
-    "is_precompiled_letter,bucket_config_name", [(False, "S3_BUCKET_LETTERS_PDF"), (True, "S3_BUCKET_LETTERS_SCAN")]
-)
-def test_upload_letter_pdf_to_correct_bucket(
-    sample_letter_notification, mocker, is_precompiled_letter, bucket_config_name
-):
-    if is_precompiled_letter:
-        sample_letter_notification.template.hidden = True
-        sample_letter_notification.template.name = PRECOMPILED_TEMPLATE_NAME
-
-    mock_s3 = mocker.patch("app.letters.utils.s3upload")
-
-    filename = generate_letter_pdf_filename(
-        reference=sample_letter_notification.reference,
-        created_at=sample_letter_notification.created_at,
-        ignore_folder=is_precompiled_letter,
-    )
-
-    upload_letter_pdf(sample_letter_notification, b"\x00\x01", precompiled=is_precompiled_letter)
-
-    mock_s3.assert_called_once_with(
-        bucket_name=current_app.config[bucket_config_name],
-        file_location=filename,
-        filedata=b"\x00\x01",
-        region=current_app.config["AWS_REGION"],
-    )
 
 
 @pytest.mark.parametrize("postage", ["netherlands", "europe"])

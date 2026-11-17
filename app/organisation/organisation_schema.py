@@ -29,6 +29,14 @@ post_update_organisation_schema = {
         "crown": {"type": ["boolean", "null"]},
         "organisation_type": {"enum": ORGANISATION_TYPES},
         "permissions": {"type": "array", "items": {"enum": ORGANISATION_PERMISSION_TYPES}},
+        "area_boundary": {
+            "type": ["object", "null"],
+            "properties": {
+                "type": {"enum": ["Polygon", "MultiPolygon"]},
+                "coordinates": {"type": "array"},
+            },
+            "required": ["type", "coordinates"],
+        },
     },
     "required": [],
 }

@@ -7,6 +7,7 @@ from gds_metrics import Histogram
 from app import api_user, authenticated_service, db, encryption, notify_celery
 from app.config import QueueNames, QueueNamesNL, TaskNamesNL
 from app.constants import (
+    KEY_TYPE_NORMAL,
     KEY_TYPE_TEAM,
     KEY_TYPE_TEST,
     MESSAGEBOX_TERMINAL_STATUSES,
@@ -16,7 +17,9 @@ from app.constants import (
     NOTIFICATION_PENDING_VIRUS_CHECK,
 )
 from app.dao import notifications_dao
+from app.dao.messagebox_cpa_dao_nl import dao_get_messagebox_cpa_selection
 from app.dao.templates_messagebox_dao import get_messagebox_template
+from app.messagebox.constants import CPA_PURPOSE_TEAM
 from app.messagebox.utils import upload_messagebox_attachments
 from app.notifications.notifications_ses_callback import check_and_queue_callback_task
 from app.notifications.process_notifications import (
@@ -61,10 +64,13 @@ def post_notification_messagebox():
 def process_messagebox_notification(*, messagebox_data, api_key, service):
     test_key = api_key.key_type == KEY_TYPE_TEST
 
-    if api_key.key_type == KEY_TYPE_TEAM:
+    # Team keys send to Logius's pre-production Berichtenbox, so only once a platform admin has selected a CPA for it
+    # (app/messagebox/cpa_nl.py). They never fall back to the live CPA.
+    if api_key.key_type == KEY_TYPE_TEAM and dao_get_messagebox_cpa_selection(CPA_PURPOSE_TEAM) is None:
         raise BadRequestError(message="Cannot send messagebox messages with a team api key", status_code=403)
 
-    if service.restricted and not test_key:
+    # Test keys are simulated and team keys only reach pre-production, so trial mode only stops normal keys.
+    if service.restricted and api_key.key_type == KEY_TYPE_NORMAL:
         raise BadRequestError(message="Cannot send messagebox messages when service is in trial mode", status_code=403)
 
     check_service_has_oin(service)

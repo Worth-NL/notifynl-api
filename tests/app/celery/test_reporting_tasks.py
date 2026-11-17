@@ -112,7 +112,7 @@ def test_create_nightly_notification_status_triggers_relevant_tasks(
     assert types == expected_types_aggregated
 
 
-@pytest.mark.skip(reason="[NOTIFYNL] Postage issue")
+@freeze_time("2019-08-07T12:15")
 def test_create_or_update_ft_billing_for_day_checks_history(sample_service, sample_letter_template, mocker):
     yesterday = datetime.now() - timedelta(days=1)
     mocker.patch("app.dao.fact_billing_dao.get_rate", side_effect=mocker_get_rate)
@@ -144,6 +144,7 @@ def test_create_or_update_ft_billing_for_day_checks_history(sample_service, samp
 @pytest.mark.parametrize(
     "second_rate, records_num, billable_units, multiplier", [(1.0, 1, 2, [1]), (2.0, 2, 1, [1, 2])]
 )
+@freeze_time("2019-08-07T12:15")
 def test_create_or_update_ft_billing_for_day_sms_rate_multiplier(
     sample_service, sample_template, mocker, second_rate, records_num, billable_units, multiplier
 ):
@@ -185,6 +186,7 @@ def test_create_or_update_ft_billing_for_day_sms_rate_multiplier(
         assert record.rate_multiplier == multiplier[i]
 
 
+@freeze_time("2019-08-07T12:15")
 def test_create_or_update_ft_billing_for_day_different_templates(
     sample_service, sample_template, sample_email_template, mocker
 ):
@@ -228,6 +230,7 @@ def test_create_or_update_ft_billing_for_day_different_templates(
         assert record.rate_multiplier == multiplier[i]
 
 
+@freeze_time("2019-08-07T12:15")
 def test_create_or_update_ft_billing_for_day_different_sent_by(
     sample_service, sample_template, sample_email_template, mocker
 ):
@@ -269,6 +272,7 @@ def test_create_or_update_ft_billing_for_day_different_sent_by(
         assert record.rate_multiplier == 1.0
 
 
+@freeze_time("2019-08-07T12:15")
 def test_create_or_update_ft_billing_for_day_different_letter_postage(
     notify_db_session, sample_letter_template, mocker
 ):
@@ -341,6 +345,7 @@ def test_create_or_update_ft_billing_for_day_different_letter_postage(
     assert records[3].billable_units == 2
 
 
+@freeze_time("2019-08-07T12:15")
 def test_create_or_update_ft_billing_for_day_letter(sample_service, sample_letter_template, mocker):
     yesterday = datetime.now() - timedelta(days=1)
 
@@ -371,6 +376,7 @@ def test_create_or_update_ft_billing_for_day_letter(sample_service, sample_lette
     assert record.rate_multiplier == 2.0
 
 
+@freeze_time("2019-08-07T12:15")
 def test_create_or_update_ft_billing_for_day_null_sent_by_sms(sample_service, sample_template, mocker):
     yesterday = datetime.now() - timedelta(days=1)
 
@@ -401,7 +407,6 @@ def test_create_or_update_ft_billing_for_day_null_sent_by_sms(sample_service, sa
     assert record.provider == "unknown"
 
 
-@pytest.mark.skip(reason="[NOTIFYNL] Postage issue")
 def test_get_rate_for_letter_latest(notify_db_session):
     # letter rates should be passed into the get_rate function as a tuple of start_date, crown, sheet_count,
     # rate and post_class
@@ -413,7 +418,6 @@ def test_get_rate_for_letter_latest(notify_db_session):
     assert rate == Decimal("0.33")
 
 
-@pytest.mark.skip(reason="[NOTIFYNL] Postage issue")
 def test_get_rate_for_letter_latest_if_crown_is_none(notify_db_session):
     # letter rates should be passed into the get_rate function as a tuple of start_date, crown, sheet_count,
     # rate and post_class

@@ -9,6 +9,7 @@ from time import monotonic
 
 from celery import current_task
 from flask import (
+    Flask,
     current_app,
     g,
     has_request_context,
@@ -26,9 +27,9 @@ from notifications_utils.celery import NotifyCelery
 from notifications_utils.clients.encryption.encryption_client import Encryption
 from notifications_utils.clients.redis.redis_client import RedisClient
 from notifications_utils.clients.signing.signing_client import Signing
-from notifications_utils.clients.statsd.statsd_client import StatsdClient
 from notifications_utils.clients.zendesk.zendesk_client import ZendeskClient
 from notifications_utils.eventlet import EventletTimeout
+from notifications_utils.json import FlaskRelaxedContainerJSONProvider
 from notifications_utils.local_vars import LazyLocalGetter
 from notifications_utils.logging import flask as utils_logging
 from sqlalchemy import event
@@ -36,11 +37,17 @@ from sqlalchemy.orm import declarative_base
 from werkzeug.exceptions import HTTPException as WerkzeugHTTPException
 from werkzeug.local import LocalProxy
 
+# things up here must be declared before rest of app is imported to satisfy circular import
+# ruff: noqa: E402
+memo_resetters: list[Callable] = []
+
 from app.clients import NotificationProviderClients
 from app.clients.document_download import DocumentDownloadClient
 from app.clients.email.aws_ses import AwsSesClient
 from app.clients.email.aws_ses_stub import AwsSesStubClient
 from app.clients.letter.dvla import DVLAClient
+from app.clients.letter.pingen import PingenClient
+from app.clients.letter.rest_endpoint import RestEndpointLetterClient
 from app.clients.messagebox.ebms_adapter import EbmsAdapterClient
 from app.clients.sms.firetext import FiretextClient
 from app.clients.sms.mmg import MMGClient
@@ -58,7 +65,6 @@ ma = Marshmallow()
 notify_celery = NotifyCelery()
 signing = Signing()
 encryption = Encryption()
-statsd_client = StatsdClient()
 redis_store = RedisClient()
 metrics = GDSMetrics()
 
@@ -70,8 +76,6 @@ CONCURRENT_REQUESTS = Gauge(
     "How many concurrent requests are currently being served",
 )
 
-memo_resetters: list[Callable] = []
-
 #
 # "clients" that need thread-local copies
 #
@@ -79,7 +83,7 @@ memo_resetters: list[Callable] = []
 _firetext_client_context_var: ContextVar[FiretextClient] = ContextVar("firetext_client")
 get_firetext_client: LazyLocalGetter[FiretextClient] = LazyLocalGetter(
     _firetext_client_context_var,
-    lambda: FiretextClient(current_app, statsd_client=statsd_client),
+    lambda: FiretextClient(current_app),
     expected_type=FiretextClient,
 )
 memo_resetters.append(lambda: get_firetext_client.clear())
@@ -88,7 +92,7 @@ firetext_client = LocalProxy(get_firetext_client)
 _mmg_client_context_var: ContextVar[MMGClient] = ContextVar("mmg_client")
 get_mmg_client: LazyLocalGetter[MMGClient] = LazyLocalGetter(
     _mmg_client_context_var,
-    lambda: MMGClient(current_app, statsd_client=statsd_client),
+    lambda: MMGClient(current_app),
     expected_type=MMGClient,
 )
 memo_resetters.append(lambda: get_mmg_client.clear())
@@ -97,7 +101,7 @@ mmg_client = LocalProxy(get_mmg_client)
 _spryng_client_context_var: ContextVar[SpryngClient] = ContextVar("spryng_client")
 get_spryng_client: LazyLocalGetter[SpryngClient] = LazyLocalGetter(
     _spryng_client_context_var,
-    lambda: SpryngClient(current_app, statsd_client=statsd_client),
+    lambda: SpryngClient(current_app),
     expected_type=SpryngClient,
 )
 memo_resetters.append(lambda: get_spryng_client.clear())
@@ -106,7 +110,7 @@ spryng_client = LocalProxy(get_spryng_client)
 _aws_ses_client_context_var: ContextVar[AwsSesClient] = ContextVar("aws_ses_client")
 get_aws_ses_client: LazyLocalGetter[AwsSesClient] = LazyLocalGetter(
     _aws_ses_client_context_var,
-    lambda: AwsSesClient(current_app.config["AWS_REGION"], statsd_client=statsd_client),
+    lambda: AwsSesClient(current_app.config["AWS_REGION"]),
     expected_type=AwsSesClient,
 )
 memo_resetters.append(lambda: get_aws_ses_client.clear())
@@ -117,7 +121,6 @@ get_aws_ses_stub_client: LazyLocalGetter[AwsSesStubClient] = LazyLocalGetter(
     _aws_ses_stub_client_context_var,
     lambda: AwsSesStubClient(
         current_app.config["AWS_REGION"],
-        statsd_client=statsd_client,
         stub_url=current_app.config["SES_STUB_URL"],
     ),
     expected_type=AwsSesStubClient,
@@ -128,11 +131,31 @@ aws_ses_stub_client = LocalProxy(get_aws_ses_stub_client)
 _ebms_adapter_client_context_var: ContextVar[EbmsAdapterClient] = ContextVar("ebms_adapter_client")
 get_ebms_adapter_client: LazyLocalGetter[EbmsAdapterClient] = LazyLocalGetter(
     _ebms_adapter_client_context_var,
-    lambda: EbmsAdapterClient(current_app, statsd_client=statsd_client),
+    lambda: EbmsAdapterClient(current_app),
     expected_type=EbmsAdapterClient,
 )
 memo_resetters.append(lambda: get_ebms_adapter_client.clear())
 ebms_adapter_client = LocalProxy(get_ebms_adapter_client)
+
+### [NotifyNL] letter providers ########################################################################################
+_pingen_client_context_var: ContextVar[PingenClient] = ContextVar("pingen_client")
+get_pingen_client: LazyLocalGetter[PingenClient] = LazyLocalGetter(
+    _pingen_client_context_var,
+    lambda: PingenClient(current_app),
+    expected_type=PingenClient,
+)
+memo_resetters.append(lambda: get_pingen_client.clear())
+
+_rest_endpoint_letter_client_context_var: ContextVar[RestEndpointLetterClient] = ContextVar(
+    "rest_endpoint_letter_client"
+)
+get_rest_endpoint_letter_client: LazyLocalGetter[RestEndpointLetterClient] = LazyLocalGetter(
+    _rest_endpoint_letter_client_context_var,
+    lambda: RestEndpointLetterClient(current_app),
+    expected_type=RestEndpointLetterClient,
+)
+memo_resetters.append(lambda: get_rest_endpoint_letter_client.clear())
+########################################################################################################################
 
 _notification_provider_clients_context_var: ContextVar[NotificationProviderClients] = ContextVar(
     "notification_provider_clients"
@@ -150,6 +173,11 @@ get_notification_provider_clients: LazyLocalGetter[NotificationProviderClients] 
             # than the real SES boto client
             for getter in ((get_aws_ses_stub_client,) if current_app.config["SES_STUB_URL"] else (get_aws_ses_client,))
         },
+        # [NotifyNL] letters go to each organisation's own print provider
+        letter_clients={
+            getter.expected_type.name: LocalProxy(getter)
+            for getter in (get_pingen_client, get_rest_endpoint_letter_client)
+        },
     ),
 )
 memo_resetters.append(lambda: get_notification_provider_clients.clear())
@@ -159,7 +187,7 @@ notification_provider_clients = LocalProxy(get_notification_provider_clients)
 _dvla_client_context_var: ContextVar[DVLAClient] = ContextVar("dvla_client")
 get_dvla_client: LazyLocalGetter[DVLAClient] = LazyLocalGetter(
     _dvla_client_context_var,
-    lambda: DVLAClient(current_app, statsd_client=statsd_client),
+    lambda: DVLAClient(current_app),
 )
 memo_resetters.append(lambda: get_dvla_client.clear())
 dvla_client = LocalProxy(get_dvla_client)
@@ -181,8 +209,10 @@ memo_resetters.append(lambda: get_zendesk_client.clear())
 zendesk_client = LocalProxy(get_zendesk_client)
 
 
-def create_app(application):
+def create_app(application: Flask) -> Flask:
     from app.config import Config, configs
+
+    application.json_provider_class = FlaskRelaxedContainerJSONProvider
 
     notify_environment = os.environ["NOTIFY_ENVIRONMENT"]
 
@@ -200,8 +230,7 @@ def create_app(application):
     db.init_app(application)
     migrate.init_app(application, db=db)
     ma.init_app(application)
-    statsd_client.init_app(application)
-    utils_logging.init_app(application, statsd_client)
+    utils_logging.init_app(application)
 
     notify_celery.init_app(application)
     signing.init_app(application)
@@ -249,6 +278,9 @@ def register_blueprint(application):
         letter_branding_blueprint,
     )
     from app.letters.rest import letter_job, letter_rates_blueprint
+    from app.letters_nl.upload_validation_rest_nl import letter_upload_blueprint
+    from app.messagebox.cpa_rest_nl import messagebox_cpa_blueprint
+    from app.notifications.letter_provider_callback import letter_provider_callback_blueprint
     from app.notifications.notifications_letter_callback import (
         letter_callback_blueprint,
     )
@@ -263,6 +295,7 @@ def register_blueprint(application):
     )
     from app.one_click_unsubscribe.rest import one_click_unsubscribe_blueprint
     from app.organisation.invite_rest import organisation_invite_blueprint
+    from app.organisation.letter_provider_rest_nl import organisation_letter_provider_blueprint
     from app.organisation.rest import organisation_blueprint
     from app.performance_dashboard.rest import performance_dashboard_blueprint
     from app.platform_admin.rest import platform_admin_blueprint
@@ -278,6 +311,7 @@ def register_blueprint(application):
     )
     from app.sms.rest import sms_rate_blueprint
     from app.status.healthcheck import status as status_blueprint
+    from app.status.security_txt_nl import security_txt as security_txt_blueprint
     from app.template.rest import template_blueprint
     from app.template_email_files.rest import template_email_files_blueprint
     from app.template_folder.rest import template_folder_blueprint
@@ -311,8 +345,11 @@ def register_blueprint(application):
     status_blueprint.before_request(requires_no_auth)
     application.register_blueprint(status_blueprint)
 
+    security_txt_blueprint.before_request(requires_no_auth)
+    application.register_blueprint(security_txt_blueprint)
+
     # delivery receipts
-    sms_callback_blueprint.before_request(requires_no_auth)
+    sms_callback_blueprint.before_request(requires_no_auth)  # basic auth enforced at view level
     application.register_blueprint(sms_callback_blueprint)
 
     # delivery receipts messagebox
@@ -359,6 +396,10 @@ def register_blueprint(application):
     letter_callback_blueprint.before_request(requires_no_auth)
     application.register_blueprint(letter_callback_blueprint)
 
+    # [NotifyNL] status updates from letter providers (REST endpoint callbacks, Pingen webhooks)
+    letter_provider_callback_blueprint.before_request(requires_no_auth)
+    application.register_blueprint(letter_provider_callback_blueprint)
+
     billing_blueprint.before_request(requires_admin_auth)
     application.register_blueprint(billing_blueprint)
 
@@ -367,6 +408,18 @@ def register_blueprint(application):
 
     organisation_blueprint.before_request(requires_admin_auth)
     application.register_blueprint(organisation_blueprint, url_prefix="/organisations")
+
+    # [NotifyNL] per-organisation letter provider
+    organisation_letter_provider_blueprint.before_request(requires_admin_auth)
+    application.register_blueprint(organisation_letter_provider_blueprint)
+
+    # [NotifyNL] messagebox CPAs, validated, uploaded and selected per purpose by platform admins
+    messagebox_cpa_blueprint.before_request(requires_admin_auth)
+    application.register_blueprint(messagebox_cpa_blueprint, url_prefix="/platform-admin/messagebox")
+
+    # [NotifyNL] checks letters uploaded in admin against the service's address window
+    letter_upload_blueprint.before_request(requires_admin_auth)
+    application.register_blueprint(letter_upload_blueprint)
 
     complaint_blueprint.before_request(requires_admin_auth)
     application.register_blueprint(complaint_blueprint)

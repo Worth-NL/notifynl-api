@@ -1,18 +1,76 @@
-from datetime import date, datetime
+import re
+from datetime import date, datetime, timedelta
 from decimal import Decimal
 
+import pytest
 from freezegun import freeze_time
+from notifications_utils.timezones import convert_utc_to_bst
 
+from app import db
+from app.constants import NOTIFICATION_SENT, NOTIFICATION_STATUS_TYPES
 from app.dao.fact_billing_dao import (
+    fetch_billing_data_for_day,
     fetch_usage_for_all_services_letter_breakdown,
+    fetch_usage_for_service_by_month,
     get_rate,
     get_rates_for_billing,
 )
+from app.models import FactBilling
 from tests.app.db import (
+    create_annual_billing,
+    create_ft_billing,
     create_letter_rate,
+    create_notification,
     create_rate,
+    create_service,
+    create_template,
     set_up_usage_data,
 )
+from tests.utils import QueryRecorder
+
+
+@pytest.mark.parametrize(
+    "session,expected_bind_key",
+    (
+        (db.session, None),
+        (db.session_bulk, "bulk"),
+    ),
+    ids=("default", "bulk"),
+)
+def test_fetch_billing_data_for_day_bills_correctly_for_status(notify_db_session, session, expected_bind_key):
+    service = create_service()
+    sms_template = create_template(service=service, template_type="sms")
+    email_template = create_template(service=service, template_type="email")
+    letter_template = create_template(service=service, template_type="letter")
+    for status in NOTIFICATION_STATUS_TYPES:
+        create_notification(template=sms_template, status=status)
+        create_notification(template=email_template, status=status)
+        create_notification(template=letter_template, status=status)
+
+    service_id = service.id
+
+    today = convert_utc_to_bst(datetime.utcnow())
+    with QueryRecorder() as query_recorder:
+        results = fetch_billing_data_for_day(process_day=today.date(), service_ids=[service_id], session=session)
+
+    assert {query_info.bind_key for query_info in query_recorder.queries} == {expected_bind_key}
+    # letters: sending, sent (accepted by the print provider), delivered, returned-letter
+    assert sorted((r.notification_type, r.notifications_sent) for r in results) == [
+        ("email", 4),
+        ("letter", 4),
+        ("sms", 6),
+    ]
+
+
+def test_fetch_billing_data_for_day_bills_letters_accepted_by_print_provider(notify_db_session):
+    service = create_service()
+    letter_template = create_template(service=service, template_type="letter")
+    create_notification(template=letter_template, status=NOTIFICATION_SENT, billable_units=2)
+
+    today = convert_utc_to_bst(datetime.utcnow())
+    results = fetch_billing_data_for_day(process_day=today.date(), service_ids=[service.id])
+
+    assert [(r.notification_type, r.notifications_sent, r.billable_units) for r in results] == [("letter", 1, 2)]
 
 
 @freeze_time("2017-06-01 12:00")
@@ -118,3 +176,41 @@ def test_fetch_usage_for_all_services_letter_breakdown(notify_db_session):
         "international",
         15,
     )
+
+
+@freeze_time("2018-08-01 13:30:00")
+def test_fetch_usage_for_service_by_month_reads_ft_billing_only(notify_db_session):
+    service = create_service()
+    template = create_template(service=service, template_type="sms")
+
+    create_rate(start_date=datetime.utcnow() - timedelta(days=1), value=0.158, notification_type="sms")
+    create_annual_billing(service_id=service.id, free_sms_fragment_limit=1000, financial_year_start=2018)
+
+    for i in range(1, 32):
+        create_ft_billing(bst_date=f"2018-07-{i}", template=template)
+
+    # today's notification waits for the hourly update-ft-billing-for-today task
+    create_notification(template=template, status="delivered")
+
+    with QueryRecorder() as query_recorder:
+        results = fetch_usage_for_service_by_month(service_id=service.id, year=2018)
+
+    assert not any(
+        re.search(r"\b(notifications|notification_history)\b", query.statement) for query in query_recorder.queries
+    )
+    assert db.session.query(FactBilling.bst_date).count() == 31
+    assert len(results) == 1
+
+
+def test_fetch_billing_data_for_day_excludes_team_key_messagebox(notify_db_session):
+    # team keys send messagebox to Logius pre-production, which isn't billed; normal keys are
+    service = create_service()
+    template = create_template(service=service, template_type="messagebox")
+    create_notification(template=template, status="delivered", key_type="normal")
+    create_notification(template=template, status="delivered", key_type="team")
+    create_notification(template=template, status="sending", key_type="team")
+    create_notification(template=template, status="delivered", key_type="test")
+
+    results = fetch_billing_data_for_day(convert_utc_to_bst(datetime.utcnow()).date())
+
+    assert [(result.notification_type, result.notifications_sent) for result in results] == [("messagebox", 1)]
