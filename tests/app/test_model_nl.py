@@ -163,6 +163,7 @@ def test_organisation_letter_provider_serialize_omits_secrets(notify_db_session)
         "address_placement": "50mm",
         "has_credentials": True,
         "auth_config": {"token_endpoint": "https://idp.example.com/token", "client_id": "notify", "scope": "letters"},
+        "mark_delivered_on_acceptance": False,
         "is_complete": True,
         "updated_at": get_dt_string_or_none(letter_provider.updated_at),
         "updated_by_id": None,

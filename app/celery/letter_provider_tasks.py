@@ -39,6 +39,7 @@ from app.dao.notifications_dao import (
     dao_get_letters_stuck_sending,
     dao_get_notification_or_history_by_id,
     dao_letters_in_technical_failure,
+    dao_mark_letter_delivered_on_acceptance,
     dao_mark_letter_sent,
     dao_record_letter_despatched_on_by_id,
     dao_touch_notification,
@@ -46,6 +47,7 @@ from app.dao.notifications_dao import (
     get_notification_by_id,
     update_notification_status_by_id,
 )
+from app.dao.organisation_letter_provider_dao import dao_get_organisation_letter_provider
 from app.letters.utils import LetterPDFNotFound, find_letter_pdf_in_s3
 from app.letters_nl.constants import (
     CONNECTION_TEST_CALLBACK_PREFIX,
@@ -209,9 +211,12 @@ def _deliver_claimed_letter(task, notification):
         return
 
     if reference := dao_get_letter_provider_reference(notification_id):
-        # an earlier attempt got the letter accepted but didn't get to mark it sent
+        # an earlier attempt got the letter accepted but didn't get to mark it sent. Whether that makes it delivered is
+        # up to the organisation's setting now, not at the time of that attempt: switching it in between changes this
         dao_unpin_letter_provider(notification_id)
-        _mark_sent(notification_id, reference.provider)
+        _mark_accepted(
+            notification_id, reference.provider, dao_get_organisation_letter_provider(service.organisation_id)
+        )
         return
 
     client, letter_provider = resolve_letter_provider(service.organisation_id)
@@ -286,7 +291,7 @@ def _deliver_claimed_letter(task, notification):
     if result.provider_reference:
         dao_create_letter_provider_reference(notification_id, client.name, result.provider_reference)
     dao_unpin_letter_provider(notification_id)
-    _mark_sent(notification_id, client.name)
+    _mark_accepted(notification_id, client.name, letter_provider)
 
 
 def _reference_for_provider(notification):
@@ -312,9 +317,39 @@ def _connection_test_callback_url(test_id):
     return _callback_url(f"{CONNECTION_TEST_CALLBACK_PREFIX}{test_id}")
 
 
+def _mark_accepted(notification_id, provider, letter_provider):
+    """
+    The print provider accepted the letter: it's sent, and it's delivered once the provider reports so. A REST endpoint
+    that never reports back can have its letters marked delivered right away, although that only tells us it accepted
+    them.
+    """
+    if (
+        provider == LETTER_PROVIDER_REST_ENDPOINT
+        and letter_provider is not None
+        and letter_provider.mark_delivered_on_acceptance
+    ):
+        _mark_delivered_on_acceptance(notification_id, provider)
+    else:
+        _mark_sent(notification_id, provider)
+
+
 def _mark_sent(notification_id, sent_by):
     if dao_mark_letter_sent(notification_id, sent_by):
         check_and_queue_callback_task(get_notification_by_id(notification_id, _raise=True))
+
+
+def _mark_delivered_on_acceptance(notification_id, provider):
+    # its detailed status code tells it apart from a letter its provider reported delivered, so a later failure report
+    # can replace it; it's recorded as despatched in the same transaction
+    if not dao_mark_letter_delivered_on_acceptance(notification_id, provider):
+        return
+    current_app.logger.info(
+        "Letter %s marked delivered on acceptance by %s",
+        notification_id,
+        provider,
+        extra={"notification_id": notification_id, "provider_name": provider},
+    )
+    check_and_queue_callback_task(get_notification_by_id(notification_id, _raise=True))
 
 
 def _fail(notification_id, detailed_status_code):
@@ -441,6 +476,8 @@ PROVIDER_STATUS_TRANSITIONS = {
     # a letter can come back after it was handed to the postal service
     NOTIFICATION_RETURNED_LETTER: {NOTIFICATION_SENDING, NOTIFICATION_SENT, NOTIFICATION_DELIVERED},
 }
+# a letter only marked delivered because its provider accepted it can still turn out not to be printed or sent
+REPLACES_DELIVERED_ON_ACCEPTANCE = {NOTIFICATION_PERMANENT_FAILURE, NOTIFICATION_TECHNICAL_FAILURE}
 PROVIDER_DETAILED_STATUS_CODES = {
     NOTIFICATION_PERMANENT_FAILURE: "print-provider-rejected",
     NOTIFICATION_TECHNICAL_FAILURE: "print-provider-issue",
@@ -483,6 +520,7 @@ def process_letter_provider_status(notification_id, provider, status, reason=Non
         PROVIDER_STATUS_TRANSITIONS[status],
         provider,
         detailed_status_code=PROVIDER_DETAILED_STATUS_CODES.get(status),
+        from_delivered_on_acceptance=status in REPLACES_DELIVERED_ON_ACCEPTANCE,
     ):
         current_app.logger.info(
             "Ignoring %s status %s for letter %s, which is %s",

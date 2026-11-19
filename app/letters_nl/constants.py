@@ -29,6 +29,10 @@ DEFAULT_API_KEY_HEADER = "X-Api-Key"
 PINGEN_ADDRESS_PLACEMENT = "60mm"
 ADDRESS_PLACEMENTS = ["50mm", "60mm"]
 
+# The detailed status code of a letter marked delivered because its REST endpoint accepted it, not because the
+# endpoint reported it delivered (OrganisationLetterProvider.mark_delivered_on_acceptance)
+DELIVERED_ON_ACCEPTANCE = "delivered-on-acceptance"
+
 # Where a REST endpoint reports back on a letter it accepted (app/notifications/letter_provider_callback.py)
 LETTER_PROVIDER_CALLBACK_PATH = "/notifications/letter/provider-status"
 # What a connection test's callback token holds before the test id, so its reports are recognised as such

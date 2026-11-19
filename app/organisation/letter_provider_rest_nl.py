@@ -68,6 +68,8 @@ post_set_organisation_letter_provider_schema = {
             "additionalProperties": False,
         },
         "address_placement": {"enum": ADDRESS_PLACEMENTS},
+        # leave it out to keep the stored value (false for an organisation that didn't have a REST endpoint yet)
+        "mark_delivered_on_acceptance": {"type": "boolean"},
         "updated_by_id": uuid,
     },
     "required": ["provider", "updated_by_id"],
@@ -107,12 +109,23 @@ def set_organisation_letter_provider(organisation_id):
     if data["provider"] == LETTER_PROVIDER_PINGEN:
         endpoint_url, auth_method, auth_config = None, None, None
         address_placement = PINGEN_ADDRESS_PLACEMENT
+        # Pingen reports back on every letter
+        mark_delivered_on_acceptance = False
     else:
         endpoint_url = data["endpoint_url"]
         auth_method = data["auth_method"]
         address_placement = data["address_placement"]
+        existing = dao_get_organisation_letter_provider(organisation_id)
+        mark_delivered_on_acceptance = data.get(
+            "mark_delivered_on_acceptance",
+            bool(
+                existing
+                and existing.provider.identifier == LETTER_PROVIDER_REST_ENDPOINT
+                and existing.mark_delivered_on_acceptance
+            ),
+        )
         auth_config, secrets_dropped = _merge_auth_config(
-            dao_get_organisation_letter_provider(organisation_id),
+            existing,
             endpoint_url,
             auth_method,
             data.get("auth_config", {}),
@@ -126,6 +139,7 @@ def set_organisation_letter_provider(organisation_id):
         auth_method=auth_method,
         auth_config=auth_config,
         address_placement=address_placement,
+        mark_delivered_on_acceptance=mark_delivered_on_acceptance,
         updated_by_id=data["updated_by_id"],
     )
     return jsonify(data=letter_provider.serialize())

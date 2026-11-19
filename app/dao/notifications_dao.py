@@ -50,6 +50,7 @@ from app.constants import (
 )
 from app.dao.dao_utils import autocommit
 from app.letters.utils import LetterPDFNotFound, find_letter_pdf_in_s3
+from app.letters_nl.constants import DELIVERED_ON_ACCEPTANCE
 from app.models import (
     FactNotificationStatus,
     KeyTypes,
@@ -315,16 +316,55 @@ def dao_mark_letter_sent(notification_id, sent_by) -> bool:
 
 
 @autocommit
+def dao_mark_letter_delivered_on_acceptance(notification_id, provider) -> bool:
+    """
+    A letter claimed for sending was accepted by a print provider that never reports back: it's delivered as far as we
+    can tell. Recorded as despatched in the same transaction, so a failure report for it (which removes that record,
+    see dao_update_letter_status_from_provider) can't come in between. Returns whether it was still sending.
+    """
+    now = datetime.utcnow()
+    updated = Notification.query.filter(
+        Notification.id == notification_id,
+        Notification.status == NOTIFICATION_SENDING,
+    ).update(
+        {
+            "status": NOTIFICATION_DELIVERED,
+            "detailed_status_code": DELIVERED_ON_ACCEPTANCE,
+            "sent_by": func.coalesce(Notification.sent_by, provider),
+            "sent_at": func.coalesce(Notification.sent_at, now),
+            "updated_at": now,
+        },
+        synchronize_session=False,
+    )
+    if updated:
+        dao_record_letter_despatched_on_by_id(
+            notification_id, convert_utc_to_bst(now).date(), LetterCostThreshold.unsorted, _autocommit=False
+        )
+    return updated == 1
+
+
+@autocommit
 def dao_update_letter_status_from_provider(
-    notification_id, status, from_statuses, provider, detailed_status_code=None
+    notification_id, status, from_statuses, provider, detailed_status_code=None, from_delivered_on_acceptance=False
 ) -> bool:
     """
-    Apply a print provider's report on a letter if it is still in one of `from_statuses`. The status is checked in the
-    update itself, so of two reports processed at the same time only one gets through. Letters can be reported on
-    after they moved to notification_history. Returns whether the letter was updated.
+    Apply a print provider's report on a letter if it is still in one of `from_statuses`, or, with
+    `from_delivered_on_acceptance`, if it was only marked delivered because its provider accepted it. The status is
+    checked in the update itself, so of two reports processed at the same time only one gets through. Letters can be
+    reported on after they moved to notification_history. Returns whether the letter was updated.
+
+    A letter marked delivered on acceptance was also recorded as despatched: that record goes in the same transaction.
+    One update covers both kinds of letter, so a report that has to wait for an acceptance being committed (row lock)
+    is checked against the delivered letter it then finds, instead of being dropped.
     """
     now = datetime.utcnow()
     for model in (Notification, NotificationHistory):
+        condition = model.status.in_(from_statuses)
+        if from_delivered_on_acceptance:
+            condition = or_(
+                condition,
+                and_(model.status == NOTIFICATION_DELIVERED, model.detailed_status_code == DELIVERED_ON_ACCEPTANCE),
+            )
         values = {
             "status": status,
             # the provider can report back before the delivery task marked the letter sent (which it then won't)
@@ -334,9 +374,10 @@ def dao_update_letter_status_from_provider(
         }
         if detailed_status_code:
             values["detailed_status_code"] = detailed_status_code
-        if model.query.filter(model.id == notification_id, model.status.in_(from_statuses)).update(
-            values, synchronize_session=False
-        ):
+        if model.query.filter(model.id == notification_id, condition).update(values, synchronize_session=False):
+            if from_delivered_on_acceptance:
+                # only a letter marked delivered on acceptance has one: no other letter goes from delivered to this
+                dao_delete_letter_despatch_by_id(notification_id, _autocommit=False)
             return True
         if db.session.query(model.query.filter(model.id == notification_id).exists()).scalar():
             return False
@@ -1520,3 +1561,13 @@ def dao_record_letter_despatched_on_by_id(
     )
 
     db.session.execute(stmt)
+
+
+# [NotifyNL] undoing the record above for a letter only marked delivered on acceptance
+@autocommit
+def dao_delete_letter_despatch_by_id(notification_id) -> None:
+    """
+    A letter recorded as despatched turned out not to be: it isn't billed as despatched (see fact_billing_dao). Called
+    as part of dao_update_letter_status_from_provider's transaction (with _autocommit=False).
+    """
+    NotificationLetterDespatch.query.filter_by(notification_id=notification_id).delete()
