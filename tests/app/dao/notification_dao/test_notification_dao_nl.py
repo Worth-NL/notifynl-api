@@ -236,6 +236,37 @@ def test_dao_update_letter_status_from_provider_in_notification_history(
     assert NotificationHistory.query.get(notification.id).status == (expected_status or from_status)
 
 
+@pytest.mark.parametrize(
+    "detailed_status_code, from_delivered_on_acceptance, expected_status",
+    [
+        ("delivered-on-acceptance", True, "permanent-failure"),
+        ("delivered-on-acceptance", False, "delivered"),
+        # reported delivered by the provider itself
+        (None, True, "delivered"),
+    ],
+)
+@pytest.mark.parametrize("create", [create_notification, create_notification_history])
+def test_dao_update_letter_status_from_provider_from_delivered_on_acceptance(
+    sample_letter_template, create, detailed_status_code, from_delivered_on_acceptance, expected_status
+):
+    notification = create(template=sample_letter_template, status="delivered", sent_by="rest-endpoint")
+    notification.detailed_status_code = detailed_status_code
+    db.session.commit()
+
+    updated = dao_update_letter_status_from_provider(
+        notification.id,
+        "permanent-failure",
+        {"sending", "sent"},
+        "rest-endpoint",
+        detailed_status_code="print-provider-rejected",
+        from_delivered_on_acceptance=from_delivered_on_acceptance,
+    )
+
+    assert updated is (expected_status == "permanent-failure")
+    model = Notification if create is create_notification else NotificationHistory
+    assert model.query.get(notification.id).status == expected_status
+
+
 def test_dao_update_letter_status_from_provider_for_an_unknown_letter(notify_db_session):
     assert not dao_update_letter_status_from_provider(uuid.uuid4(), "delivered", {"sending", "sent"}, "pingen")
 
