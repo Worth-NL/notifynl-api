@@ -34,12 +34,12 @@ from app.dao.letter_provider_reference_dao import (
 )
 from app.dao.notifications_dao import (
     dao_claim_letter_for_sending,
-    dao_delete_letter_despatch_by_id,
     dao_get_letters_abandoned_sending,
     dao_get_letters_ready_to_send_since,
     dao_get_letters_stuck_sending,
     dao_get_notification_or_history_by_id,
     dao_letters_in_technical_failure,
+    dao_mark_letter_delivered_on_acceptance,
     dao_mark_letter_sent,
     dao_record_letter_despatched_on_by_id,
     dao_touch_notification,
@@ -51,7 +51,6 @@ from app.dao.organisation_letter_provider_dao import dao_get_organisation_letter
 from app.letters.utils import LetterPDFNotFound, find_letter_pdf_in_s3
 from app.letters_nl.constants import (
     CONNECTION_TEST_CALLBACK_PREFIX,
-    DELIVERED_ON_ACCEPTANCE,
     LETTER_PROVIDER_CALLBACK_PATH,
     LETTER_PROVIDER_REST_ENDPOINT,
 )
@@ -212,7 +211,8 @@ def _deliver_claimed_letter(task, notification):
         return
 
     if reference := dao_get_letter_provider_reference(notification_id):
-        # an earlier attempt got the letter accepted but didn't get to mark it sent
+        # an earlier attempt got the letter accepted but didn't get to mark it sent. Whether that makes it delivered is
+        # up to the organisation's setting now, not at the time of that attempt: switching it in between changes this
         dao_unpin_letter_provider(notification_id)
         _mark_accepted(
             notification_id, reference.provider, dao_get_organisation_letter_provider(service.organisation_id)
@@ -339,14 +339,9 @@ def _mark_sent(notification_id, sent_by):
 
 
 def _mark_delivered_on_acceptance(notification_id, provider):
-    # the code tells it apart from a letter its provider reported delivered, so a later failure report can replace it
-    if not dao_update_letter_status_from_provider(
-        notification_id,
-        NOTIFICATION_DELIVERED,
-        {NOTIFICATION_SENDING},
-        provider,
-        detailed_status_code=DELIVERED_ON_ACCEPTANCE,
-    ):
+    # its detailed status code tells it apart from a letter its provider reported delivered, so a later failure report
+    # can replace it; it's recorded as despatched in the same transaction
+    if not dao_mark_letter_delivered_on_acceptance(notification_id, provider):
         return
     current_app.logger.info(
         "Letter %s marked delivered on acceptance by %s",
@@ -354,14 +349,7 @@ def _mark_delivered_on_acceptance(notification_id, provider):
         provider,
         extra={"notification_id": notification_id, "provider_name": provider},
     )
-    _record_delivered(get_notification_by_id(notification_id, _raise=True))
-
-
-def _record_delivered(notification, receipt_dt=None):
-    dao_record_letter_despatched_on_by_id(
-        notification.id, convert_utc_to_bst(datetime.utcnow()).date(), LetterCostThreshold.unsorted
-    )
-    check_and_queue_callback_task(notification, receipt_dt=receipt_dt)
+    check_and_queue_callback_task(get_notification_by_id(notification_id, _raise=True))
 
 
 def _fail(notification_id, detailed_status_code):
@@ -553,12 +541,9 @@ def process_letter_provider_status(notification_id, provider, status, reason=Non
         process_returned_letters_list([notification.reference])
         return
 
-    if status in REPLACES_DELIVERED_ON_ACCEPTANCE:
-        # in case it was marked delivered on acceptance, and so recorded as despatched for billing
-        dao_delete_letter_despatch_by_id(notification.id)
-
     db.session.refresh(notification)
     if status == NOTIFICATION_DELIVERED:
-        _record_delivered(notification, receipt_dt=receipt_dt)
-    else:
-        check_and_queue_callback_task(notification, receipt_dt=receipt_dt)
+        dao_record_letter_despatched_on_by_id(
+            notification.id, convert_utc_to_bst(datetime.utcnow()).date(), LetterCostThreshold.unsorted
+        )
+    check_and_queue_callback_task(notification, receipt_dt=receipt_dt)

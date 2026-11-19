@@ -159,8 +159,14 @@ def test_set_rest_endpoint_letter_provider_marking_letters_delivered_on_acceptan
     assert response["data"]["mark_delivered_on_acceptance"] is True
     assert dao_get_organisation_letter_provider(organisation.id).mark_delivered_on_acceptance is True
 
-    # left out, it's switched off again
+    # left out, the stored value is kept, as for the secrets
     _set_letter_provider(admin_request, organisation.id, _rest_endpoint(notify_user))
+
+    assert dao_get_organisation_letter_provider(organisation.id).mark_delivered_on_acceptance is True
+
+    _set_letter_provider(
+        admin_request, organisation.id, _rest_endpoint(notify_user, mark_delivered_on_acceptance=False)
+    )
 
     assert dao_get_organisation_letter_provider(organisation.id).mark_delivered_on_acceptance is False
 
@@ -180,6 +186,11 @@ def test_set_pingen_letter_provider_never_marks_letters_delivered_on_acceptance(
             "updated_by_id": str(notify_user.id),
         },
     )
+
+    assert response["data"]["mark_delivered_on_acceptance"] is False
+
+    # nothing to keep when switching back from Pingen
+    response = _set_letter_provider(admin_request, organisation.id, _rest_endpoint(notify_user))
 
     assert response["data"]["mark_delivered_on_acceptance"] is False
 

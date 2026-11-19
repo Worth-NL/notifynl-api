@@ -179,7 +179,7 @@ def test_deliver_letter_via_provider_marks_a_letter_delivered_when_the_endpoint_
     despatch = NotificationLetterDespatch.query.get(notification.id)
     assert (despatch.despatched_on, despatch.cost_threshold) == (date(2026, 11, 19), LetterCostThreshold.unsorted)
     # one callback, with the final status: no "sent" callback before it
-    mock_callback.assert_called_once_with(notification, receipt_dt=None)
+    mock_callback.assert_called_once_with(notification)
     # the endpoint can still report back
     assert send_with_rest_endpoint.call_args.args[1].callback_url
 

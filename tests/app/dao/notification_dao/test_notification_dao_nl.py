@@ -1,5 +1,5 @@
 import uuid
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 
 import pytest
 from freezegun import freeze_time
@@ -23,15 +23,17 @@ from app.dao.notifications_dao import (
     dao_get_letters_and_sheets_volume_by_postage,
     dao_get_letters_ready_to_send_since,
     dao_get_letters_stuck_sending,
+    dao_mark_letter_delivered_on_acceptance,
     dao_mark_letter_sent,
     dao_messagebox_notifications_still_pending,
     dao_messagebox_notifications_stuck_sending,
+    dao_record_letter_despatched_on_by_id,
     dao_touch_notification,
     dao_update_letter_status_from_provider,
     get_banded_slow_text_message_delivery_reports_by_provider,
     get_recent_undelivered_notification_ages,
 )
-from app.models import Notification, NotificationHistory
+from app.models import LetterCostThreshold, Notification, NotificationHistory, NotificationLetterDespatch
 from tests.app.db import (
     create_notification,
     create_notification_history,
@@ -265,6 +267,64 @@ def test_dao_update_letter_status_from_provider_from_delivered_on_acceptance(
     assert updated is (expected_status == "permanent-failure")
     model = Notification if create is create_notification else NotificationHistory
     assert model.query.get(notification.id).status == expected_status
+
+
+@freeze_time("2026-11-19 12:00")
+def test_dao_mark_letter_delivered_on_acceptance(sample_letter_template):
+    notification = create_notification(template=sample_letter_template, status="sending")
+
+    assert dao_mark_letter_delivered_on_acceptance(notification.id, "rest-endpoint")
+
+    notification = Notification.query.get(notification.id)
+    assert (notification.status, notification.detailed_status_code) == ("delivered", "delivered-on-acceptance")
+    assert (notification.sent_by, notification.sent_at) == ("rest-endpoint", datetime(2026, 11, 19, 12, 0))
+    # recorded as despatched along with it
+    despatch = NotificationLetterDespatch.query.get(notification.id)
+    assert (despatch.despatched_on, despatch.cost_threshold) == (date(2026, 11, 19), LetterCostThreshold.unsorted)
+
+
+@pytest.mark.parametrize("status", ["created", "sent", "delivered", "permanent-failure"])
+def test_dao_mark_letter_delivered_on_acceptance_only_for_a_letter_still_sending(sample_letter_template, status):
+    notification = create_notification(template=sample_letter_template, status=status)
+
+    assert not dao_mark_letter_delivered_on_acceptance(notification.id, "rest-endpoint")
+
+    notification = Notification.query.get(notification.id)
+    assert (notification.status, notification.detailed_status_code) == (status, None)
+    assert NotificationLetterDespatch.query.get(notification.id) is None
+
+
+def test_dao_update_letter_status_from_provider_removes_the_despatch_of_a_letter_delivered_on_acceptance(
+    sample_letter_template,
+):
+    notification = create_notification(template=sample_letter_template, status="sending")
+    dao_mark_letter_delivered_on_acceptance(notification.id, "rest-endpoint")
+
+    assert dao_update_letter_status_from_provider(
+        notification.id,
+        "technical-failure",
+        {"sending", "sent"},
+        "rest-endpoint",
+        detailed_status_code="print-provider-issue",
+        from_delivered_on_acceptance=True,
+    )
+
+    assert Notification.query.get(notification.id).status == "technical-failure"
+    assert NotificationLetterDespatch.query.get(notification.id) is None
+
+
+def test_dao_update_letter_status_from_provider_keeps_the_despatch_of_a_letter_it_does_not_update(
+    sample_letter_template,
+):
+    # reported delivered by the provider itself, so a failure report doesn't apply
+    notification = create_notification(template=sample_letter_template, status="delivered")
+    dao_record_letter_despatched_on_by_id(notification.id, date(2026, 11, 19), LetterCostThreshold.unsorted)
+
+    assert not dao_update_letter_status_from_provider(
+        notification.id, "technical-failure", {"sending", "sent"}, "rest-endpoint", from_delivered_on_acceptance=True
+    )
+
+    assert NotificationLetterDespatch.query.get(notification.id) is not None
 
 
 def test_dao_update_letter_status_from_provider_for_an_unknown_letter(notify_db_session):

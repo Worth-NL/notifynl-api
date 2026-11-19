@@ -68,6 +68,7 @@ post_set_organisation_letter_provider_schema = {
             "additionalProperties": False,
         },
         "address_placement": {"enum": ADDRESS_PLACEMENTS},
+        # leave it out to keep the stored value (false for an organisation that didn't have a REST endpoint yet)
         "mark_delivered_on_acceptance": {"type": "boolean"},
         "updated_by_id": uuid,
     },
@@ -114,9 +115,17 @@ def set_organisation_letter_provider(organisation_id):
         endpoint_url = data["endpoint_url"]
         auth_method = data["auth_method"]
         address_placement = data["address_placement"]
-        mark_delivered_on_acceptance = data.get("mark_delivered_on_acceptance", False)
+        existing = dao_get_organisation_letter_provider(organisation_id)
+        mark_delivered_on_acceptance = data.get(
+            "mark_delivered_on_acceptance",
+            bool(
+                existing
+                and existing.provider.identifier == LETTER_PROVIDER_REST_ENDPOINT
+                and existing.mark_delivered_on_acceptance
+            ),
+        )
         auth_config, secrets_dropped = _merge_auth_config(
-            dao_get_organisation_letter_provider(organisation_id),
+            existing,
             endpoint_url,
             auth_method,
             data.get("auth_config", {}),
