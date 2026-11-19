@@ -136,6 +136,7 @@ def test_set_rest_endpoint_letter_provider(admin_request, notify_db_session, not
         "has_credentials": True,
         # the API key header defaults to X-Api-Key
         "auth_config": {"api_key_header": "X-Api-Key"},
+        "mark_delivered_on_acceptance": False,
         "is_complete": True,
         "updated_at": None,
         "updated_by_id": str(notify_user.id),
@@ -144,6 +145,67 @@ def test_set_rest_endpoint_letter_provider(admin_request, notify_db_session, not
         "api_key_header": "X-Api-Key",
         "api_key": "secret-key",
     }
+
+
+def test_set_rest_endpoint_letter_provider_marking_letters_delivered_on_acceptance(
+    admin_request, notify_db_session, notify_user, public_dns
+):
+    organisation = create_organisation()
+
+    response = _set_letter_provider(
+        admin_request, organisation.id, _rest_endpoint(notify_user, mark_delivered_on_acceptance=True)
+    )
+
+    assert response["data"]["mark_delivered_on_acceptance"] is True
+    assert dao_get_organisation_letter_provider(organisation.id).mark_delivered_on_acceptance is True
+
+    # left out, the stored value is kept, as for the secrets
+    _set_letter_provider(admin_request, organisation.id, _rest_endpoint(notify_user))
+
+    assert dao_get_organisation_letter_provider(organisation.id).mark_delivered_on_acceptance is True
+
+    _set_letter_provider(
+        admin_request, organisation.id, _rest_endpoint(notify_user, mark_delivered_on_acceptance=False)
+    )
+
+    assert dao_get_organisation_letter_provider(organisation.id).mark_delivered_on_acceptance is False
+
+
+def test_set_pingen_letter_provider_never_marks_letters_delivered_on_acceptance(
+    admin_request, notify_db_session, notify_user, public_dns
+):
+    organisation = create_organisation()
+    _set_letter_provider(admin_request, organisation.id, _rest_endpoint(notify_user, mark_delivered_on_acceptance=True))
+
+    response = _set_letter_provider(
+        admin_request,
+        organisation.id,
+        {
+            "provider": LETTER_PROVIDER_PINGEN,
+            "mark_delivered_on_acceptance": True,
+            "updated_by_id": str(notify_user.id),
+        },
+    )
+
+    assert response["data"]["mark_delivered_on_acceptance"] is False
+
+    # nothing to keep when switching back from Pingen
+    response = _set_letter_provider(admin_request, organisation.id, _rest_endpoint(notify_user))
+
+    assert response["data"]["mark_delivered_on_acceptance"] is False
+
+
+def test_set_letter_provider_rejects_a_mark_delivered_on_acceptance_that_is_not_a_boolean(
+    admin_request, notify_db_session, notify_user, public_dns
+):
+    organisation = create_organisation()
+
+    _set_letter_provider(
+        admin_request,
+        organisation.id,
+        _rest_endpoint(notify_user, mark_delivered_on_acceptance="yes"),
+        _expected_status=400,
+    )
 
 
 def test_updating_rest_endpoint_keeps_secrets_that_are_left_out(

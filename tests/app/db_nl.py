@@ -12,6 +12,7 @@ def create_organisation_letter_provider(
     auth_config=None,
     address_placement="60mm",
     updated_by=None,
+    mark_delivered_on_acceptance=False,
 ):
     # organisations created through dao_create_organisation already have the default (Pingen) row
     letter_provider = db.session.get(OrganisationLetterProvider, organisation.id) or OrganisationLetterProvider(
@@ -21,6 +22,7 @@ def create_organisation_letter_provider(
     letter_provider.endpoint_url = endpoint_url
     letter_provider.auth_method = auth_method
     letter_provider.address_placement = address_placement
+    letter_provider.mark_delivered_on_acceptance = mark_delivered_on_acceptance
     letter_provider.updated_by_id = updated_by.id if updated_by else None
     letter_provider.auth_config = auth_config
     db.session.add(letter_provider)

@@ -34,6 +34,8 @@ class OrganisationLetterProvider(db.Model):
     endpoint_url = db.Column(db.String, nullable=True)
     auth_method = db.Column(db.String, nullable=True)
     address_placement = db.Column(db.String(5), nullable=False, default=PINGEN_ADDRESS_PLACEMENT)
+    # for REST endpoints that never report back: a letter they accept is delivered as far as we can tell
+    mark_delivered_on_acceptance = db.Column(db.Boolean, nullable=False, default=False)
     # Fernet-encrypted JSON, never serialized: see auth_config
     _auth_config = db.Column("auth_config", db.Text, nullable=True)
     created_at = db.Column(db.DateTime, nullable=False, default=datetime.datetime.utcnow)
@@ -94,6 +96,7 @@ class OrganisationLetterProvider(db.Model):
             "auth_config": {
                 field: auth_config.get(field) for field in auth_config_fields if field not in SECRET_AUTH_CONFIG_FIELDS
             },
+            "mark_delivered_on_acceptance": self.mark_delivered_on_acceptance,
             "is_complete": self.is_complete(),
             "updated_at": get_dt_string_or_none(self.updated_at),
             "updated_by_id": get_uuid_string_or_none(self.updated_by_id),

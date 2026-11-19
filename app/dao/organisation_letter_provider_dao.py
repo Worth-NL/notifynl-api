@@ -27,6 +27,7 @@ def dao_set_organisation_letter_provider(
     auth_method,
     auth_config,
     address_placement,
+    mark_delivered_on_acceptance=False,
     updated_by_id,
 ) -> OrganisationLetterProvider:
     letter_provider = dao_get_organisation_letter_provider(organisation_id) or OrganisationLetterProvider(
@@ -37,6 +38,7 @@ def dao_set_organisation_letter_provider(
     letter_provider.auth_method = auth_method
     letter_provider.auth_config = auth_config
     letter_provider.address_placement = address_placement
+    letter_provider.mark_delivered_on_acceptance = mark_delivered_on_acceptance
     letter_provider.updated_by_id = updated_by_id
     db.session.add(letter_provider)
 

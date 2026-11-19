@@ -7,7 +7,7 @@ from freezegun import freeze_time
 from redis.exceptions import ConnectionError as RedisConnectionError
 from redis.exceptions import LockNotOwnedError
 
-from app import signing
+from app import db, signing
 from app.celery.letter_provider_tasks import (
     check_letter_endpoint_connection,
     check_letters_stuck_sending,
@@ -29,7 +29,7 @@ from app.dao.letter_provider_reference_dao import (
     dao_get_letter_provider_reference,
     dao_pin_letter_provider,
 )
-from app.dao.notifications_dao import dao_get_notification_or_history_by_id
+from app.dao.notifications_dao import dao_get_notification_or_history_by_id, dao_record_letter_despatched_on_by_id
 from app.letters.utils import LetterPDFNotFound
 from app.models import LetterCostThreshold, Notification, NotificationHistory, NotificationLetterDespatch
 from tests.app.db import (
@@ -141,6 +141,115 @@ def test_deliver_letter_via_provider_sends_with_the_organisations_rest_endpoint(
     assert Notification.query.get(letter_notification.id).sent_by == "rest-endpoint"
     # the endpoint didn't return an id
     assert dao_get_letter_provider_reference(letter_notification.id) is None
+
+
+def _rest_endpoint(organisation, mark_delivered_on_acceptance):
+    return create_organisation_letter_provider(
+        organisation,
+        "rest-endpoint",
+        endpoint_url="https://print.example.com",
+        auth_method="api_key",
+        auth_config={"api_key_header": "X-Api-Key", "api_key": "k"},
+        mark_delivered_on_acceptance=mark_delivered_on_acceptance,
+    )
+
+
+def _delivered_on_acceptance(letter_template, **kwargs):
+    notification = create_notification(template=letter_template, status="delivered", sent_by="rest-endpoint", **kwargs)
+    notification.detailed_status_code = "delivered-on-acceptance"
+    db.session.commit()
+    return notification
+
+
+@freeze_time("2026-11-19 12:00")
+def test_deliver_letter_via_provider_marks_a_letter_delivered_when_the_endpoint_accepting_it_is_all_we_hear(
+    letter_notification, organisation, pdf_in_s3, send_with_rest_endpoint, mock_callback
+):
+    _rest_endpoint(organisation, mark_delivered_on_acceptance=True)
+
+    deliver_letter_via_provider(str(letter_notification.id))
+
+    notification = Notification.query.get(letter_notification.id)
+    assert (notification.status, notification.detailed_status_code, notification.sent_by) == (
+        "delivered",
+        "delivered-on-acceptance",
+        "rest-endpoint",
+    )
+    assert notification.sent_at == datetime(2026, 11, 19, 12, 0)
+    despatch = NotificationLetterDespatch.query.get(notification.id)
+    assert (despatch.despatched_on, despatch.cost_threshold) == (date(2026, 11, 19), LetterCostThreshold.unsorted)
+    # one callback, with the final status: no "sent" callback before it
+    mock_callback.assert_called_once_with(notification)
+    # the endpoint can still report back
+    assert send_with_rest_endpoint.call_args.args[1].callback_url
+
+
+def test_deliver_letter_via_provider_marks_a_letter_sent_when_the_endpoint_reports_back(
+    letter_notification, organisation, pdf_in_s3, send_with_rest_endpoint, mock_callback
+):
+    _rest_endpoint(organisation, mark_delivered_on_acceptance=False)
+
+    deliver_letter_via_provider(str(letter_notification.id))
+
+    notification = Notification.query.get(letter_notification.id)
+    assert (notification.status, notification.detailed_status_code) == ("sent", None)
+    assert NotificationLetterDespatch.query.get(notification.id) is None
+    mock_callback.assert_called_once()
+
+
+def test_deliver_letter_via_provider_marks_a_resumed_letter_delivered_when_the_endpoint_accepting_it_is_all_we_hear(
+    organisation, letter_notification, pdf_in_s3, send_with_rest_endpoint, mock_callback
+):
+    letter_notification.status = "sending"
+    create_letter_provider_reference(letter_notification.id, "rest-endpoint", "endpoint-1")
+    _rest_endpoint(organisation, mark_delivered_on_acceptance=True)
+
+    deliver_letter_via_provider.push_request(retries=1)
+    try:
+        deliver_letter_via_provider.run(str(letter_notification.id))
+    finally:
+        deliver_letter_via_provider.pop_request()
+
+    assert not send_with_rest_endpoint.called
+    notification = Notification.query.get(letter_notification.id)
+    assert (notification.status, notification.detailed_status_code) == ("delivered", "delivered-on-acceptance")
+    assert mock_callback.called
+
+
+def test_deliver_letter_via_provider_marks_a_letter_pingen_accepted_sent_whatever_the_endpoint_setting(
+    organisation, letter_notification, pdf_in_s3, send_with_pingen, mock_callback
+):
+    # Pingen accepted the letter, then the organisation switched to its own endpoint before the retry
+    letter_notification.status = "sending"
+    create_letter_provider_reference(letter_notification.id, "pingen", "pingen-1")
+    _rest_endpoint(organisation, mark_delivered_on_acceptance=True)
+
+    deliver_letter_via_provider.push_request(retries=1)
+    try:
+        deliver_letter_via_provider.run(str(letter_notification.id))
+    finally:
+        deliver_letter_via_provider.pop_request()
+
+    notification = Notification.query.get(letter_notification.id)
+    assert (notification.status, notification.sent_by) == ("sent", "pingen")
+
+
+def test_deliver_letter_via_provider_keeps_a_status_the_endpoint_already_reported_when_marking_delivered(
+    letter_notification, organisation, pdf_in_s3, send_with_rest_endpoint, mock_callback
+):
+    _rest_endpoint(organisation, mark_delivered_on_acceptance=True)
+
+    def endpoint_reports_back_before_responding(client, letter, letter_provider):
+        Notification.query.filter_by(id=letter_notification.id).update({"status": "permanent-failure"})
+        return LetterSendResult()
+
+    send_with_rest_endpoint.side_effect = endpoint_reports_back_before_responding
+
+    deliver_letter_via_provider(str(letter_notification.id))
+
+    assert _status(letter_notification) == "permanent-failure"
+    assert NotificationLetterDespatch.query.get(letter_notification.id) is None
+    assert not mock_callback.called
 
 
 @pytest.mark.parametrize(
@@ -1026,3 +1135,58 @@ def test_a_provider_reporting_on_a_connection_test_changes_nothing(notify_db_ses
 
     assert Notification.query.count() == 0
     assert NotificationHistory.query.count() == 0
+
+
+@pytest.mark.parametrize(
+    "status, detailed_status_code",
+    [("technical-failure", "print-provider-issue"), ("permanent-failure", "print-provider-rejected")],
+)
+def test_process_letter_provider_status_failure_replaces_delivered_on_acceptance(
+    letter_template, mock_callback, status, detailed_status_code
+):
+    notification = _delivered_on_acceptance(letter_template)
+    dao_record_letter_despatched_on_by_id(notification.id, date(2026, 11, 19), LetterCostThreshold.unsorted)
+
+    process_letter_provider_status(str(notification.id), "rest-endpoint", status, reason="Paper jam")
+
+    notification = Notification.query.get(notification.id)
+    assert (notification.status, notification.detailed_status_code) == (status, detailed_status_code)
+    # it isn't billed as despatched
+    assert NotificationLetterDespatch.query.get(notification.id) is None
+    mock_callback.assert_called_once_with(notification, receipt_dt=None)
+
+
+def test_process_letter_provider_status_failure_replaces_delivered_on_acceptance_in_notification_history(
+    letter_template, mock_callback
+):
+    notification = create_notification_history(template=letter_template, status="delivered", sent_by="rest-endpoint")
+    notification.detailed_status_code = "delivered-on-acceptance"
+    db.session.commit()
+
+    process_letter_provider_status(str(notification.id), "rest-endpoint", "permanent-failure")
+
+    assert NotificationHistory.query.get(notification.id).status == "permanent-failure"
+    assert mock_callback.called
+
+
+def test_process_letter_provider_status_ignores_delivered_for_a_letter_delivered_on_acceptance(
+    letter_template, mock_callback
+):
+    notification = _delivered_on_acceptance(letter_template)
+
+    process_letter_provider_status(str(notification.id), "rest-endpoint", "delivered")
+
+    notification = Notification.query.get(notification.id)
+    assert (notification.status, notification.detailed_status_code) == ("delivered", "delivered-on-acceptance")
+    assert not mock_callback.called
+
+
+def test_process_letter_provider_status_returned_letter_for_a_letter_delivered_on_acceptance(
+    letter_template, mock_callback, mocker
+):
+    returned = mocker.patch("app.celery.tasks.process_returned_letters_list")
+    notification = _delivered_on_acceptance(letter_template, reference="RETURNEDREF")
+
+    process_letter_provider_status(str(notification.id), "rest-endpoint", "returned-letter")
+
+    returned.assert_called_once_with(["RETURNEDREF"])
