@@ -13,7 +13,11 @@ from app.letters_nl.letter_endpoint_connection import (
     ConnectionTestUnavailable,
 )
 from tests.app.db import create_organisation, create_service, create_user
-from tests.app.db_nl import create_organisation_letter_provider, delete_organisation_letter_provider
+from tests.app.db_nl import (
+    create_organisation_letter_provider,
+    create_organisation_test_letter_endpoint,
+    delete_organisation_letter_provider,
+)
 
 ENDPOINT_URL = "https://print.example.com/letters"
 
@@ -28,6 +32,7 @@ def public_dns(mocker):
 
 @pytest.fixture
 def mock_redis_delete(mocker):
+    # the same redis_store object in every DAO module
     return mocker.patch("app.dao.organisation_letter_provider_dao.redis_store.delete")
 
 
@@ -740,3 +745,256 @@ def test_get_connection_test_result_that_expired(admin_request, notify_db_sessio
     mocker.patch("app.organisation.letter_provider_rest_nl.get_connection_test_result", return_value=None)
 
     admin_request.get(CONNECTION_TEST_RESULT, organisation_id=uuid.uuid4(), test_id=uuid.uuid4(), _expected_status=404)
+
+
+def _set_test_endpoint(admin_request, organisation_id, data, _expected_status=200):
+    return admin_request.post(
+        "organisation_letter_provider.set_organisation_test_letter_endpoint",
+        organisation_id=organisation_id,
+        _data=data,
+        _expected_status=_expected_status,
+    )
+
+
+def _test_endpoint_data(user, **overrides):
+    return {
+        "endpoint_url": ENDPOINT_URL,
+        "auth_method": "api_key",
+        "auth_config": {"api_key": "secret-key"},
+        "updated_by_id": str(user.id),
+    } | overrides
+
+
+def test_get_organisation_test_letter_endpoint_when_none_is_set(admin_request, notify_db_session):
+    organisation = create_organisation()
+
+    response = admin_request.get(
+        "organisation_letter_provider.get_organisation_test_letter_endpoint", organisation_id=organisation.id
+    )
+
+    assert response == {"data": None}
+
+
+def test_set_organisation_test_letter_endpoint(admin_request, notify_db_session, notify_user, public_dns):
+    organisation = create_organisation()
+
+    response = _set_test_endpoint(admin_request, organisation.id, _test_endpoint_data(notify_user))
+
+    assert response["data"] | {"updated_at": None} == {
+        "organisation_id": str(organisation.id),
+        "endpoint_url": ENDPOINT_URL,
+        "auth_method": "api_key",
+        "has_credentials": True,
+        "auth_config": {"api_key_header": "X-Api-Key"},
+        "is_complete": True,
+        "updated_at": None,
+        "updated_by_id": str(notify_user.id),
+    }
+    assert "secret-key" not in str(response)
+    # the live provider is untouched
+    assert dao_get_organisation_letter_provider(organisation.id).provider.identifier == LETTER_PROVIDER_PINGEN
+
+
+def test_get_organisation_test_letter_endpoint_never_returns_secrets(
+    admin_request, notify_db_session, notify_user, public_dns
+):
+    organisation = create_organisation()
+    _set_test_endpoint(admin_request, organisation.id, _test_endpoint_data(notify_user))
+
+    response = admin_request.get(
+        "organisation_letter_provider.get_organisation_test_letter_endpoint", organisation_id=organisation.id
+    )
+
+    assert response["data"]["endpoint_url"] == ENDPOINT_URL
+    assert "secret-key" not in str(response)
+
+
+def test_set_organisation_test_letter_endpoint_keeps_stored_secrets_for_the_same_url(
+    admin_request, notify_db_session, notify_user, public_dns
+):
+    organisation = create_organisation()
+    _set_test_endpoint(admin_request, organisation.id, _test_endpoint_data(notify_user))
+
+    _set_test_endpoint(admin_request, organisation.id, _test_endpoint_data(notify_user, auth_config={}))
+
+    stored = admin_request.get(
+        "organisation_letter_provider.get_organisation_test_letter_endpoint", organisation_id=organisation.id
+    )
+    assert stored["data"]["is_complete"] is True
+
+
+def test_set_organisation_test_letter_endpoint_drops_stored_secrets_for_a_new_url(
+    admin_request, notify_db_session, notify_user, public_dns
+):
+    organisation = create_organisation()
+    _set_test_endpoint(admin_request, organisation.id, _test_endpoint_data(notify_user))
+
+    response = _set_test_endpoint(
+        admin_request,
+        organisation.id,
+        _test_endpoint_data(notify_user, endpoint_url="https://other.example.com/letters", auth_config={}),
+        _expected_status=400,
+    )
+
+    assert "have to be entered again" in response["message"]
+
+
+@pytest.mark.parametrize("endpoint_url", ["http://print.example.com/letters", "https://user:pw@print.example.com/"])
+def test_set_organisation_test_letter_endpoint_refuses_unsafe_urls(
+    admin_request, notify_db_session, notify_user, public_dns, endpoint_url
+):
+    organisation = create_organisation()
+
+    _set_test_endpoint(
+        admin_request,
+        organisation.id,
+        _test_endpoint_data(notify_user, endpoint_url=endpoint_url),
+        _expected_status=400,
+    )
+
+
+def test_set_organisation_test_letter_endpoint_refuses_internal_addresses(
+    admin_request, notify_db_session, notify_user, mocker
+):
+    mocker.patch(
+        "app.letters_nl.url_validation.socket.getaddrinfo",
+        return_value=[(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("10.0.0.5", 443))],
+    )
+    organisation = create_organisation()
+
+    _set_test_endpoint(admin_request, organisation.id, _test_endpoint_data(notify_user), _expected_status=400)
+
+
+def test_set_organisation_test_letter_endpoint_needs_credentials(admin_request, notify_db_session, notify_user):
+    organisation = create_organisation()
+
+    _set_test_endpoint(
+        admin_request, organisation.id, _test_endpoint_data(notify_user, auth_config={}), _expected_status=400
+    )
+
+
+def test_delete_organisation_test_letter_endpoint(admin_request, notify_db_session, notify_user, public_dns):
+    organisation = create_organisation()
+    _set_test_endpoint(admin_request, organisation.id, _test_endpoint_data(notify_user))
+
+    admin_request.delete(
+        "organisation_letter_provider.delete_organisation_test_letter_endpoint", organisation_id=organisation.id
+    )
+
+    response = admin_request.get(
+        "organisation_letter_provider.get_organisation_test_letter_endpoint", organisation_id=organisation.id
+    )
+    assert response == {"data": None}
+
+
+def test_test_letter_endpoint_routes_for_unknown_organisation(admin_request, notify_db_session):
+    admin_request.get(
+        "organisation_letter_provider.get_organisation_test_letter_endpoint",
+        organisation_id=uuid.uuid4(),
+        _expected_status=404,
+    )
+
+
+def test_organisation_json_summarises_the_test_letter_endpoint_without_secrets(
+    admin_request, notify_db_session, notify_user, public_dns, mock_redis_delete
+):
+    organisation = create_organisation()
+    assert (
+        admin_request.get("organisation.get_organisation_by_id", organisation_id=organisation.id)[
+            "test_letter_endpoint"
+        ]
+        is None
+    )
+
+    _set_test_endpoint(admin_request, organisation.id, _test_endpoint_data(notify_user))
+
+    summary = admin_request.get("organisation.get_organisation_by_id", organisation_id=organisation.id)[
+        "test_letter_endpoint"
+    ]
+    assert summary == {"endpoint_url": ENDPOINT_URL, "auth_method": "api_key", "has_credentials": True}
+
+
+def test_changing_the_test_letter_endpoint_clears_the_cached_organisation(
+    admin_request, notify_db_session, notify_user, public_dns, mock_redis_delete
+):
+    organisation = create_organisation()
+
+    _set_test_endpoint(admin_request, organisation.id, _test_endpoint_data(notify_user))
+    admin_request.delete(
+        "organisation_letter_provider.delete_organisation_test_letter_endpoint", organisation_id=organisation.id
+    )
+
+    assert mock_redis_delete.call_count == 2
+    mock_redis_delete.assert_called_with(f"organisation-{organisation.id}")
+
+
+def test_connection_test_of_the_test_endpoint_keeps_its_own_stored_secret(
+    admin_request, notify_db_session, public_dns, queue_connection_test, platform_admin
+):
+    organisation = create_organisation()
+    create_organisation_test_letter_endpoint(
+        organisation, endpoint_url=ENDPOINT_URL, auth_method="api_key", auth_config=TYPED_API_KEY
+    )
+
+    admin_request.post(
+        "organisation_letter_provider.start_test_letter_endpoint_connection_test",
+        organisation_id=organisation.id,
+        _data={
+            "endpoint_url": ENDPOINT_URL,
+            "auth_method": "api_key",
+            "auth_config": {"api_key_header": "X-Api-Key"},
+            "started_by_id": str(platform_admin.id),
+        },
+        _expected_status=201,
+    )
+
+    assert _queued_settings(queue_connection_test)["auth_config"] == TYPED_API_KEY
+
+
+def test_connection_test_of_the_test_endpoint_never_uses_the_live_providers_secret(
+    admin_request, notify_db_session, public_dns, queue_connection_test, platform_admin
+):
+    organisation = create_organisation()
+    create_organisation_letter_provider(
+        organisation,
+        LETTER_PROVIDER_REST_ENDPOINT,
+        endpoint_url=ENDPOINT_URL,
+        auth_method="api_key",
+        auth_config=TYPED_API_KEY,
+        address_placement="60mm",
+    )
+
+    response = admin_request.post(
+        "organisation_letter_provider.start_test_letter_endpoint_connection_test",
+        organisation_id=organisation.id,
+        _data={
+            "endpoint_url": ENDPOINT_URL,
+            "auth_method": "api_key",
+            "auth_config": {"api_key_header": "X-Api-Key"},
+            "started_by_id": str(platform_admin.id),
+        },
+        _expected_status=400,
+    )
+
+    assert "api_key" in response["message"]
+    assert not queue_connection_test.called
+
+
+def test_only_platform_admins_can_test_the_test_endpoint_connection(
+    admin_request, notify_db_session, public_dns, queue_connection_test
+):
+    organisation = create_organisation()
+    member = create_user()
+
+    admin_request.post(
+        "organisation_letter_provider.start_test_letter_endpoint_connection_test",
+        organisation_id=organisation.id,
+        _data={
+            "endpoint_url": ENDPOINT_URL,
+            "auth_method": "api_key",
+            "auth_config": TYPED_API_KEY,
+            "started_by_id": str(member.id),
+        },
+        _expected_status=403,
+    )
+    assert not queue_connection_test.called

@@ -17,6 +17,7 @@ from app.clients.letter import (
 from app.config import QueueNames, TaskNamesNL
 from app.constants import (
     KEY_TYPE_NORMAL,
+    KEY_TYPE_TEST,
     LETTER_TYPE,
     NOTIFICATION_DELIVERED,
     NOTIFICATION_PERMANENT_FAILURE,
@@ -59,13 +60,17 @@ from app.letters_nl.letter_endpoint_connection import (
     CONNECTION_TEST_TIME_LIMIT,
     run_connection_test,
 )
-from app.letters_nl.provider import resolve_letter_provider
+from app.letters_nl.provider import MissingTestLetterEndpoint, resolve_letter_provider
+from app.letters_nl.test_endpoint import uses_test_letter_endpoint
 from app.models import LetterCostThreshold
 from app.notifications.notifications_ses_callback import check_and_queue_callback_task
 
 # 55 retries 3 minutes apart: a print provider can be unavailable for up to ~2h45m before a letter fails
 DELIVERY_MAX_RETRIES = 55
 DELIVERY_RETRY_DELAY = 180
+# a letter for an organisation's test endpoint fails within about a minute, so whoever is testing sees it quickly
+TEST_DELIVERY_MAX_RETRIES = 3
+TEST_DELIVERY_RETRY_DELAY = 20
 # the delivery lock outlives a slow provider call, so a duplicate message can't start a second one meanwhile
 DELIVERY_LOCK_TIMEOUT = 600
 # letters ready to send for this long without being picked up (e.g. a lost message) are queued by the sweep
@@ -84,7 +89,7 @@ def queue_letter_for_delivery(notification):
     """
     if not current_app.config.get("LETTER_DELIVERY_VIA_PROVIDERS"):
         return
-    if notification.notification_type != LETTER_TYPE or notification.key_type != KEY_TYPE_NORMAL:
+    if notification.notification_type != LETTER_TYPE or not _goes_to_print_provider(notification):
         return
     deliver_letter_via_provider.apply_async(
         [str(notification.id)], queue=QueueNames.SEND_LETTER, MessageGroupId=str(notification.service_id)
@@ -100,11 +105,12 @@ def queue_letter_for_delivery(notification):
 def deliver_letter_via_provider(self, notification_id):
     notification = get_notification_by_id(notification_id)
     extra = {"notification_id": notification_id}
-    if not notification or notification.key_type != KEY_TYPE_NORMAL:
+    if not notification or not _goes_to_print_provider(notification):
         current_app.logger.warning(
-            "Not delivering letter %s: no live letter with this id", notification_id, extra=extra
+            "Not delivering letter %s: no live or test endpoint letter with this id", notification_id, extra=extra
         )
         return
+    test_key = notification.key_type == KEY_TYPE_TEST
 
     resuming = False
     if not dao_claim_letter_for_sending(notification_id):
@@ -122,7 +128,7 @@ def deliver_letter_via_provider(self, notification_id):
     except RedisError:
         # the letter is already claimed, so without a retry nothing would pick it up again
         current_app.logger.exception("RETRY: could not lock letter %s for delivery", notification_id, extra=extra)
-        _retry(self, notification_id, "print-provider-error")
+        _retry(self, notification_id, "print-provider-error", test_key=test_key)
         return
     if not acquired:
         current_app.logger.info("Not delivering letter %s: already being delivered", notification_id, extra=extra)
@@ -136,7 +142,7 @@ def deliver_letter_via_provider(self, notification_id):
         # retrying is safe: the letter stays claimed, and retried sends are idempotent where providers support it
         current_app.logger.exception("RETRY: delivering letter %s failed unexpectedly", notification_id, extra=extra)
         db.session.rollback()
-        _retry(self, notification_id, "print-provider-error")
+        _retry(self, notification_id, "print-provider-error", test_key=test_key)
     finally:
         _release(lock, notification_id)
 
@@ -219,7 +225,13 @@ def _deliver_claimed_letter(task, notification):
         )
         return
 
-    client, letter_provider = resolve_letter_provider(service.organisation_id)
+    test_key = notification.key_type == KEY_TYPE_TEST
+    try:
+        client, letter_provider = resolve_letter_provider(service.organisation_id, test_key=test_key)
+    except MissingTestLetterEndpoint:
+        # the test endpoint was removed or broken after the letter was created: never send it anywhere else
+        _fail(notification_id, "test-endpoint-missing")
+        return
     # Pingen has one URL for all organisations; a REST endpoint is only the same provider at the same URL
     endpoint_url = letter_provider.endpoint_url if client.name == LETTER_PROVIDER_REST_ENDPOINT else None
 
@@ -246,7 +258,7 @@ def _deliver_claimed_letter(task, notification):
         current_app.logger.warning(
             "PDF for letter %s not found (yet)", notification_id, extra={"notification_id": notification_id}
         )
-        _retry(task, notification_id, "letter-pdf-not-found")
+        _retry(task, notification_id, "letter-pdf-not-found", test_key=test_key)
         return
 
     letter = Letter(
@@ -275,7 +287,7 @@ def _deliver_claimed_letter(task, notification):
         )
         if not e.may_have_been_accepted:
             dao_unpin_letter_provider(notification_id)
-        _retry(task, notification_id, "print-provider-unavailable")
+        _retry(task, notification_id, "print-provider-unavailable", test_key=test_key)
         return
     except LetterClientNonRetryableException as e:
         current_app.logger.exception(
@@ -326,7 +338,8 @@ def _mark_accepted(notification_id, provider, letter_provider):
     if (
         provider == LETTER_PROVIDER_REST_ENDPOINT
         and letter_provider is not None
-        and letter_provider.mark_delivered_on_acceptance
+        # [NotifyNL] a test endpoint has no such setting: its letters are only sent, and the endpoint reports on them
+        and getattr(letter_provider, "mark_delivered_on_acceptance", False)
     ):
         _mark_delivered_on_acceptance(notification_id, provider)
     else:
@@ -360,10 +373,18 @@ def _fail(notification_id, detailed_status_code):
         check_and_queue_callback_task(notification)
 
 
-def _retry(task, notification_id, detailed_status_code):
+def _goes_to_print_provider(notification):
+    """Live letters, and test letters of an organisation with a test endpoint. All others are only simulated."""
+    return notification.key_type == KEY_TYPE_NORMAL or uses_test_letter_endpoint(notification)
+
+
+def _retry(task, notification_id, detailed_status_code, *, test_key=False):
     dao_touch_notification(notification_id)
     try:
-        task.retry()
+        if test_key:
+            task.retry(max_retries=TEST_DELIVERY_MAX_RETRIES, countdown=TEST_DELIVERY_RETRY_DELAY)
+        else:
+            task.retry()
     except task.MaxRetriesExceededError:
         current_app.logger.error(
             "RETRY FAILED: letter %s could not be delivered, marking it as technical-failure",

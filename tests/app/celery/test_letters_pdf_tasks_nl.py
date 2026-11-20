@@ -37,10 +37,12 @@ from app.constants import (
     NOTIFICATION_CREATED,
     NOTIFICATION_DELIVERED,
     NOTIFICATION_PENDING_VIRUS_CHECK,
+    NOTIFICATION_SENDING,
     NOTIFICATION_TECHNICAL_FAILURE,
     NOTIFICATION_VIRUS_SCAN_FAILED,
 )
 from app.dao import notifications_dao
+from app.dao.organisation_test_letter_endpoint_dao import dao_delete_organisation_test_letter_endpoint
 from app.errors import VirusScanError
 from app.exceptions import NotificationTechnicalFailureException
 from app.letters.utils import ScanErrorType
@@ -48,8 +50,12 @@ from app.models import Notification
 from tests.app.conftest import create_custom_template
 from tests.app.db import (
     create_letter_branding,
+    create_notification,
+    create_organisation,
     create_service,
+    create_template,
 )
+from tests.app.db_nl import create_organisation_test_letter_endpoint
 from tests.conftest import _with_message_group_id
 
 
@@ -771,3 +777,93 @@ def test_process_sanitised_letter_does_not_hand_over_a_letter_it_retries(sample_
         process_sanitised_letter(encoded_data)
 
     assert not queue.called
+
+
+@pytest.fixture
+def test_endpoint_letter(notify_db_session):
+    organisation = create_organisation()
+    create_organisation_test_letter_endpoint(organisation)
+    service = create_service(organisation=organisation, service_name="test endpoint service")
+    template = create_template(service=service, template_type="letter", postage="netherlands")
+    return create_notification(template=template, key_type=KEY_TYPE_TEST, billable_units=0, reference="foo")
+
+
+def test_update_billable_units_for_letter_delivers_a_test_letter_with_a_test_endpoint(test_endpoint_letter, mocker):
+    queue = mocker.patch("app.celery.letters_pdf_tasks.queue_letter_for_delivery")
+
+    update_billable_units_for_letter(test_endpoint_letter.id, 3)
+
+    assert Notification.query.get(test_endpoint_letter.id).billable_units == 2
+    queue.assert_called_once()
+
+
+def test_update_billable_units_for_letter_fails_a_test_letter_whose_test_endpoint_was_removed(
+    test_endpoint_letter, mocker
+):
+    queue = mocker.patch("app.celery.letters_pdf_tasks.queue_letter_for_delivery")
+    mock_callback = mocker.patch("app.celery.letters_pdf_tasks.check_and_queue_callback_task")
+    dao_delete_organisation_test_letter_endpoint(test_endpoint_letter.service.organisation_id)
+
+    update_billable_units_for_letter(test_endpoint_letter.id, 3)
+
+    letter = Notification.query.get(test_endpoint_letter.id)
+    assert letter.status == NOTIFICATION_TECHNICAL_FAILURE
+    assert letter.detailed_status_code == "test-endpoint-missing"
+    assert letter.billable_units == 0
+    assert not queue.called
+    mock_callback.assert_called_once()
+
+
+@pytest.mark.parametrize("status", [NOTIFICATION_SENDING, NOTIFICATION_DELIVERED])
+def test_update_billable_units_for_letter_leaves_a_simulated_test_letter_alone(
+    sample_letter_notification, status, mocker
+):
+    queue = mocker.patch("app.celery.letters_pdf_tasks.queue_letter_for_delivery")
+    mock_callback = mocker.patch("app.celery.letters_pdf_tasks.check_and_queue_callback_task")
+    sample_letter_notification.key_type = KEY_TYPE_TEST
+    sample_letter_notification.status = status
+
+    update_billable_units_for_letter(sample_letter_notification.id, 3)
+
+    assert Notification.query.get(sample_letter_notification.id).status == status
+    assert not queue.called
+    assert not mock_callback.called
+
+
+@mock_aws
+def test_process_sanitised_letter_leaves_a_test_letter_with_a_test_endpoint_to_be_delivered(
+    test_endpoint_letter, mocker
+):
+    queue = mocker.patch("app.celery.letters_pdf_tasks.queue_letter_for_delivery")
+    mock_callback = mocker.patch("app.celery.letters_pdf_tasks.check_and_queue_callback_task")
+    filename = "NOTIFY.FOO.D.2.C.20180701120000.PDF"
+    conn = boto3.resource("s3", region_name="eu-west-1")
+    for bucket in ("S3_BUCKET_LETTERS_SCAN", "S3_BUCKET_LETTER_SANITISE", "S3_BUCKET_TEST_LETTERS"):
+        conn.create_bucket(
+            Bucket=current_app.config[bucket], CreateBucketConfiguration={"LocationConstraint": "eu-west-1"}
+        )
+    s3 = boto3.client("s3", region_name="eu-west-1")
+    s3.put_object(Bucket=current_app.config["S3_BUCKET_LETTERS_SCAN"], Key=filename, Body=b"original_pdf_content")
+    s3.put_object(Bucket=current_app.config["S3_BUCKET_LETTER_SANITISE"], Key=filename, Body=b"sanitised_pdf_content")
+    test_endpoint_letter.status = NOTIFICATION_PENDING_VIRUS_CHECK
+    test_endpoint_letter.created_at = datetime(2018, 7, 1, 12)
+
+    process_sanitised_letter(
+        signing.encode(
+            {
+                "page_count": 2,
+                "message": None,
+                "invalid_pages": None,
+                "validation_status": "passed",
+                "filename": filename,
+                "notification_id": str(test_endpoint_letter.id),
+                "address": "A. User\nThe house on the corner",
+            }
+        )
+    )
+
+    # created (not delivered), the PDF stays in the test bucket, and the letter is handed to its provider
+    assert test_endpoint_letter.status == NOTIFICATION_CREATED
+    assert not mock_callback.called
+    assert len(list(conn.Bucket(current_app.config["S3_BUCKET_TEST_LETTERS"]).objects.all())) == 1
+    queue.assert_called_once()

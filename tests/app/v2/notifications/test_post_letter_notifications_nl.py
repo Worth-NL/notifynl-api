@@ -4,18 +4,27 @@ from unittest.mock import ANY
 import pytest
 from flask import current_app
 
+from app.celery.letters_pdf_tasks import get_pdf_for_templated_letter
+from app.celery.research_mode_tasks import create_fake_letter_callback
 from app.config import QueueNames, TaskNamesNL
 from app.constants import (
+    INTERNATIONAL_LETTERS,
+    KEY_TYPE_NORMAL,
+    KEY_TYPE_TEAM,
+    KEY_TYPE_TEST,
     LETTER_TYPE,
     NOTIFICATION_CREATED,
     NOTIFICATION_PENDING_VIRUS_CHECK,
+    NOTIFICATION_SENDING,
 )
 from app.models import Job, Notification
 from app.notifications.process_letter_notifications import create_letter_notification
 from app.notifications.validators import MAX_LETTER_ATTACHMENT_BYTES
 from app.schema_validation import validate
 from app.v2.notifications.notification_schemas import post_letter_response
-from tests.app.db import create_service, create_template
+from tests.app.db import create_organisation, create_service, create_template
+from tests.app.db_nl import create_organisation_test_letter_endpoint
+from tests.conftest import set_config_values
 
 VALID_ATTACHMENT = base64.b64encode(b"pdf-bytes-1").decode()
 VALID_ATTACHMENT_2 = base64.b64encode(b"pdf-bytes-2").decode()
@@ -345,3 +354,91 @@ def test_post_precompiled_letter_notification_with_contents_if_s3_upload_fails_n
     assert s3mock.called
     assert persist_letter_mock.called
     assert Notification.query.count() == 0
+
+
+def _international_letter_data(template):
+    return {
+        "template_id": str(template.id),
+        "personalisation": {
+            "address_line_1": "Kaiser Wilhelm II",
+            "address_line_2": "Kronprinzenpalais",
+            "address_line_5": "   deutschland   ",
+        },
+        "reference": "foo",
+    }
+
+
+@pytest.fixture
+def organisation_letter_template(notify_db_session):
+    organisation = create_organisation()
+    service = create_service(service_permissions=[LETTER_TYPE, INTERNATIONAL_LETTERS], organisation=organisation)
+    return organisation, create_template(service, template_type="letter")
+
+
+@pytest.mark.parametrize("key_type", [KEY_TYPE_TEST, KEY_TYPE_TEAM])
+def test_post_letter_notification_with_a_test_key_and_a_test_endpoint_is_not_simulated(
+    notify_api, api_client_request, organisation_letter_template, mock_celery_task, key_type
+):
+    organisation, template = organisation_letter_template
+    create_organisation_test_letter_endpoint(organisation)
+    create_pdf_task = mock_celery_task(get_pdf_for_templated_letter)
+    fake_callback_task = mock_celery_task(create_fake_letter_callback)
+
+    for fake_delivery in (True, False):
+        with set_config_values(notify_api, {"TEST_LETTERS_FAKE_DELIVERY": fake_delivery}):
+            api_client_request.post(
+                template.service_id,
+                "v2_notifications.post_notification",
+                notification_type="letter",
+                _data=_international_letter_data(template),
+                _api_key_type=key_type,
+            )
+
+    assert not fake_callback_task.called
+    assert create_pdf_task.call_count == 2
+    assert all(call.kwargs["queue"] == QueueNames.CREATE_LETTERS_PDF for call in create_pdf_task.call_args_list)
+    assert {n.status for n in Notification.query.all()} == {NOTIFICATION_CREATED}
+    assert {n.key_type for n in Notification.query.all()} == {KEY_TYPE_TEST}
+
+
+@pytest.mark.parametrize("key_type", [KEY_TYPE_TEST, KEY_TYPE_TEAM])
+def test_post_letter_notification_with_a_test_key_without_a_test_endpoint_is_simulated(
+    notify_api, api_client_request, organisation_letter_template, mock_celery_task, key_type
+):
+    _, template = organisation_letter_template
+    create_pdf_task = mock_celery_task(get_pdf_for_templated_letter)
+    fake_callback_task = mock_celery_task(create_fake_letter_callback)
+
+    with set_config_values(notify_api, {"TEST_LETTERS_FAKE_DELIVERY": True}):
+        api_client_request.post(
+            template.service_id,
+            "v2_notifications.post_notification",
+            notification_type="letter",
+            _data=_international_letter_data(template),
+            _api_key_type=key_type,
+        )
+
+    assert fake_callback_task.called
+    assert create_pdf_task.call_args.kwargs["queue"] == QueueNames.RESEARCH_MODE
+    assert Notification.query.one().status == NOTIFICATION_SENDING
+
+
+def test_post_letter_notification_with_a_live_key_ignores_the_test_endpoint(
+    api_client_request, organisation_letter_template, mock_celery_task
+):
+    organisation, template = organisation_letter_template
+    create_organisation_test_letter_endpoint(organisation)
+    create_pdf_task = mock_celery_task(get_pdf_for_templated_letter)
+    template.service.restricted = False
+
+    api_client_request.post(
+        template.service_id,
+        "v2_notifications.post_notification",
+        notification_type="letter",
+        _data=_international_letter_data(template),
+    )
+
+    assert create_pdf_task.call_args.kwargs["queue"] == QueueNames.CREATE_LETTERS_PDF
+    notification = Notification.query.one()
+    assert notification.key_type == KEY_TYPE_NORMAL
+    assert notification.status == NOTIFICATION_CREATED

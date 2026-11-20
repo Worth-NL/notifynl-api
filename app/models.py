@@ -534,6 +534,7 @@ class Organisation(db.Model):
             billing_reference=self.billing_reference,
             area_boundary=self.area_boundary,
             letter_provider=self.letter_provider.serialize_summary() if self.letter_provider else None,
+            test_letter_endpoint=self.test_letter_endpoint.serialize_summary() if self.test_letter_endpoint else None,
             can_approve_own_go_live_requests=self.can_approve_own_go_live_requests,
             permissions=[x.permission for x in self.permissions],
         )
@@ -2984,5 +2985,6 @@ class ReportRequest(db.Model):
 from app.models_nl import (  # noqa: E402, F401
     LetterProviderReference,
     OrganisationLetterProvider,
+    OrganisationTestLetterEndpoint,
     complete_letter_provider,
 )
