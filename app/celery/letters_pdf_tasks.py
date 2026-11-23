@@ -50,6 +50,7 @@ from app.letters.utils import (
     move_sanitised_letter_to_test_or_live_pdf_bucket,
     move_scan_to_invalid_pdf_bucket,
 )
+from app.letters_nl.test_endpoint import uses_test_letter_endpoint
 from app.models import Service
 from app.notifications.notifications_ses_callback import check_and_queue_callback_task
 from app.utils import batched
@@ -133,7 +134,8 @@ def update_billable_units_for_letter(self, notification_id, page_count):
 
     billable_units = get_billable_units_for_letter_page_count(page_count)
 
-    if notification.key_type != KEY_TYPE_TEST:
+    # [NotifyNL] a test letter of an organisation with a test endpoint is delivered like a live one
+    if notification.key_type != KEY_TYPE_TEST or uses_test_letter_endpoint(notification):
         notification.billable_units = billable_units
         dao_update_notification(notification)
         # [NotifyNL] the letter's PDF is ready: hand it to its print provider
@@ -150,6 +152,19 @@ def update_billable_units_for_letter(self, notification_id, page_count):
             extra,
             extra=extra,
         )
+    elif notification.status == NOTIFICATION_CREATED:
+        # [NotifyNL] simulated test letters never start as created, so this one was made for the organisation's test
+        # endpoint, which has been removed since: never leave it waiting for a delivery that will not happen
+        current_app.logger.warning(
+            "Test letter %s was created for a test endpoint that no longer exists, marking it as technical-failure",
+            notification_id,
+            extra={"notification_id": notification_id},
+        )
+        failed_notification = update_notification_status_by_id(
+            notification_id, NOTIFICATION_TECHNICAL_FAILURE, detailed_status_code="test-endpoint-missing"
+        )
+        if failed_notification:
+            check_and_queue_callback_task(failed_notification)
 
 
 @notify_celery.task(
@@ -522,17 +537,19 @@ def process_sanitised_letter(self, sanitise_data):
 
         billable_units = get_billable_units_for_letter_page_count(letter_details["page_count"])
         is_test_key = notification.key_type == KEY_TYPE_TEST
+        # [NotifyNL] such a letter is delivered to the organisation's test endpoint, not marked delivered here
+        simulate = is_test_key and not uses_test_letter_endpoint(notification)
 
         # Updating the notification needs to happen before the file is moved. This is so that if updating the
         # notification fails, the task can retry because the file is in the same place.
         update_letter_pdf_status(
             reference=notification.reference,
-            status=NOTIFICATION_DELIVERED if is_test_key else NOTIFICATION_CREATED,
+            status=NOTIFICATION_DELIVERED if simulate else NOTIFICATION_CREATED,
             billable_units=billable_units,
             recipient_address=letter_details["address"],
         )
 
-        if is_test_key:
+        if simulate:
             # [NOTIFYNL] update_letter_pdf_status is a bulk UPDATE (synchronize_session=False) -
             # it doesn't refresh `notification`, so re-fetch before building the callback payload
             # or it would report the pre-update status. Mirrors the failure branches below.

@@ -11,6 +11,11 @@ from app.dao.organisation_letter_provider_dao import (
     dao_get_organisation_letter_provider,
     dao_set_organisation_letter_provider,
 )
+from app.dao.organisation_test_letter_endpoint_dao import (
+    dao_delete_organisation_test_letter_endpoint,
+    dao_get_organisation_test_letter_endpoint,
+    dao_set_organisation_test_letter_endpoint,
+)
 from app.dao.users_dao import get_user_by_id
 from app.errors import InvalidRequest, register_errors
 from app.letters_nl.constants import (
@@ -36,6 +41,7 @@ from app.letters_nl.letter_endpoint_connection import (
     start_connection_test,
 )
 from app.letters_nl.url_validation import InvalidLetterEndpointUrl, validate_letter_endpoint_url
+from app.models_nl import OrganisationTestLetterEndpoint
 from app.schema_validation import validate
 from app.schema_validation.definitions import uuid
 
@@ -75,6 +81,20 @@ post_set_organisation_letter_provider_schema = {
     "required": ["provider", "updated_by_id"],
     "if": {"properties": {"provider": {"const": LETTER_PROVIDER_REST_ENDPOINT}}},
     "then": {"required": ["endpoint_url", "auth_method", "address_placement"]},
+    "additionalProperties": False,
+}
+
+post_set_organisation_test_letter_endpoint_schema = {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "description": "POST organisation test letter endpoint schema",
+    "type": "object",
+    "properties": {
+        "endpoint_url": post_set_organisation_letter_provider_schema["properties"]["endpoint_url"],
+        "auth_method": post_set_organisation_letter_provider_schema["properties"]["auth_method"],
+        "auth_config": post_set_organisation_letter_provider_schema["properties"]["auth_config"],
+        "updated_by_id": uuid,
+    },
+    "required": ["endpoint_url", "auth_method", "updated_by_id"],
     "additionalProperties": False,
 }
 
@@ -154,6 +174,50 @@ def delete_organisation_letter_provider(organisation_id):
     return "", 204
 
 
+@organisation_letter_provider_blueprint.route(
+    "/organisations/<uuid:organisation_id>/letter-provider/test-endpoint", methods=["GET"]
+)
+def get_organisation_test_letter_endpoint(organisation_id):
+    dao_get_organisation_by_id(organisation_id)
+    test_endpoint = dao_get_organisation_test_letter_endpoint(organisation_id)
+    return jsonify(data=test_endpoint.serialize() if test_endpoint else None)
+
+
+@organisation_letter_provider_blueprint.route(
+    "/organisations/<uuid:organisation_id>/letter-provider/test-endpoint", methods=["POST"]
+)
+def set_organisation_test_letter_endpoint(organisation_id):
+    data = request.get_json()
+    validate(data, post_set_organisation_test_letter_endpoint_schema)
+    dao_get_organisation_by_id(organisation_id)
+
+    auth_config, secrets_dropped = _merge_auth_config(
+        dao_get_organisation_test_letter_endpoint(organisation_id),
+        data["endpoint_url"],
+        data["auth_method"],
+        data.get("auth_config", {}),
+    )
+    _validate_rest_endpoint(data["endpoint_url"], data["auth_method"], auth_config, secrets_dropped)
+
+    test_endpoint = dao_set_organisation_test_letter_endpoint(
+        organisation_id,
+        endpoint_url=data["endpoint_url"],
+        auth_method=data["auth_method"],
+        auth_config=auth_config,
+        updated_by_id=data["updated_by_id"],
+    )
+    return jsonify(data=test_endpoint.serialize())
+
+
+@organisation_letter_provider_blueprint.route(
+    "/organisations/<uuid:organisation_id>/letter-provider/test-endpoint", methods=["DELETE"]
+)
+def delete_organisation_test_letter_endpoint(organisation_id):
+    dao_get_organisation_by_id(organisation_id)
+    dao_delete_organisation_test_letter_endpoint(organisation_id)
+    return "", 204
+
+
 _CONNECTION_TEST_REFUSALS = {429: "rate_limited", 503: "unavailable"}
 
 
@@ -162,18 +226,29 @@ _CONNECTION_TEST_REFUSALS = {429: "rate_limited", 503: "unavailable"}
 )
 def start_letter_provider_connection_test(organisation_id):
     """Tries values that are being typed in, without saving them. A stored secret is only used under the save rules."""
+    dao_get_organisation_by_id(organisation_id)
+    return _start_connection_test(organisation_id, dao_get_organisation_letter_provider(organisation_id))
+
+
+@organisation_letter_provider_blueprint.route(
+    "/organisations/<uuid:organisation_id>/letter-provider/test-endpoint/connection-test", methods=["POST"]
+)
+def start_test_letter_endpoint_connection_test(organisation_id):
+    """The same for the test endpoint, so a stored secret is the test endpoint's own."""
+    dao_get_organisation_by_id(organisation_id)
+    return _start_connection_test(organisation_id, dao_get_organisation_test_letter_endpoint(organisation_id))
+
+
+def _start_connection_test(organisation_id, stored):
     data = request.get_json()
     validate(data, post_letter_provider_connection_test_schema)
-    dao_get_organisation_by_id(organisation_id)
     if not get_user_by_id(data["started_by_id"]).platform_admin:
         # a test presents NotifyNL's client certificate to the host that was typed in, and shows what it replies
         raise InvalidRequest("Only platform admins can test a print endpoint connection", status_code=403)
 
     endpoint_url = data["endpoint_url"]
     auth_method = data["auth_method"]
-    auth_config, secrets_dropped = _merge_auth_config(
-        dao_get_organisation_letter_provider(organisation_id), endpoint_url, auth_method, data.get("auth_config", {})
-    )
+    auth_config, secrets_dropped = _merge_auth_config(stored, endpoint_url, auth_method, data.get("auth_config", {}))
     _validate_rest_endpoint(endpoint_url, auth_method, auth_config, secrets_dropped)
 
     try:
@@ -228,7 +303,10 @@ def _merge_auth_config(existing, endpoint_url, auth_method, update) -> tuple[dic
     stored = {}
     if (
         existing
-        and existing.provider.identifier == LETTER_PROVIDER_REST_ENDPOINT
+        and (
+            isinstance(existing, OrganisationTestLetterEndpoint)
+            or existing.provider.identifier == LETTER_PROVIDER_REST_ENDPOINT
+        )
         and existing.auth_method == auth_method
     ):
         try:

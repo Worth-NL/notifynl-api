@@ -39,7 +39,11 @@ from tests.app.db import (
     create_service,
     create_template,
 )
-from tests.app.db_nl import create_letter_provider_reference, create_organisation_letter_provider
+from tests.app.db_nl import (
+    create_letter_provider_reference,
+    create_organisation_letter_provider,
+    create_organisation_test_letter_endpoint,
+)
 from tests.conftest import set_config, set_config_values
 
 PDF = b"%PDF-1.7 letter"
@@ -367,14 +371,18 @@ def test_deliver_letter_via_provider_still_retries_when_the_lock_cannot_be_relea
         deliver_letter_via_provider(str(letter_notification.id))
 
 
-@pytest.mark.parametrize("key_type", ["test", "team"])
-def test_deliver_letter_via_provider_never_sends_test_letters(letter_template, pdf_in_s3, send_with_pingen, key_type):
+# a team key is stored as "test", so a "team" letter only exists here and is left alone
+@pytest.mark.parametrize("key_type, expected_status", [("test", "technical-failure"), ("team", "created")])
+def test_deliver_letter_via_provider_never_sends_test_letters(
+    letter_template, pdf_in_s3, send_with_pingen, mock_callback, key_type, expected_status
+):
     notification = create_notification(template=letter_template, status="created", key_type=key_type)
 
     deliver_letter_via_provider(str(notification.id))
 
     assert not send_with_pingen.called
-    assert _status(notification) == "created"
+    # a test letter of an organisation without a test endpoint is simulated, so a `created` one is failed instead
+    assert _status(notification) == expected_status
 
 
 def test_deliver_letter_via_provider_for_unknown_notification(notify_db_session, send_with_pingen):
@@ -1190,3 +1198,168 @@ def test_process_letter_provider_status_returned_letter_for_a_letter_delivered_o
     process_letter_provider_status(str(notification.id), "rest-endpoint", "returned-letter")
 
     returned.assert_called_once_with(["RETURNEDREF"])
+
+
+@pytest.fixture
+def test_letter_notification(letter_template):
+    return create_notification(
+        template=letter_template, status="created", billable_units=1, reference="TESTREF", key_type="test"
+    )
+
+
+# a team key is stored as key_type=test (see create_letter_notification), so no letter is ever persisted as "team"
+def test_deliver_letter_via_provider_sends_test_letters_to_the_test_endpoint(
+    letter_template, organisation, pdf_in_s3, send_with_rest_endpoint, send_with_pingen, mock_callback
+):
+    test_endpoint = create_organisation_test_letter_endpoint(organisation)
+    notification = create_notification(template=letter_template, status="created", billable_units=1, key_type="test")
+
+    deliver_letter_via_provider(str(notification.id))
+
+    assert not send_with_pingen.called
+    assert send_with_rest_endpoint.call_args.args[2] == test_endpoint
+    assert Notification.query.get(notification.id).sent_by == "rest-endpoint"
+    assert _status(notification) == "sent"
+
+
+def test_deliver_letter_via_provider_leaves_a_test_letter_sent_even_if_the_live_endpoint_marks_delivered(
+    letter_template, organisation, pdf_in_s3, send_with_rest_endpoint, mock_callback
+):
+    # the live endpoint's "delivered on acceptance" setting is not the test endpoint's
+    _rest_endpoint(organisation, mark_delivered_on_acceptance=True)
+    create_organisation_test_letter_endpoint(organisation)
+    notification = create_notification(template=letter_template, status="created", billable_units=1, key_type="test")
+
+    deliver_letter_via_provider(str(notification.id))
+
+    assert _status(notification) == "sent"
+
+
+def test_deliver_letter_via_provider_never_sends_live_letters_to_the_test_endpoint(
+    letter_notification, organisation, pdf_in_s3, send_with_rest_endpoint, send_with_pingen, mock_callback
+):
+    create_organisation_test_letter_endpoint(organisation)
+
+    deliver_letter_via_provider(str(letter_notification.id))
+
+    assert not send_with_rest_endpoint.called
+    assert send_with_pingen.called
+
+
+def test_deliver_letter_via_provider_sends_test_letters_to_the_test_endpoint_not_the_live_provider(
+    test_letter_notification, organisation, pdf_in_s3, send_with_rest_endpoint, mock_callback
+):
+    live = create_organisation_letter_provider(
+        organisation,
+        "rest-endpoint",
+        endpoint_url="https://print.example.com",
+        auth_method="api_key",
+        auth_config={"api_key_header": "X-Api-Key", "api_key": "k"},
+    )
+    test_endpoint = create_organisation_test_letter_endpoint(organisation)
+
+    deliver_letter_via_provider(str(test_letter_notification.id))
+
+    assert send_with_rest_endpoint.call_args.args[2] == test_endpoint != live
+
+
+def test_deliver_letter_via_provider_fails_a_created_test_letter_without_a_test_endpoint(
+    test_letter_notification, organisation, pdf_in_s3, send_with_rest_endpoint, send_with_pingen, mock_callback
+):
+    test_endpoint = create_organisation_test_letter_endpoint(organisation)
+    db.session.delete(test_endpoint)
+    db.session.commit()
+
+    deliver_letter_via_provider(str(test_letter_notification.id))
+
+    # without an endpoint it is never sent, not to Pingen or the live provider either. A simulated test letter is never
+    # `created`, so this one was made for the endpoint that was removed since: nothing else would ever pick it up
+    assert not send_with_pingen.called
+    assert not send_with_rest_endpoint.called
+    notification = Notification.query.get(test_letter_notification.id)
+    assert notification.status == "technical-failure"
+    assert notification.detailed_status_code == "test-endpoint-missing"
+
+
+def test_queue_letter_for_delivery_fails_a_created_test_letter_without_a_test_endpoint(
+    notify_api, test_letter_notification, mock_callback, mocker
+):
+    apply_async = mocker.patch("app.celery.letter_provider_tasks.deliver_letter_via_provider.apply_async")
+
+    with set_config(notify_api, "LETTER_DELIVERY_VIA_PROVIDERS", True):
+        queue_letter_for_delivery(test_letter_notification)
+
+    assert not apply_async.called
+    assert Notification.query.get(test_letter_notification.id).detailed_status_code == "test-endpoint-missing"
+
+
+def test_deliver_letter_via_provider_leaves_a_resumed_test_letter_sent_even_if_the_live_endpoint_marks_delivered(
+    letter_template, organisation, mock_callback
+):
+    _rest_endpoint(organisation, mark_delivered_on_acceptance=True)
+    create_organisation_test_letter_endpoint(organisation)
+    notification = create_notification(template=letter_template, status="sending", billable_units=1, key_type="test")
+    create_letter_provider_reference(notification.id, "rest-endpoint", "ref-1")
+
+    deliver_letter_via_provider.push_request(retries=1)
+    try:
+        deliver_letter_via_provider.run(str(notification.id))
+    finally:
+        deliver_letter_via_provider.pop_request()
+
+    assert _status(notification) == "sent"
+
+
+def test_deliver_letter_via_provider_fails_a_claimed_test_letter_without_a_test_endpoint(
+    test_letter_notification, organisation, pdf_in_s3, send_with_rest_endpoint, send_with_pingen, mock_callback, mocker
+):
+    create_organisation_test_letter_endpoint(organisation)
+    mocker.patch("app.letters_nl.provider.get_test_letter_endpoint", return_value=None)
+
+    deliver_letter_via_provider(str(test_letter_notification.id))
+
+    assert not send_with_pingen.called
+    assert not send_with_rest_endpoint.called
+    notification = Notification.query.get(test_letter_notification.id)
+    assert notification.status == "technical-failure"
+    assert notification.detailed_status_code == "test-endpoint-missing"
+
+
+def test_deliver_letter_via_provider_gives_up_on_a_test_endpoint_after_a_few_retries(
+    test_letter_notification, organisation, pdf_in_s3, send_with_rest_endpoint, mock_callback, mocker
+):
+    create_organisation_test_letter_endpoint(organisation)
+    send_with_rest_endpoint.side_effect = LetterClientRetryableException("down")
+    retry = mocker.patch.object(deliver_letter_via_provider, "retry", side_effect=Retry)
+
+    with pytest.raises(Retry):
+        deliver_letter_via_provider(str(test_letter_notification.id))
+
+    assert retry.call_args.kwargs == {"max_retries": 3, "countdown": 20}
+
+
+def test_deliver_letter_via_provider_keeps_the_normal_retries_for_live_letters(
+    letter_notification, pdf_in_s3, send_with_pingen, mock_callback, mocker
+):
+    send_with_pingen.side_effect = LetterClientRetryableException("down")
+    retry = mocker.patch.object(deliver_letter_via_provider, "retry", side_effect=Retry)
+
+    with pytest.raises(Retry):
+        deliver_letter_via_provider(str(letter_notification.id))
+
+    assert retry.call_args.kwargs == {}
+
+
+def test_queue_letter_for_delivery_queues_test_letters_only_with_a_test_endpoint(
+    test_letter_notification, organisation, notify_api, mocker
+):
+    deliver = mocker.patch("app.celery.letter_provider_tasks.deliver_letter_via_provider.apply_async")
+
+    with set_config(notify_api, "LETTER_DELIVERY_VIA_PROVIDERS", True):
+        queue_letter_for_delivery(test_letter_notification)
+        assert not deliver.called
+
+        create_organisation_test_letter_endpoint(organisation)
+        queue_letter_for_delivery(test_letter_notification)
+
+    deliver.assert_called_once()

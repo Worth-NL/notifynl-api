@@ -23,6 +23,7 @@ from app.dao.notifications_dao import (
     dao_get_letters_and_sheets_volume_by_postage,
     dao_get_letters_ready_to_send_since,
     dao_get_letters_stuck_sending,
+    dao_letters_in_technical_failure,
     dao_mark_letter_delivered_on_acceptance,
     dao_mark_letter_sent,
     dao_messagebox_notifications_still_pending,
@@ -37,9 +38,11 @@ from app.models import LetterCostThreshold, Notification, NotificationHistory, N
 from tests.app.db import (
     create_notification,
     create_notification_history,
+    create_organisation,
     create_service,
     create_template,
 )
+from tests.app.db_nl import create_organisation_test_letter_endpoint
 from tests.utils import QueryRecorder
 
 
@@ -346,7 +349,6 @@ def test_dao_get_letters_ready_to_send_since(sample_letter_template, sample_emai
     ready = create_notification(template=sample_letter_template, status="created", created_at=old, billable_units=1)
     create_notification(template=sample_letter_template, status="created", created_at=datetime(2026, 9, 29, 11, 55))
     create_notification(template=sample_letter_template, status="created", created_at=old, billable_units=0)
-    create_notification(template=sample_letter_template, status="created", created_at=old, key_type="test")
     create_notification(template=sample_letter_template, status="sending", created_at=old, billable_units=1)
     create_notification(template=sample_email_template, status="created", created_at=old)
     recently_updated = create_notification(template=sample_letter_template, status="created", created_at=old)
@@ -934,3 +936,42 @@ def test_get_banded_slow_text_message_delivery_reports_by_provider_created_at_se
         )
 
     assert {query_info.bind_key for query_info in query_recorder.queries} == {expected_bind_key}
+
+
+def _letter_template_of_an_organisation(*, test_endpoint):
+    organisation = create_organisation(name=f"organisation {uuid.uuid4()}")
+    if test_endpoint:
+        create_organisation_test_letter_endpoint(organisation)
+    service = create_service(organisation=organisation, service_name=f"service {uuid.uuid4()}")
+    return create_template(service=service, template_type="letter")
+
+
+@freeze_time("2026-09-29 12:00")
+def test_letter_sweeps_include_test_letters_of_an_organisation_with_a_test_endpoint(notify_db_session):
+    with_endpoint = _letter_template_of_an_organisation(test_endpoint=True)
+    without_endpoint = _letter_template_of_an_organisation(test_endpoint=False)
+    old = datetime(2026, 9, 29, 6)
+
+    def letters(template, status, **kwargs):
+        return create_notification(
+            template=template, status=status, created_at=old, updated_at=old, key_type="test", **kwargs
+        )
+
+    stuck = letters(with_endpoint, "sending")
+    letters(without_endpoint, "sending")  # simulated by fake delivery: nothing to deliver
+    ready = letters(with_endpoint, "created", billable_units=1)
+    # a letter of a removed endpoint is queued as well, to be failed there
+    removed = letters(without_endpoint, "created", billable_units=1)
+
+    assert dao_get_letters_stuck_sending(datetime(2026, 9, 29, 8)) == [stuck]
+    assert dao_get_letters_abandoned_sending(datetime(2026, 9, 29, 11), not_before=datetime(2026, 9, 29, 5)) == [
+        stuck.id
+    ]
+    assert set(dao_get_letters_ready_to_send_since(datetime(2026, 9, 29, 8))) == {ready.id, removed.id}
+
+
+def test_dao_letters_in_technical_failure_leaves_out_test_letters(sample_letter_template):
+    live = create_notification(template=sample_letter_template, status="technical-failure")
+    create_notification(template=sample_letter_template, status="technical-failure", key_type="test")
+
+    assert [n.id for n in dao_letters_in_technical_failure()] == [live.id]

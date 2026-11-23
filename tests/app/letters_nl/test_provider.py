@@ -19,7 +19,7 @@ def test_resolves_a_completely_configured_rest_endpoint(notify_db_session):
         auth_config=API_KEY,
     )
 
-    client, resolved = resolve_letter_provider(organisation.id)
+    client, resolved = resolve_letter_provider(organisation.id, test_key=False)
 
     assert isinstance(client, RestEndpointLetterClient)
     assert resolved == letter_provider
@@ -29,7 +29,7 @@ def test_resolves_pingen_when_the_organisation_chose_it(notify_db_session):
     organisation = create_organisation()
     letter_provider = create_organisation_letter_provider(organisation, "pingen")
 
-    client, resolved = resolve_letter_provider(organisation.id)
+    client, resolved = resolve_letter_provider(organisation.id, test_key=False)
 
     assert isinstance(client, PingenClient)
     assert resolved == letter_provider
@@ -39,7 +39,7 @@ def test_falls_back_to_pingen_without_a_letter_provider(notify_db_session):
     organisation = create_organisation()
     delete_organisation_letter_provider(organisation)
 
-    client, resolved = resolve_letter_provider(organisation.id)
+    client, resolved = resolve_letter_provider(organisation.id, test_key=False)
 
     assert isinstance(client, PingenClient)
     assert resolved is None
@@ -64,7 +64,7 @@ def test_falls_back_to_pingen_for_an_incomplete_rest_endpoint(
         letter_provider._auth_config = "not-a-fernet-token"
 
     with caplog.at_level("WARNING"):
-        client, resolved = resolve_letter_provider(organisation.id)
+        client, resolved = resolve_letter_provider(organisation.id, test_key=False)
 
     assert isinstance(client, PingenClient)
     assert resolved is None

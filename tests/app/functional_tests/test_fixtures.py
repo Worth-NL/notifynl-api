@@ -39,6 +39,7 @@ class TestCreateFixture:
         assert str(admin_user.id) == result["adminUser"]["id"]
         assert admin_user.auth_type == "email_auth"
         assert service in admin_user.services
+        assert [str(organisation.id) for organisation in admin_user.organisations] == [result["organisationId"]]
         assert admin_user.check_password(result["adminUser"]["password"])
 
         assert result["apiKeyNormal"].startswith(f"smoke-test-normal-{service.id}-")

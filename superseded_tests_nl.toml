@@ -37,6 +37,14 @@ reason = "PostalAddress / Postage issue"
 twin = ["tests/app/celery/test_letters_pdf_tasks_nl.py::test_send_letters_volume_email_to_dvla"]
 
 [[test]]
+nodeid = "tests/app/celery/test_letters_pdf_tasks.py::test_update_billable_units_for_letter_doesnt_update_if_sent_with_test_key"
+reason = "its test letter is still created with no test endpoint, which NL fails: simulated test letters are never created"
+counterpart = [
+    "tests/app/celery/test_letters_pdf_tasks_nl.py::test_update_billable_units_for_letter_fails_a_test_letter_whose_test_endpoint_was_removed",
+    "tests/app/celery/test_letters_pdf_tasks_nl.py::test_update_billable_units_for_letter_leaves_a_simulated_test_letter_alone",
+]
+
+[[test]]
 nodeid = "tests/app/celery/test_provider_tasks.py::test_deliver_letter"
 reason = "postage issue"
 twin = ["tests/app/celery/test_provider_tasks_nl.py::test_deliver_letter"]
