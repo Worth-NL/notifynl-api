@@ -442,3 +442,34 @@ def test_post_letter_notification_with_a_live_key_ignores_the_test_endpoint(
     notification = Notification.query.one()
     assert notification.key_type == KEY_TYPE_NORMAL
     assert notification.status == NOTIFICATION_CREATED
+
+
+@pytest.mark.parametrize("key_type", [KEY_TYPE_TEST, KEY_TYPE_TEAM])
+def test_post_letter_notification_with_attachments_for_a_test_endpoint_is_held_for_the_virus_check(
+    api_client_request, organisation_letter_template, mocker, key_type
+):
+    # unlike a simulated test letter, this one is sent on to an external host
+    organisation, template = organisation_letter_template
+    create_organisation_test_letter_endpoint(organisation)
+    mock_get_pdf = mocker.patch("app.celery.letters_pdf_tasks.get_pdf_for_templated_letter.apply_async")
+    mocker.patch("app.v2.notifications.post_notifications.upload_letter_attachments")
+    mock_send_task = mocker.patch("app.v2.notifications.post_notifications.notify_celery.send_task")
+
+    api_client_request.post(
+        template.service_id,
+        "v2_notifications.post_notification",
+        notification_type="letter",
+        _api_key_type=key_type,
+        _data=_letter_data(template.id, attachments=[VALID_ATTACHMENT]),
+    )
+
+    notification = Notification.query.one()
+    assert notification.status == NOTIFICATION_PENDING_VIRUS_CHECK
+    assert notification.key_type == KEY_TYPE_TEST
+    mock_send_task.assert_called_once_with(
+        name=TaskNamesNL.SCAN_LETTER_ATTACHMENTS,
+        kwargs={"notification_id": str(notification.id)},
+        queue=QueueNames.ANTIVIRUS,
+        MessageGroupId=str(notification.service_id),
+    )
+    assert not mock_get_pdf.called

@@ -391,8 +391,8 @@ def _create_templated_letter_notification_with_attachments(
     return notification
 
 
-def _dispatch_templated_letter_pdf(notification, *, test_key, attachments, queue):
-    if test_key or not attachments:
+def _dispatch_templated_letter_pdf(notification, *, simulate, attachments, queue):
+    if simulate or not attachments:
         get_pdf_for_templated_letter.apply_async(
             [str(notification.id)], queue=queue, MessageGroupId=str(notification.service_id)
         )
@@ -448,8 +448,10 @@ def process_letter_notification(
     attachments = letter_data.get("attachments")
     decoded_attachments = _decode_letter_attachments(attachments) if attachments else None
 
-    # [NotifyNL] a test letter of an organisation with a test endpoint is delivered to it, not simulated
-    simulate = test_key and get_test_letter_endpoint(service.organisation) is None
+    # [NotifyNL] a test letter of an organisation with a test endpoint is delivered to it, not simulated.
+    # `service` is a SerialisedService here, whose `organisation` is the organisation's id (not a model).
+    organisation_id = service.organisation
+    simulate = test_key and get_test_letter_endpoint(organisation_id) is None
 
     status = NOTIFICATION_CREATED
     updated_at = None
@@ -461,10 +463,10 @@ def process_letter_notification(
         else:
             status = NOTIFICATION_DELIVERED
             updated_at = datetime.utcnow()
-    elif attachments and not test_key:
-        # test-key sends skip AV/sanitisation for ad-hoc attachments entirely (mirroring how
-        # the template's fixed letter_attachment is never re-validated at send time either),
-        # so only a real key with attachments needs the virus-check hold.
+    elif attachments:
+        # simulated test letters never leave NotifyNL, so they skip AV/sanitisation for ad-hoc attachments
+        # (mirroring how the template's fixed letter_attachment is never re-validated at send time either).
+        # Every letter that is sent on, to a live provider or a test endpoint, gets the virus-check hold.
         status = NOTIFICATION_PENDING_VIRUS_CHECK
 
     queue = QueueNames.CREATE_LETTERS_PDF if not simulate else QueueNames.RESEARCH_MODE
@@ -481,7 +483,7 @@ def process_letter_notification(
         decoded_attachments=decoded_attachments if attachments else None,
     )
 
-    _dispatch_templated_letter_pdf(notification, test_key=test_key, attachments=attachments, queue=queue)
+    _dispatch_templated_letter_pdf(notification, simulate=simulate, attachments=attachments, queue=queue)
 
     if simulate and current_app.config["TEST_LETTERS_FAKE_DELIVERY"]:
         create_fake_letter_callback.apply_async(

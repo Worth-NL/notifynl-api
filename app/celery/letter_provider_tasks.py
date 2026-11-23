@@ -19,6 +19,7 @@ from app.constants import (
     KEY_TYPE_NORMAL,
     KEY_TYPE_TEST,
     LETTER_TYPE,
+    NOTIFICATION_CREATED,
     NOTIFICATION_DELIVERED,
     NOTIFICATION_PERMANENT_FAILURE,
     NOTIFICATION_RETURNED_LETTER,
@@ -89,7 +90,10 @@ def queue_letter_for_delivery(notification):
     """
     if not current_app.config.get("LETTER_DELIVERY_VIA_PROVIDERS"):
         return
-    if notification.notification_type != LETTER_TYPE or not _goes_to_print_provider(notification):
+    if notification.notification_type != LETTER_TYPE:
+        return
+    if not _goes_to_print_provider(notification):
+        _fail_if_test_endpoint_is_gone(notification)
         return
     deliver_letter_via_provider.apply_async(
         [str(notification.id)], queue=QueueNames.SEND_LETTER, MessageGroupId=str(notification.service_id)
@@ -105,6 +109,8 @@ def queue_letter_for_delivery(notification):
 def deliver_letter_via_provider(self, notification_id):
     notification = get_notification_by_id(notification_id)
     extra = {"notification_id": notification_id}
+    if notification and not _goes_to_print_provider(notification) and _fail_if_test_endpoint_is_gone(notification):
+        return
     if not notification or not _goes_to_print_provider(notification):
         current_app.logger.warning(
             "Not delivering letter %s: no live or test endpoint letter with this id", notification_id, extra=extra
@@ -220,9 +226,13 @@ def _deliver_claimed_letter(task, notification):
         # an earlier attempt got the letter accepted but didn't get to mark it sent. Whether that makes it delivered is
         # up to the organisation's setting now, not at the time of that attempt: switching it in between changes this
         dao_unpin_letter_provider(notification_id)
-        _mark_accepted(
-            notification_id, reference.provider, dao_get_organisation_letter_provider(service.organisation_id)
+        # [NotifyNL] a test letter has no such setting (its endpoint isn't the live provider), so it is only sent
+        letter_provider = (
+            None
+            if notification.key_type == KEY_TYPE_TEST
+            else dao_get_organisation_letter_provider(service.organisation_id)
         )
+        _mark_accepted(notification_id, reference.provider, letter_provider)
         return
 
     test_key = notification.key_type == KEY_TYPE_TEST
@@ -376,6 +386,18 @@ def _fail(notification_id, detailed_status_code):
 def _goes_to_print_provider(notification):
     """Live letters, and test letters of an organisation with a test endpoint. All others are only simulated."""
     return notification.key_type == KEY_TYPE_NORMAL or uses_test_letter_endpoint(notification)
+
+
+def _fail_if_test_endpoint_is_gone(notification) -> bool:
+    """
+    Simulated test letters are never `created`, so a test letter that still is was made for a test endpoint that no
+    longer exists: nothing would ever pick it up, so fail it.
+    """
+    if notification.key_type != KEY_TYPE_TEST or notification.status != NOTIFICATION_CREATED:
+        return False
+    current_app.logger.warning("Test letter %s was created for a test endpoint that no longer exists", notification.id)
+    _fail(str(notification.id), "test-endpoint-missing")
+    return True
 
 
 def _retry(task, notification_id, detailed_status_code, *, test_key=False):
