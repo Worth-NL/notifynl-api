@@ -26,6 +26,6 @@ jobs:
       contents: read
       security-events: write
       actions: read
-    uses: Worth-NL/ci-workflows/.github/workflows/trivy-scan.yml@main
+    uses: Worth-NL/ci-workflows/.github/workflows/trivy-scan.yml@feat/shared-ci-actions
     with:
       image: ghcr.io/worth-nl/notifynl-api
