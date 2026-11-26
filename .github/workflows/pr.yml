@@ -64,11 +64,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: Worth-NL/ci-workflows/.github/actions/python-setup@feat/shared-ci-actions
+      - uses: Worth-NL/ci-workflows/.github/actions/python-setup@main
         with:
           python-version: ${{ matrix.python-version }}
 
-      - uses: Worth-NL/ci-workflows/.github/actions/python-test@feat/shared-ci-actions
+      - uses: Worth-NL/ci-workflows/.github/actions/python-test@main
 
   build:
     if: github.event.pull_request.draft == false && github.base_ref == 'develop'
@@ -79,7 +79,7 @@ jobs:
     permissions:
       contents: read
       packages: write
-    uses: Worth-NL/ci-workflows/.github/workflows/build-image.yml@feat/shared-ci-actions
+    uses: Worth-NL/ci-workflows/.github/workflows/build-image.yml@main
     with:
       image: ghcr.io/worth-nl/notifynl-api
 
@@ -89,7 +89,7 @@ jobs:
     permissions:
       contents: read
       pull-requests: write
-    uses: Worth-NL/ci-workflows/.github/workflows/deploy-test.yml@feat/shared-ci-actions
+    uses: Worth-NL/ci-workflows/.github/workflows/deploy-test.yml@main
     with:
       tag: ${{ needs.build.outputs.tag }}
       environment-url: https://api.test.notifynl.nl
