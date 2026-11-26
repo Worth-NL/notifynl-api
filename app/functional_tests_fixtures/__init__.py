@@ -692,7 +692,7 @@ def _create_service(
     service.sms_message_limit = sms_message_limit
     service.letter_message_limit = letter_message_limit
     service.email_message_limit = email_message_limit
-    service.messagebox_message_limit = email_message_limit
+    service.messagebox_message_limit = messagebox_message_limit
     service.contact_link = current_app.config["ADMIN_BASE_URL"]
 
     set_default_free_allowance_for_service(service=service, year_start=None)
