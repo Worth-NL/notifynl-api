@@ -18,11 +18,13 @@ from app.constants import (
     NOTIFICATION_TECHNICAL_FAILURE,
 )
 from app.dao import notifications_dao
-from app.dao.notifications_dao import (
+from app.dao.messagebox_notifications_dao_nl import (
     dao_messagebox_notifications_sending_to_check,
+    dao_messagebox_notifications_technical_failure_between,
+)
+from app.dao.notifications_dao import (
     dao_messagebox_notifications_still_pending,
     dao_messagebox_notifications_stuck_sending,
-    dao_messagebox_notifications_technical_failure_between,
 )
 from app.messagebox.constants import TECHNICAL_FAILURE_EBMS_DELIVERY_FAILED, TECHNICAL_FAILURE_EBMS_EXPIRED
 from app.notifications.notifications_ses_callback import check_and_queue_callback_task
