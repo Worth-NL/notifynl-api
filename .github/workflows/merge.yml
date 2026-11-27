@@ -15,7 +15,7 @@ jobs:
     permissions:
       contents: read
       packages: write
-    uses: Worth-NL/ci-workflows/.github/workflows/release-image.yml@feat/shared-ci-actions
+    uses: Worth-NL/ci-workflows/.github/workflows/release-image.yml@main
     with:
       image: ghcr.io/worth-nl/notifynl-api
     secrets: inherit

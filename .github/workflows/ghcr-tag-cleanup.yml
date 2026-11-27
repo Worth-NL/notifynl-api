@@ -17,6 +17,6 @@ jobs:
     permissions:
       contents: read
       packages: write
-    uses: Worth-NL/ci-workflows/.github/workflows/ghcr-cleanup.yml@feat/shared-ci-actions
+    uses: Worth-NL/ci-workflows/.github/workflows/ghcr-cleanup.yml@main
     with:
       package-name: notifynl-api
