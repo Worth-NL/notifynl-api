@@ -17,6 +17,7 @@ from app.constants import EMAIL_AUTH
 from app.dao.annual_billing_dao import set_default_free_allowance_for_service
 from app.dao.api_key_dao import save_model_api_key
 from app.dao.organisation_dao import (
+    dao_add_user_to_organisation,
     dao_create_organisation,
     dao_get_organisations_by_partial_name,
 )
@@ -131,6 +132,8 @@ def create_fixture(run_id: str) -> dict:
         # invite flow timed out waiting for that radio before this was added.
         dao_create_service(service, admin_user, service_permissions=[*DEFAULT_SERVICE_PERMISSIONS, EMAIL_AUTH])
         set_default_free_allowance_for_service(service=service, year_start=None)
+        # a member of the organisation, so the smoke tests can open its settings (the letter provider, test endpoint)
+        dao_add_user_to_organisation(org.id, admin_user.id, [])
 
         api_key_normal = _create_api_key("smoke-test-normal", service.id, admin_user.id, "normal")
         api_key_test = _create_api_key("smoke-test-test", service.id, admin_user.id, "test")

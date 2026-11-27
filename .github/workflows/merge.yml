@@ -10,52 +10,12 @@ concurrency:
   group: ${{ github.workflow }}.${{ github.ref }}
   cancel-in-progress: true
 
-env:
-  IMAGE: ghcr.io/worth-nl/notifynl-api
-
 jobs:
   release:
-    runs-on: ubuntu-latest
-
     permissions:
       contents: read
       packages: write
-
-    steps:
-      - uses: docker/login-action@v4
-        with:
-          registry: https://ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - uses: docker/setup-qemu-action@v3
-
-      - uses: docker/setup-buildx-action@v3
-
-      - name: Set tag
-        id: set-tag
-        run: |
-          if [ "${{ github.ref_name }}" == "develop" ]; then
-            TAG=$(date +%Y%m%d).${{ github.run_number }}-dev
-          else
-            TAG=$(date +%Y%m%d).${{ github.run_number }}
-          fi
-          echo "tag=$TAG" >> $GITHUB_OUTPUT
-
-      - uses: docker/build-push-action@v6
-        with:
-          file: docker/Dockerfile_nl
-          push: true
-          tags: ${{ env.IMAGE }}:${{ steps.set-tag.outputs.tag }}
-          platforms: linux/amd64
-          provenance: false
-          target: production
-
-      - name: Release
-        if: github.ref_name == 'main'
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ steps.set-tag.outputs.tag }}
-          make_latest: true
-          token: ${{ secrets.RELEASE_TOKEN }}
-          generate_release_notes: true
+    uses: Worth-NL/ci-workflows/.github/workflows/release-image.yml@main
+    with:
+      image: ghcr.io/worth-nl/notifynl-api
+    secrets: inherit

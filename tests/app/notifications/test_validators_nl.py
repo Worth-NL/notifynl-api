@@ -4,12 +4,14 @@ from app.constants import (
     EMAIL_TYPE,
     INTERNATIONAL_LETTERS,
     INTERNATIONAL_SMS_TYPE,
+    KEY_TYPE_TEST,
     LETTER_TYPE,
-    MESSAGEBOX_TYPE,  # noqa: F401
+    MESSAGEBOX_TYPE,
     NOTIFICATION_TYPES,
     SMS_TYPE,
 )
 from app.notifications.validators import (
+    get_daily_rate_limit_value,
     validate_address,
 )
 from tests.app.db import (
@@ -50,3 +52,11 @@ def test_validate_address_international_bfpo_no_error(notify_db_session):
     postage = validate_address(service, data)
 
     assert postage == "rest-of-world"
+
+
+@pytest.mark.parametrize("restricted, expected_value", [(True, 999_999_999), (False, 500)])
+def test_get_daily_rate_limit_value_for_test_keys_messagebox(sample_service, restricted, expected_value):
+    sample_service.restricted = restricted
+    sample_service.messagebox_message_limit = 500
+
+    assert get_daily_rate_limit_value(sample_service, KEY_TYPE_TEST, MESSAGEBOX_TYPE) == expected_value

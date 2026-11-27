@@ -103,6 +103,83 @@ class OrganisationLetterProvider(db.Model):
         }
 
 
+class OrganisationTestLetterEndpoint(db.Model):
+    """
+    The REST endpoint an organisation's letters sent with a test or team key are delivered to, so the organisation can
+    test its print integration without touching its live letter provider. Organisations without a (complete) row keep
+    simulating those letters (research mode). Live letters never use it. See app/letters_nl/test_endpoint.py.
+
+    No address placement: test letters are laid out like the organisation's live letters.
+    """
+
+    __tablename__ = "organisation_test_letter_endpoint"
+
+    organisation_id = db.Column(UUID(as_uuid=True), db.ForeignKey("organisation.id"), primary_key=True)
+    organisation = db.relationship("Organisation", backref=db.backref("test_letter_endpoint", uselist=False))
+    endpoint_url = db.Column(db.String, nullable=False)
+    auth_method = db.Column(db.String, nullable=False)
+    # Fernet-encrypted JSON, never serialized: see auth_config
+    _auth_config = db.Column("auth_config", db.Text, nullable=True)
+    created_at = db.Column(db.DateTime, nullable=False, default=datetime.datetime.utcnow)
+    updated_at = db.Column(db.DateTime, nullable=True, onupdate=datetime.datetime.utcnow)
+    updated_by_id = db.Column(UUID(as_uuid=True), db.ForeignKey("users.id"), nullable=True)
+    updated_by = db.relationship("User")
+
+    @property
+    def auth_config(self) -> dict | None:
+        if self._auth_config is None:
+            return None
+        return json.loads(encryption.decrypt(self._auth_config))
+
+    @auth_config.setter
+    def auth_config(self, auth_config: dict | None):
+        self._auth_config = encryption.encrypt(json.dumps(auth_config)) if auth_config else None
+
+    @property
+    def has_credentials(self) -> bool:
+        return self._auth_config is not None
+
+    def is_complete(self) -> bool:
+        """Whether letters can be sent to this endpoint as it stands."""
+        if not self.endpoint_url or self.auth_method not in REQUIRED_AUTH_CONFIG_FIELDS:
+            return False
+        try:
+            auth_config = self.auth_config or {}
+        except (InvalidToken, ValueError):
+            return False
+        return all(auth_config.get(field) for field in REQUIRED_AUTH_CONFIG_FIELDS[self.auth_method])
+
+    def serialize_summary(self) -> dict:
+        """Safe to cache with the organisation: no credentials and no decryption."""
+        return {
+            "endpoint_url": self.endpoint_url,
+            "auth_method": self.auth_method,
+            "has_credentials": self.has_credentials,
+        }
+
+    def serialize(self) -> dict:
+        """No secrets: only the non-secret auth config fields for the current auth method."""
+        auth_config_fields = REQUIRED_AUTH_CONFIG_FIELDS.get(self.auth_method, ()) + OPTIONAL_AUTH_CONFIG_FIELDS.get(
+            self.auth_method, ()
+        )
+        try:
+            auth_config = self.auth_config or {}
+        except (InvalidToken, ValueError):
+            auth_config = {}
+        return {
+            "organisation_id": str(self.organisation_id),
+            "endpoint_url": self.endpoint_url,
+            "auth_method": self.auth_method,
+            "has_credentials": self.has_credentials,
+            "auth_config": {
+                field: auth_config.get(field) for field in auth_config_fields if field not in SECRET_AUTH_CONFIG_FIELDS
+            },
+            "is_complete": self.is_complete(),
+            "updated_at": get_dt_string_or_none(self.updated_at),
+            "updated_by_id": get_uuid_string_or_none(self.updated_by_id),
+        }
+
+
 def complete_letter_provider(letter_provider: OrganisationLetterProvider | None) -> OrganisationLetterProvider | None:
     """
     The organisation's own letter provider if letters can be sent with it, otherwise None: its letters then go to

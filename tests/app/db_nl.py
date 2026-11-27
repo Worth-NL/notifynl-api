@@ -1,7 +1,12 @@
 from app import db
 from app.dao.provider_details_dao import get_provider_details_by_identifier
 from app.letters_nl.constants import LETTER_PROVIDER_PINGEN
-from app.models_nl import LetterProviderReference, MessageboxCpaSelection, OrganisationLetterProvider
+from app.models_nl import (
+    LetterProviderReference,
+    MessageboxCpaSelection,
+    OrganisationLetterProvider,
+    OrganisationTestLetterEndpoint,
+)
 
 
 def create_organisation_letter_provider(
@@ -34,6 +39,25 @@ def delete_organisation_letter_provider(organisation):
     """For organisations without a letter provider row, which still send their letters with Pingen."""
     OrganisationLetterProvider.query.filter_by(organisation_id=organisation.id).delete()
     db.session.commit()
+
+
+def create_organisation_test_letter_endpoint(
+    organisation,
+    endpoint_url="https://test-print.example.com/letters",
+    auth_method="api_key",
+    auth_config=None,
+    updated_by=None,
+):
+    test_endpoint = OrganisationTestLetterEndpoint(
+        organisation_id=organisation.id,
+        endpoint_url=endpoint_url,
+        auth_method=auth_method,
+        updated_by_id=updated_by.id if updated_by else None,
+    )
+    test_endpoint.auth_config = {"api_key_header": "X-Api-Key", "api_key": "k"} if auth_config is None else auth_config
+    db.session.add(test_endpoint)
+    db.session.commit()
+    return test_endpoint
 
 
 def create_letter_provider_reference(notification_id, provider, provider_reference):

@@ -14,7 +14,7 @@ from notifications_utils.international_billing_rates import (
 from notifications_utils.recipient_validation.email_address import validate_and_format_email_address
 from notifications_utils.recipient_validation.errors import InvalidEmailError
 from notifications_utils.timezones import convert_bst_to_utc, convert_utc_to_bst
-from sqlalchemy import Row, String, and_, asc, column, desc, func, not_, or_, select, text, union_all, values
+from sqlalchemy import Row, String, and_, asc, column, desc, exists, func, not_, or_, select, text, union_all, values
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session, defer, joinedload, scoped_session, undefer
 from sqlalchemy.orm.exc import NoResultFound
@@ -58,7 +58,9 @@ from app.models import (
     Notification,
     NotificationHistory,
     NotificationLetterDespatch,
+    OrganisationTestLetterEndpoint,
     ProviderDetails,
+    Service,
 )
 from app.utils import (
     escape_special_characters,
@@ -391,6 +393,21 @@ def dao_touch_notification(notification_id):
     )
 
 
+def _goes_to_print_provider_clause():
+    """
+    [NotifyNL] Live letters, and test letters of an organisation with a test endpoint. Other test letters are only
+    simulated: those are `sending` without a provider (fake delivery), so they must not be mistaken for stuck ones.
+    """
+    has_test_endpoint = exists().where(
+        Service.id == Notification.service_id,
+        OrganisationTestLetterEndpoint.organisation_id == Service.organisation_id,
+    )
+    return or_(
+        Notification.key_type == KEY_TYPE_NORMAL,
+        and_(Notification.key_type == KEY_TYPE_TEST, has_test_endpoint),
+    )
+
+
 def dao_get_letters_ready_to_send_since(cutoff_time, limit=1000):
     """Ids of letters ready to hand to a print provider that haven't changed since `cutoff_time`."""
     return [
@@ -399,7 +416,8 @@ def dao_get_letters_ready_to_send_since(cutoff_time, limit=1000):
         .filter(
             Notification.notification_type == LETTER_TYPE,
             Notification.status == NOTIFICATION_CREATED,
-            Notification.key_type == KEY_TYPE_NORMAL,
+            # [NotifyNL] simulated test letters are never `created`; a removed endpoint's letters fail on pickup
+            Notification.key_type.in_([KEY_TYPE_NORMAL, KEY_TYPE_TEST]),
             Notification.billable_units > 0,
             func.coalesce(Notification.updated_at, Notification.created_at) < cutoff_time,
         )
@@ -419,7 +437,7 @@ def dao_get_letters_stuck_sending(cutoff_time):
             Notification.notification_type == LETTER_TYPE,
             Notification.status == NOTIFICATION_SENDING,
             Notification.sent_by.is_(None),
-            Notification.key_type == KEY_TYPE_NORMAL,
+            _goes_to_print_provider_clause(),
             func.coalesce(Notification.updated_at, Notification.created_at) < cutoff_time,
         )
         .order_by(Notification.created_at)
@@ -441,7 +459,7 @@ def dao_get_letters_abandoned_sending(cutoff_time, not_before, limit=1000):
             Notification.notification_type == LETTER_TYPE,
             Notification.status == NOTIFICATION_SENDING,
             Notification.sent_by.is_(None),
-            Notification.key_type == KEY_TYPE_NORMAL,
+            _goes_to_print_provider_clause(),
             last_touched < cutoff_time,
             last_touched >= not_before,
         )
@@ -1339,6 +1357,8 @@ def dao_letters_in_technical_failure(session: Session | scoped_session = db.sess
         .filter(
             Notification.notification_type == LETTER_TYPE,
             Notification.status == NOTIFICATION_TECHNICAL_FAILURE,
+            # [NotifyNL] an organisation debugging its own test endpoint mustn't open support tickets
+            Notification.key_type != KEY_TYPE_TEST,
             Notification.created_at >= start_dt,
             Notification.created_at < end_dt,
         )
