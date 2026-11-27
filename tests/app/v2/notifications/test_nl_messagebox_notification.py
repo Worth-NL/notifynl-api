@@ -529,3 +529,16 @@ def test_post_messagebox_with_test_key_is_still_simulated_with_a_team_cpa(
 
     assert Notification.query.get(resp_json["id"]).status == "delivered"
     assert not messagebox_send_mocks.called
+
+
+@pytest.mark.parametrize("restricted", [True, False])
+def test_post_messagebox_with_test_key_checks_daily_limit(
+    mocker, messagebox_send_mocks, api_client_request, sample_template_with_placeholders, restricted
+):
+    sample_template_with_placeholders.service.restricted = restricted
+    mocker.patch.dict(current_app.config, {"REDIS_ENABLED": True})
+    mocker.patch("app.notifications.validators.redis_store.get", return_value=None)
+    mocker.patch("app.notifications.validators.redis_store.set")
+    mocker.patch("app.notifications.validators.token_bucket_rate_limit_exceeded", return_value=False)
+
+    _post_messagebox(api_client_request, sample_template_with_placeholders, "test", _expected_status=201)

@@ -10,6 +10,7 @@ from app.constants import (
     EMAIL_TYPE,
     INTERNATIONAL_SMS_TYPE,
     LETTER_TYPE,
+    MESSAGEBOX_TYPE,
     SMS_TYPE,
 )
 
@@ -112,6 +113,7 @@ class Config:
         SMS_TYPE: 250_000,
         LETTER_TYPE: 20_000,
         INTERNATIONAL_SMS_TYPE: 100,
+        MESSAGEBOX_TYPE: 999_999_999,
     }
 
     # signing secret/salt (itsdangerous) -- this is NOT encryption, it only
