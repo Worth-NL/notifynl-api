@@ -1,8 +1,16 @@
 from datetime import datetime, timedelta
 
 import pytest
+from ebms_adapter_client import EbmsConnectionError, EbmsNotFoundError
 from ebms_adapter_client.berichtenbox import ParsedBericht, ParsedBerichtenBatch
-from ebms_adapter_client.models import DataSource, EbMSMessageStatus, Message, MessageProperties, Party
+from ebms_adapter_client.models import (
+    DataSource,
+    EbMSMessageStatus,
+    Message,
+    MessageProperties,
+    MessageStatus,
+    Party,
+)
 
 from app.celery import messagebox_scheduled_tasks
 from app.celery.messagebox_scheduled_tasks import (
@@ -10,6 +18,7 @@ from app.celery.messagebox_scheduled_tasks import (
     MESSAGEBOX_STATUS_DELIVERED,
     MESSAGEBOX_STATUS_FAILED,
     check_if_messagebox_still_pending,
+    messagebox_check_sending_status,
     messagebox_process_unprocessed_messages,
 )
 from app.config import QueueNamesNL, TaskNamesNL
@@ -17,8 +26,10 @@ from app.constants import (
     KEY_TYPE_TEAM,
     MESSAGEBOX_TYPE,
     NOTIFICATION_CREATED,
+    NOTIFICATION_DELIVERED,
     NOTIFICATION_PENDING_VIRUS_CHECK,
     NOTIFICATION_SENDING,
+    NOTIFICATION_TECHNICAL_FAILURE,
 )
 from app.dao.templates_messagebox_dao import get_messagebox_template
 from tests.app.db import create_notification, create_service
@@ -396,3 +407,149 @@ def test_check_if_messagebox_still_pending_names_no_team_keys_when_there_are_non
     check_if_messagebox_still_pending(max_hours_ago_to_check_sending=24)
 
     assert "team key" not in mock_zendesk.call_args[0][0].message
+
+
+@pytest.fixture
+def sending_messagebox_notification(notify_db_session, notify_user):
+    service = create_service(service_permissions=[MESSAGEBOX_TYPE])
+    template = get_messagebox_template(service.id)
+    sent = datetime.utcnow() - timedelta(minutes=30)
+    return create_notification(
+        template=template,
+        status=NOTIFICATION_SENDING,
+        reference="ebms-message-1@ebms.notifynl.nl",
+        created_at=sent,
+        updated_at=sent,
+    )
+
+
+def _mock_core_client_for_status(mocker, *, status=None, side_effect=None):
+    mocker.patch("app.celery.messagebox_scheduled_tasks.EbmsAdapterClientConfig")
+    mock_core_client = mocker.Mock()
+    mock_core_client.__enter__ = mocker.Mock(return_value=mock_core_client)
+    mock_core_client.__exit__ = mocker.Mock(return_value=False)
+    if side_effect is not None:
+        mock_core_client.get_message_status.side_effect = side_effect
+    else:
+        mock_core_client.get_message_status.return_value = MessageStatus(status=status)
+    mocker.patch("app.celery.messagebox_scheduled_tasks.EbmsCoreClient", return_value=mock_core_client)
+    return mock_core_client
+
+
+@pytest.mark.parametrize(
+    "ebms_status, detailed_status_code",
+    [
+        (EbMSMessageStatus.DELIVERY_FAILED, "ebms-delivery-failed"),
+        (EbMSMessageStatus.EXPIRED, "ebms-expired"),
+    ],
+)
+def test_messagebox_check_sending_status_fails_undeliverable_notification_and_queues_callback(
+    mocker, sending_messagebox_notification, ebms_status, detailed_status_code
+):
+    mock_core_client = _mock_core_client_for_status(mocker, status=ebms_status)
+    mock_callback = mocker.patch("app.celery.messagebox_scheduled_tasks.check_and_queue_callback_task")
+
+    messagebox_check_sending_status()
+
+    mock_core_client.get_message_status.assert_called_once_with("ebms-message-1@ebms.notifynl.nl")
+    assert sending_messagebox_notification.status == NOTIFICATION_TECHNICAL_FAILURE
+    assert sending_messagebox_notification.detailed_status_code == detailed_status_code
+    # technical-failure is terminal for messagebox, so the BSN is no longer kept
+    assert sending_messagebox_notification.to is None
+    mock_callback.assert_called_once_with(sending_messagebox_notification)
+
+
+@pytest.mark.parametrize(
+    "ebms_status",
+    [
+        EbMSMessageStatus.CREATED,  # ebms-core still delivering
+        EbMSMessageStatus.DELIVERED,  # accepted at ebMS level, waiting for the BerichtVerwerkResponse
+        EbMSMessageStatus.RECEIVED,  # unexpected for an outgoing message: logged, left alone
+    ],
+)
+def test_messagebox_check_sending_status_leaves_other_statuses_in_sending(
+    mocker, sending_messagebox_notification, ebms_status
+):
+    _mock_core_client_for_status(mocker, status=ebms_status)
+    mock_callback = mocker.patch("app.celery.messagebox_scheduled_tasks.check_and_queue_callback_task")
+
+    messagebox_check_sending_status()
+
+    assert sending_messagebox_notification.status == NOTIFICATION_SENDING
+    mock_callback.assert_not_called()
+
+
+def test_messagebox_check_sending_status_skips_message_unknown_to_ebms_core(
+    mocker, sending_messagebox_notification, sample_messagebox_template_for_check
+):
+    other = create_notification(
+        template=sample_messagebox_template_for_check,
+        status=NOTIFICATION_SENDING,
+        reference="ebms-message-2@ebms.notifynl.nl",
+        created_at=datetime.utcnow() - timedelta(minutes=20),
+        updated_at=datetime.utcnow() - timedelta(minutes=20),
+    )
+    mock_core_client = _mock_core_client_for_status(
+        mocker,
+        side_effect=[
+            EbmsNotFoundError("not found", status_code=404),
+            MessageStatus(status=EbMSMessageStatus.DELIVERY_FAILED),
+        ],
+    )
+    mocker.patch("app.celery.messagebox_scheduled_tasks.check_and_queue_callback_task")
+
+    messagebox_check_sending_status()
+
+    assert mock_core_client.get_message_status.call_count == 2
+    assert sending_messagebox_notification.status == NOTIFICATION_SENDING
+    assert other.status == NOTIFICATION_TECHNICAL_FAILURE
+
+
+def test_messagebox_check_sending_status_stops_when_ebms_core_is_unreachable(
+    mocker, sending_messagebox_notification, sample_messagebox_template_for_check
+):
+    create_notification(
+        template=sample_messagebox_template_for_check,
+        status=NOTIFICATION_SENDING,
+        reference="ebms-message-2@ebms.notifynl.nl",
+        created_at=datetime.utcnow() - timedelta(minutes=20),
+        updated_at=datetime.utcnow() - timedelta(minutes=20),
+    )
+    mock_core_client = _mock_core_client_for_status(mocker, side_effect=EbmsConnectionError("unreachable"))
+    mock_callback = mocker.patch("app.celery.messagebox_scheduled_tasks.check_and_queue_callback_task")
+
+    messagebox_check_sending_status()
+
+    mock_core_client.get_message_status.assert_called_once()
+    assert sending_messagebox_notification.status == NOTIFICATION_SENDING
+    mock_callback.assert_not_called()
+
+
+def test_messagebox_check_sending_status_never_overwrites_a_settled_notification(
+    mocker, sending_messagebox_notification
+):
+    # The async Logius result was processed after the notification was selected but before its status was updated.
+    def settle_then_report_failure(_message_id):
+        sending_messagebox_notification.status = NOTIFICATION_DELIVERED
+        return MessageStatus(status=EbMSMessageStatus.EXPIRED)
+
+    _mock_core_client_for_status(mocker, side_effect=settle_then_report_failure)
+    mock_callback = mocker.patch("app.celery.messagebox_scheduled_tasks.check_and_queue_callback_task")
+
+    messagebox_check_sending_status()
+
+    assert sending_messagebox_notification.status == NOTIFICATION_DELIVERED
+    mock_callback.assert_not_called()
+
+
+def test_messagebox_check_sending_status_does_nothing_without_candidates(mocker, notify_db_session):
+    mock_client_class = mocker.patch("app.celery.messagebox_scheduled_tasks.EbmsCoreClient")
+
+    messagebox_check_sending_status()
+
+    mock_client_class.assert_not_called()
+
+
+@pytest.fixture
+def sample_messagebox_template_for_check(sending_messagebox_notification):
+    return get_messagebox_template(sending_messagebox_notification.service_id)

@@ -1,7 +1,7 @@
 import logging
 from datetime import datetime, timedelta
 
-from ebms_adapter_client import EbmsAdapterClientConfig
+from ebms_adapter_client import EbmsAdapterClientConfig, EbmsAdapterError, EbMSMessageStatus, EbmsNotFoundError
 from ebms_adapter_client.berichtenbox import parse_berichten_verwerk_response
 from ebms_adapter_client.client import EbmsAdapterClient as EbmsCoreClient
 from flask import current_app
@@ -10,11 +10,19 @@ from notifications_utils.clients.zendesk.zendesk_client import NotifySupportTick
 from app import notify_celery, zendesk_client
 from app.celery.process_messagebox_client_response_tasks import process_messagebox_client_response
 from app.config import QueueNamesNL, TaskNamesNL
-from app.constants import KEY_TYPE_TEAM, NOTIFICATION_CREATED, NOTIFICATION_PENDING_VIRUS_CHECK
+from app.constants import (
+    KEY_TYPE_TEAM,
+    NOTIFICATION_CREATED,
+    NOTIFICATION_PENDING_VIRUS_CHECK,
+    NOTIFICATION_TECHNICAL_FAILURE,
+)
+from app.dao import notifications_dao
 from app.dao.notifications_dao import (
+    dao_messagebox_notifications_sending_to_check,
     dao_messagebox_notifications_still_pending,
     dao_messagebox_notifications_stuck_sending,
 )
+from app.notifications.notifications_ses_callback import check_and_queue_callback_task
 from app.otel_metrics.messagebox_nl import record_envelope_fetch_parse_failure
 
 MESSAGEBOX_STATUS_DELIVERED = "10"
@@ -216,3 +224,103 @@ def check_if_messagebox_still_pending(max_minutes_ago_to_check: int = 60, max_ho
                 "Messagebox notifications stuck sending",
                 extra={"number_of_notifications": len(stuck_sending), "notification_ids": notification_ids},
             )
+
+
+# ebms-core statuses of our own outgoing message that mean it will never reach Logius: the counterparty rejected it
+# at ebMS level (e.g. an unknown CPAId), or ebms-core gave up retrying before its TimeToLive. Logius then never sends
+# a BerichtVerwerkResponse, so messagebox_process_unprocessed_messages can't settle the notification.
+EBMS_DELIVERY_FAILURE_STATUS_CODES = {
+    EbMSMessageStatus.DELIVERY_FAILED: "ebms-delivery-failed",
+    EbMSMessageStatus.EXPIRED: "ebms-expired",
+}
+# Still being delivered by ebms-core, or accepted at ebMS level and waiting for Logius' async BerichtVerwerkResponse.
+EBMS_IN_PROGRESS_STATUSES = {EbMSMessageStatus.CREATED, EbMSMessageStatus.DELIVERED}
+
+MESSAGEBOX_CHECK_SENDING_STATUS_MIN_AGE = timedelta(minutes=5)
+MESSAGEBOX_CHECK_SENDING_STATUS_MAX_AGE = timedelta(days=7)
+MESSAGEBOX_CHECK_SENDING_STATUS_BATCH_SIZE = 500
+
+
+@notify_celery.task(name=TaskNamesNL.MESSAGEBOX_CHECK_SENDING_STATUS, early_log_level=logging.DEBUG)
+def messagebox_check_sending_status():
+    """Asks ebms-core for the delivery status of each messagebox notification
+    still in `sending`, and moves the ones ebms-core couldn't deliver to
+    technical-failure, with a service callback.
+
+    Without this, an ebMS-level rejection leaves the notification in `sending`
+    forever: the only other way out is Logius' async BerichtVerwerkResponse
+    (messagebox_process_unprocessed_messages), which never comes for a message
+    Logius didn't accept. technical-failure rather than permanent-failure: the
+    cause is the delivery chain (CPA, certificate, endpoint), not the
+    recipient, so the service may send it again once that's fixed."""
+    now = datetime.utcnow()
+    notifications = dao_messagebox_notifications_sending_to_check(
+        older_than=now - MESSAGEBOX_CHECK_SENDING_STATUS_MIN_AGE,
+        newer_than=now - MESSAGEBOX_CHECK_SENDING_STATUS_MAX_AGE,
+        limit=MESSAGEBOX_CHECK_SENDING_STATUS_BATCH_SIZE,
+    )
+    if not notifications:
+        return
+
+    config = EbmsAdapterClientConfig(base_url=current_app.config["EBMS_ADAPTER_URL"])
+    failed = 0
+    with EbmsCoreClient(config) as core_client:
+        for notification in notifications:
+            extra = {"notification_id": str(notification.id), "ebms_message_id": notification.reference}
+            try:
+                ebms_status = core_client.get_message_status(notification.reference).status
+            except EbmsNotFoundError:
+                current_app.logger.warning(
+                    "ebms-core doesn't know message %s of messagebox notification %s",
+                    notification.reference,
+                    notification.id,
+                    extra=extra,
+                )
+                continue
+            except EbmsAdapterError:
+                # ebms-core unreachable or failing: stop here instead of hammering it, the next run tries again.
+                current_app.logger.exception(
+                    "Couldn't get the ebms-core status of messagebox notification %s, will retry next run",
+                    notification.id,
+                    extra=extra,
+                )
+                break
+
+            if ebms_status in EBMS_IN_PROGRESS_STATUSES:
+                continue
+
+            detailed_status_code = EBMS_DELIVERY_FAILURE_STATUS_CODES.get(ebms_status)
+            if detailed_status_code is None:
+                current_app.logger.warning(
+                    "Unexpected ebms-core status %s for messagebox notification %s, leaving it in sending",
+                    ebms_status,
+                    notification.id,
+                    extra={**extra, "ebms_status": ebms_status},
+                )
+                continue
+
+            # update_notification_status_by_id only moves a notification that's still in a pre-callback status, so a
+            # result processed by messagebox_process_unprocessed_messages in the meantime is never overwritten.
+            updated = notifications_dao.update_notification_status_by_id(
+                notification.id, NOTIFICATION_TECHNICAL_FAILURE, detailed_status_code=detailed_status_code
+            )
+            if not updated:
+                continue
+
+            failed += 1
+            current_app.logger.warning(
+                "Messagebox notification %s not delivered by ebms-core (%s), moved to %s",
+                notification.id,
+                ebms_status,
+                NOTIFICATION_TECHNICAL_FAILURE,
+                extra={**extra, "ebms_status": ebms_status, "detailed_status_code": detailed_status_code},
+            )
+            check_and_queue_callback_task(updated)
+
+    current_app.logger.info(
+        "Messagebox sending status check: %s checked, %s moved to %s",
+        len(notifications),
+        failed,
+        NOTIFICATION_TECHNICAL_FAILURE,
+        extra={"number_of_notifications": len(notifications), "number_failed": failed},
+    )

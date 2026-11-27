@@ -1496,6 +1496,30 @@ def dao_messagebox_notifications_stuck_sending(cutoff_time):
     )
 
 
+def dao_messagebox_notifications_sending_to_check(*, older_than, newer_than, limit):
+    """Messagebox notifications in `sending` whose ebms-core delivery status
+    should be checked (see messagebox_check_sending_status): ebms-core accepted
+    them, and `reference` holds its ebMS message id, but the counterparty can
+    still reject them at ebMS level, in which case no async
+    BerichtVerwerkResponse ever arrives.
+
+    `older_than` gives ebms-core time for its first delivery attempt;
+    `newer_than` stops checking notifications long past any ebMS TimeToLive,
+    which the stuck-sending alert of check_if_messagebox_still_pending covers."""
+    return (
+        Notification.query.filter(
+            Notification.notification_type == MESSAGEBOX_TYPE,
+            Notification.status == NOTIFICATION_SENDING,
+            Notification.reference.isnot(None),
+            func.coalesce(Notification.updated_at, Notification.created_at) < older_than,
+            Notification.created_at > newer_than,
+        )
+        .order_by(Notification.created_at)
+        .limit(limit)
+        .all()
+    )
+
+
 def _duplicate_update_warning(notification, status):
     base_params = {
         "service_id": notification.service_id,
