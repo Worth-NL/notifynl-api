@@ -11,6 +11,7 @@ from ebms_adapter_client.models import (
     MessageStatus,
     Party,
 )
+from freezegun import freeze_time
 
 from app.celery import messagebox_scheduled_tasks
 from app.celery.messagebox_scheduled_tasks import (
@@ -23,6 +24,7 @@ from app.celery.messagebox_scheduled_tasks import (
 )
 from app.config import QueueNamesNL, TaskNamesNL
 from app.constants import (
+    KEY_TYPE_NORMAL,
     KEY_TYPE_TEAM,
     MESSAGEBOX_TYPE,
     NOTIFICATION_CREATED,
@@ -32,6 +34,11 @@ from app.constants import (
     NOTIFICATION_TECHNICAL_FAILURE,
 )
 from app.dao.templates_messagebox_dao import get_messagebox_template
+from app.messagebox.constants import (
+    TECHNICAL_FAILURE_EBMS_DELIVERY_FAILED,
+    TECHNICAL_FAILURE_EBMS_EXPIRED,
+    TECHNICAL_FAILURE_SEND_REJECTED,
+)
 from tests.app.db import create_notification, create_service
 
 
@@ -439,8 +446,8 @@ def _mock_core_client_for_status(mocker, *, status=None, side_effect=None):
 @pytest.mark.parametrize(
     "ebms_status, detailed_status_code",
     [
-        (EbMSMessageStatus.DELIVERY_FAILED, "ebms-delivery-failed"),
-        (EbMSMessageStatus.EXPIRED, "ebms-expired"),
+        (EbMSMessageStatus.DELIVERY_FAILED, TECHNICAL_FAILURE_EBMS_DELIVERY_FAILED),
+        (EbMSMessageStatus.EXPIRED, TECHNICAL_FAILURE_EBMS_EXPIRED),
     ],
 )
 def test_messagebox_check_sending_status_fails_undeliverable_notification_and_queues_callback(
@@ -553,3 +560,106 @@ def test_messagebox_check_sending_status_does_nothing_without_candidates(mocker,
 @pytest.fixture
 def sample_messagebox_template_for_check(sending_messagebox_notification):
     return get_messagebox_template(sending_messagebox_notification.service_id)
+
+
+def _technical_failure(template, updated_at, *, detailed_status_code, key_type=KEY_TYPE_NORMAL):
+    notification = create_notification(
+        template=template,
+        status=NOTIFICATION_TECHNICAL_FAILURE,
+        key_type=key_type,
+        created_at=updated_at - timedelta(minutes=10),
+        updated_at=updated_at,
+    )
+    # set together: updated_at's onupdate would otherwise move it to "now" when detailed_status_code is saved
+    notification.detailed_status_code = detailed_status_code
+    notification.updated_at = updated_at
+    return notification
+
+
+@freeze_time("2026-11-27 12:00:30")
+def test_check_if_messagebox_still_pending_alerts_once_on_last_hours_technical_failures(
+    mocker, messagebox_notification
+):
+    template = messagebox_notification.template
+    rejected = _technical_failure(
+        template, datetime(2026, 11, 27, 11, 30), detailed_status_code=TECHNICAL_FAILURE_SEND_REJECTED
+    )
+    expired = _technical_failure(
+        template, datetime(2026, 11, 27, 11, 0), detailed_status_code=TECHNICAL_FAILURE_EBMS_EXPIRED
+    )
+    team = _technical_failure(
+        template,
+        datetime(2026, 11, 27, 11, 59, 59),
+        detailed_status_code=TECHNICAL_FAILURE_SEND_REJECTED,
+        key_type=KEY_TYPE_TEAM,
+    )
+    # previous hour's window, already reported by the run at 11:00
+    _technical_failure(
+        template, datetime(2026, 11, 27, 10, 59, 59), detailed_status_code=TECHNICAL_FAILURE_EBMS_DELIVERY_FAILED
+    )
+    # this hour's window, reported by the run at 13:00
+    _technical_failure(
+        template, datetime(2026, 11, 27, 12, 0), detailed_status_code=TECHNICAL_FAILURE_EBMS_DELIVERY_FAILED
+    )
+    messagebox_scheduled_tasks.current_app.config["SEND_ZENDESK_ALERTS_ENABLED"] = True
+    mock_zendesk = mocker.patch("app.celery.messagebox_scheduled_tasks.zendesk_client.send_ticket_to_zendesk")
+
+    check_if_messagebox_still_pending()
+
+    mock_zendesk.assert_called_once()
+    ticket = mock_zendesk.call_args[0][0]
+    assert ticket.subject == "[test] Messagebox notifications in technical-failure"
+    assert "between 2026-11-27 11:00 and 12:00 UTC" in ticket.message
+    assert f"By cause: {{'{TECHNICAL_FAILURE_EBMS_EXPIRED}': 1, '{TECHNICAL_FAILURE_SEND_REJECTED}': 2}}" in (
+        ticket.message
+    )
+    assert f"Notifications: {sorted(str(n.id) for n in (rejected, expired, team))}" in ticket.message
+    assert f"sent with a team key to Logius pre-production: {[str(team.id)]}" in ticket.message
+
+
+@freeze_time("2026-11-27 12:00:30")
+def test_check_if_messagebox_still_pending_names_no_team_keys_among_technical_failures_when_there_are_none(
+    mocker, messagebox_notification
+):
+    _technical_failure(
+        messagebox_notification.template,
+        datetime(2026, 11, 27, 11, 30),
+        detailed_status_code=TECHNICAL_FAILURE_SEND_REJECTED,
+    )
+    messagebox_scheduled_tasks.current_app.config["SEND_ZENDESK_ALERTS_ENABLED"] = True
+    mock_zendesk = mocker.patch("app.celery.messagebox_scheduled_tasks.zendesk_client.send_ticket_to_zendesk")
+
+    check_if_messagebox_still_pending()
+
+    assert "team key" not in mock_zendesk.call_args[0][0].message
+
+
+@freeze_time("2026-11-27 12:00:30")
+def test_check_if_messagebox_still_pending_logs_technical_failures_without_zendesk(
+    mocker, messagebox_notification, caplog
+):
+    _technical_failure(
+        messagebox_notification.template,
+        datetime(2026, 11, 27, 11, 30),
+        detailed_status_code=TECHNICAL_FAILURE_SEND_REJECTED,
+    )
+    messagebox_scheduled_tasks.current_app.config["SEND_ZENDESK_ALERTS_ENABLED"] = False
+    mock_zendesk = mocker.patch("app.celery.messagebox_scheduled_tasks.zendesk_client.send_ticket_to_zendesk")
+
+    with caplog.at_level("ERROR"):
+        check_if_messagebox_still_pending()
+
+    mock_zendesk.assert_not_called()
+    assert [r for r in caplog.records if r.message == "Messagebox notifications in technical-failure"]
+
+
+@freeze_time("2026-11-27 12:00:30")
+def test_check_if_messagebox_still_pending_sends_no_technical_failure_alert_without_failures(
+    mocker, messagebox_notification
+):
+    messagebox_scheduled_tasks.current_app.config["SEND_ZENDESK_ALERTS_ENABLED"] = True
+    mock_zendesk = mocker.patch("app.celery.messagebox_scheduled_tasks.zendesk_client.send_ticket_to_zendesk")
+
+    check_if_messagebox_still_pending()
+
+    mock_zendesk.assert_not_called()

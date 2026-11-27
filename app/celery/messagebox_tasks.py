@@ -17,6 +17,7 @@ from app.constants import (
 from app.dao import notifications_dao
 from app.errors import VirusScanError
 from app.exceptions import NotificationTechnicalFailureException
+from app.messagebox.constants import TECHNICAL_FAILURE_SEND_REJECTED, TECHNICAL_FAILURE_SEND_RETRIES_EXHAUSTED
 from app.models import Notification
 from app.notifications.notifications_ses_callback import check_and_queue_callback_task
 
@@ -166,7 +167,7 @@ def messagebox_deliver(self, notification_id: str):
         current_app.logger.exception(
             "Messagebox notification %s failed: %s", notification_id, e, extra={"notification_id": notification_id}
         )
-        notifications_dao.update_notification_status_by_id(notification.id, NOTIFICATION_TECHNICAL_FAILURE)
+        _fail_messagebox_notification(notification.id, TECHNICAL_FAILURE_SEND_REJECTED)
         return
     except Exception:
         current_app.logger.exception(
@@ -184,10 +185,22 @@ def messagebox_deliver(self, notification_id: str):
                 "RETRY FAILED: Max retries reached. The task messagebox_deliver failed for "
                 f"notification {notification_id}. Notification has been updated to technical-failure"
             )
-            notifications_dao.update_notification_status_by_id(notification.id, NOTIFICATION_TECHNICAL_FAILURE)
+            _fail_messagebox_notification(notification.id, TECHNICAL_FAILURE_SEND_RETRIES_EXHAUSTED)
             raise NotificationTechnicalFailureException(message) from retry_exc
         return
 
     notifications_dao.update_notification_status_by_id(notification.id, NOTIFICATION_SENDING)
     notification.reference = envelope_message_id
     notifications_dao.dao_update_notification(notification)
+
+
+def _fail_messagebox_notification(notification_id, detailed_status_code: str) -> None:
+    """Moves a messagebox notification that never reached Logius to technical-failure, and queues the service
+    callback: without it the service never learns the citizen didn't get the message, so it can't fall back to
+    another channel. update_notification_status_by_id returns None for a notification that already moved on, which
+    then gets no second callback."""
+    updated_notification = notifications_dao.update_notification_status_by_id(
+        notification_id, NOTIFICATION_TECHNICAL_FAILURE, detailed_status_code=detailed_status_code
+    )
+    if updated_notification:
+        check_and_queue_callback_task(updated_notification)

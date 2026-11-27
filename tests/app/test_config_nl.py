@@ -118,6 +118,25 @@ def test_deployed_environments_keep_letters_on_the_dvla_path_by_default(config_w
         assert DVLA_TASKS <= set(config.CELERY["beat_schedule"])
 
 
+def test_every_environment_polls_ebms_core_for_messagebox_delivery_status(config_without_stub_env):
+    configs = (
+        config_without_stub_env.DevNL,
+        config_without_stub_env.TestNL,
+        config_without_stub_env.AccNL,
+        config_without_stub_env.ProdNL,
+    )
+    for config in configs:
+        schedule = config.CELERY["beat_schedule"]
+        entry = schedule["messagebox-check-sending-status"]
+        assert entry["task"] == app.config.TaskNamesNL.MESSAGEBOX_CHECK_SENDING_STATUS
+        assert entry["options"] == {"queue": app.config.QueueNamesNL.PERIODIC}
+        # same cadence as the unprocessed-envelope poll
+        assert entry["schedule"] == schedule["messagebox-process-unprocessed"]["schedule"]
+        # the hourly check that also raises the technical-failure alert
+        still_pending = schedule["messagebox-check-still-pending"]
+        assert still_pending["task"] == app.config.TaskNamesNL.MESSAGEBOX_CHECK_STILL_PENDING
+
+
 def test_deployed_environments_default_to_the_real_third_parties(config_without_stub_env):
     for config in (config_without_stub_env.TestNL, config_without_stub_env.AccNL):
         assert config.PINGEN_API_URL == "https://api-staging.pingen.com"

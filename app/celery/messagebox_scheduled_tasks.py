@@ -1,4 +1,5 @@
 import logging
+from collections import Counter
 from datetime import datetime, timedelta
 
 from ebms_adapter_client import EbmsAdapterClientConfig, EbmsAdapterError, EbMSMessageStatus, EbmsNotFoundError
@@ -21,7 +22,9 @@ from app.dao.notifications_dao import (
     dao_messagebox_notifications_sending_to_check,
     dao_messagebox_notifications_still_pending,
     dao_messagebox_notifications_stuck_sending,
+    dao_messagebox_notifications_technical_failure_between,
 )
+from app.messagebox.constants import TECHNICAL_FAILURE_EBMS_DELIVERY_FAILED, TECHNICAL_FAILURE_EBMS_EXPIRED
 from app.notifications.notifications_ses_callback import check_and_queue_callback_task
 from app.otel_metrics.messagebox_nl import record_envelope_fetch_parse_failure
 
@@ -145,7 +148,10 @@ def check_if_messagebox_still_pending(max_minutes_ago_to_check: int = 60, max_ho
     call and race the real result (ebms-core rejects the duplicate as
     BerichtBestaatAl), so a stuck one always needs human investigation into
     whether messagebox_process_unprocessed_messages has stopped draining the
-    unprocessed envelope queue."""
+    unprocessed envelope queue.
+
+    Finally, alerts on the notifications that moved to technical-failure in the
+    previous hour (see _alert_on_messagebox_technical_failures)."""
     cutoff_time = datetime.utcnow() - timedelta(minutes=max_minutes_ago_to_check)
     notifications = dao_messagebox_notifications_still_pending(cutoff_time)
 
@@ -225,13 +231,68 @@ def check_if_messagebox_still_pending(max_minutes_ago_to_check: int = 60, max_ho
                 extra={"number_of_notifications": len(stuck_sending), "notification_ids": notification_ids},
             )
 
+    _alert_on_messagebox_technical_failures()
+
+
+def _alert_on_messagebox_technical_failures():
+    """One Zendesk ticket for the messagebox notifications that moved to
+    technical-failure in the previous whole hour. Those never reached Logius:
+    the service falls back to another channel (e.g. a letter), so the citizen
+    still gets the message, but the cause is on our side or in the delivery
+    chain (a bug, the CPA, the ebms-adapter) and needs looking into. One ticket
+    per hour rather than per notification, since a bug fails every message.
+
+    The window ends at the start of the current hour, so with this check's
+    hourly schedule every failure falls in exactly one window."""
+    end = datetime.utcnow().replace(minute=0, second=0, microsecond=0)
+    start = end - timedelta(hours=1)
+    failed = dao_messagebox_notifications_technical_failure_between(start, end)
+    if not failed:
+        return
+
+    notification_ids = sorted(str(notification.id) for notification in failed)
+    counts_by_code = Counter(notification.detailed_status_code or "unknown" for notification in failed)
+
+    msg = (
+        f"{len(failed)} messagebox notifications moved to technical-failure between {start:%Y-%m-%d %H:%M} and "
+        f"{end:%H:%M} UTC. Logius never got them; services with a delivery-status callback were told, so they can "
+        "fall back to another channel. This needs investigation: it points at a bug or a misconfiguration (CPA, "
+        "ebms-adapter).\n\n"
+        f"By cause: {dict(sorted(counts_by_code.items()))}\n\n"
+        f"Notifications: {notification_ids}"
+    )
+    # Team-key notifications went to Logius pre-production (app/messagebox/contract_nl.py): no citizen is affected.
+    team_key_ids = sorted(str(notification.id) for notification in failed if notification.key_type == KEY_TYPE_TEAM)
+    if team_key_ids:
+        msg += f"\n\nOf these, sent with a team key to Logius pre-production: {team_key_ids}"
+
+    current_app.logger.error(
+        "Messagebox notifications in technical-failure",
+        extra={
+            "number_of_notifications": len(failed),
+            "notification_ids": notification_ids,
+            "detailed_status_codes": dict(counts_by_code),
+        },
+    )
+
+    if current_app.should_send_zendesk_alerts:  # type: ignore[attr-defined]
+        environment = current_app.config["NOTIFY_ENVIRONMENT"]
+        ticket = NotifySupportTicket(
+            subject=f"[{environment}] Messagebox notifications in technical-failure",
+            message=msg,
+            ticket_type=NotifySupportTicket.TYPE_TASK,
+            notify_ticket_type=NotifyTicketType.TECHNICAL,
+            notify_task_type="notify_task_messagebox_technical_failure",
+        )
+        zendesk_client.send_ticket_to_zendesk(ticket)  # type: ignore[attr-defined]
+
 
 # ebms-core statuses of our own outgoing message that mean it will never reach Logius: the counterparty rejected it
 # at ebMS level (e.g. an unknown CPAId), or ebms-core gave up retrying before its TimeToLive. Logius then never sends
 # a BerichtVerwerkResponse, so messagebox_process_unprocessed_messages can't settle the notification.
 EBMS_DELIVERY_FAILURE_STATUS_CODES = {
-    EbMSMessageStatus.DELIVERY_FAILED: "ebms-delivery-failed",
-    EbMSMessageStatus.EXPIRED: "ebms-expired",
+    EbMSMessageStatus.DELIVERY_FAILED: TECHNICAL_FAILURE_EBMS_DELIVERY_FAILED,
+    EbMSMessageStatus.EXPIRED: TECHNICAL_FAILURE_EBMS_EXPIRED,
 }
 # Still being delivered by ebms-core, or accepted at ebMS level and waiting for Logius' async BerichtVerwerkResponse.
 EBMS_IN_PROGRESS_STATUSES = {EbMSMessageStatus.CREATED, EbMSMessageStatus.DELIVERED}

@@ -1496,6 +1496,7 @@ def dao_messagebox_notifications_stuck_sending(cutoff_time):
     )
 
 
+# [NotifyNL] messagebox: notifications whose ebms-core delivery status to check, and technical failures to alert on
 def dao_messagebox_notifications_sending_to_check(*, older_than, newer_than, limit):
     """Messagebox notifications in `sending` whose ebms-core delivery status
     should be checked (see messagebox_check_sending_status): ebms-core accepted
@@ -1516,6 +1517,21 @@ def dao_messagebox_notifications_sending_to_check(*, older_than, newer_than, lim
         )
         .order_by(Notification.created_at)
         .limit(limit)
+        .all()
+    )
+
+
+def dao_messagebox_notifications_technical_failure_between(start, end):
+    """Messagebox notifications that moved to technical-failure in [start, end), going by `updated_at`, which the
+    status change sets. Non-overlapping windows from an hourly check report each failure once."""
+    return (
+        Notification.query.filter(
+            Notification.notification_type == MESSAGEBOX_TYPE,
+            Notification.status == NOTIFICATION_TECHNICAL_FAILURE,
+            Notification.updated_at >= start,
+            Notification.updated_at < end,
+        )
+        .order_by(Notification.updated_at)
         .all()
     )
 
