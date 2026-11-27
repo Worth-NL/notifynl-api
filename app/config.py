@@ -840,6 +840,8 @@ class TaskNamesNL(TaskNames):
     MESSAGEBOX_VIRUS_SCAN_FAILED = "messagebox.virus-scan-failed"
     MESSAGEBOX_PROCESS_UNPROCESSED = "messagebox.process-unprocessed"
     MESSAGEBOX_CHECK_STILL_PENDING = "messagebox.check-still-pending"
+    MESSAGEBOX_CHECK_SENDING_STATUS = "messagebox.check-sending-status"
+    MESSAGEBOX_ALERT_TECHNICAL_FAILURES = "messagebox.alert-technical-failures"
     DELIVER_LETTER_VIA_PROVIDER = "deliver-letter-via-provider"
     CHECK_LETTER_ENDPOINT_CONNECTION = "check-letter-endpoint-connection"
     DISPATCH_STRANDED_LETTERS = "dispatch-stranded-letters"
@@ -970,6 +972,22 @@ class ConfigNL(Config):
     BEAT_SCHEDULE["messagebox-check-still-pending"] = {
         "task": TaskNamesNL.MESSAGEBOX_CHECK_STILL_PENDING,
         "schedule": crontab(minute=0),  # hourly
+        "options": {"queue": QueueNamesNL.PERIODIC},
+    }
+
+    # Picks up ebMS-level rejections (no async BerichtVerwerkResponse ever comes for those), at the same cadence as
+    # the unprocessed-envelope poll above.
+    BEAT_SCHEDULE["messagebox-check-sending-status"] = {
+        "task": TaskNamesNL.MESSAGEBOX_CHECK_SENDING_STATUS,
+        "schedule": crontab(minute=MESSAGEBOX_POLL_FREQUENCY),
+        "options": {"queue": QueueNamesNL.PERIODIC},
+    }
+
+    # Must stay on the hour: the alert reports the previous whole hour, so any other cadence reports a failure twice
+    # or never.
+    BEAT_SCHEDULE["messagebox-alert-technical-failures"] = {
+        "task": TaskNamesNL.MESSAGEBOX_ALERT_TECHNICAL_FAILURES,
+        "schedule": crontab(minute=0),
         "options": {"queue": QueueNamesNL.PERIODIC},
     }
 

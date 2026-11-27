@@ -2,6 +2,7 @@ import importlib.util
 
 import bcrypt
 import pytest
+from celery.schedules import crontab
 
 import app.config
 from app.config import Config, build_letter_beat_schedule
@@ -116,6 +117,27 @@ def test_deployed_environments_keep_letters_on_the_dvla_path_by_default(config_w
     for config in (config_without_stub_env.TestNL, config_without_stub_env.AccNL, config_without_stub_env.ProdNL):
         assert not config.LETTER_DELIVERY_VIA_PROVIDERS
         assert DVLA_TASKS <= set(config.CELERY["beat_schedule"])
+
+
+def test_every_environment_polls_ebms_core_for_messagebox_delivery_status(config_without_stub_env):
+    configs = (
+        config_without_stub_env.DevNL,
+        config_without_stub_env.TestNL,
+        config_without_stub_env.AccNL,
+        config_without_stub_env.ProdNL,
+    )
+    for config in configs:
+        schedule = config.CELERY["beat_schedule"]
+        entry = schedule["messagebox-check-sending-status"]
+        assert entry["task"] == app.config.TaskNamesNL.MESSAGEBOX_CHECK_SENDING_STATUS
+        assert entry["options"] == {"queue": app.config.QueueNamesNL.PERIODIC}
+        # same cadence as the unprocessed-envelope poll
+        assert entry["schedule"] == schedule["messagebox-process-unprocessed"]["schedule"]
+        # the technical-failure alert reports the previous whole hour, so it must run exactly on the hour
+        alert = schedule["messagebox-alert-technical-failures"]
+        assert alert["task"] == app.config.TaskNamesNL.MESSAGEBOX_ALERT_TECHNICAL_FAILURES
+        assert alert["options"] == {"queue": app.config.QueueNamesNL.PERIODIC}
+        assert alert["schedule"] == crontab(minute=0)
 
 
 def test_deployed_environments_default_to_the_real_third_parties(config_without_stub_env):

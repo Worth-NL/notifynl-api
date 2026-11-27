@@ -16,6 +16,7 @@ from app.config import QueueNames, QueueNamesNL, TaskNamesNL
 from app.constants import (
     MESSAGEBOX_TYPE,
     NOTIFICATION_CREATED,
+    NOTIFICATION_DELIVERED,
     NOTIFICATION_PENDING_VIRUS_CHECK,
     NOTIFICATION_SENDING,
     NOTIFICATION_TECHNICAL_FAILURE,
@@ -25,6 +26,7 @@ from app.dao import notifications_dao
 from app.dao.templates_messagebox_dao import get_messagebox_template
 from app.errors import VirusScanError
 from app.exceptions import NotificationTechnicalFailureException
+from app.messagebox.constants import TECHNICAL_FAILURE_SEND_REJECTED, TECHNICAL_FAILURE_SEND_RETRIES_EXHAUSTED
 from tests.app.db import create_notification, create_service
 
 
@@ -176,11 +178,15 @@ def test_messagebox_deliver_non_retryable_failure_sets_technical_failure(mocker,
         side_effect=MessageboxClientNonRetryableException("bad payload"),
     )
     mock_retry = mocker.patch("app.celery.messagebox_tasks.messagebox_deliver.retry")
+    mock_callback = mocker.patch("app.celery.messagebox_tasks.check_and_queue_callback_task")
 
     messagebox_deliver(messagebox_notification.id)
 
     assert mock_retry.called is False
     assert messagebox_notification.status == NOTIFICATION_TECHNICAL_FAILURE
+    assert messagebox_notification.detailed_status_code == TECHNICAL_FAILURE_SEND_REJECTED
+    # the service has to hear about it to fall back to another channel
+    mock_callback.assert_called_once_with(messagebox_notification)
 
 
 def test_messagebox_deliver_retries_on_retryable_failure(mocker, messagebox_notification):
@@ -198,12 +204,34 @@ def test_messagebox_deliver_max_retries_exceeded_sets_technical_failure(mocker, 
     notifications_dao.update_notification_status_by_id(messagebox_notification.id, NOTIFICATION_CREATED)
     mocker.patch("app.celery.messagebox_tasks.ebms_adapter_client.send_messagebox", side_effect=Exception("boom"))
     mocker.patch("app.celery.messagebox_tasks.messagebox_deliver.retry", side_effect=MaxRetriesExceededError())
+    mock_callback = mocker.patch("app.celery.messagebox_tasks.check_and_queue_callback_task")
 
     with pytest.raises(NotificationTechnicalFailureException) as exc_info:
         messagebox_deliver(messagebox_notification.id)
 
     assert str(messagebox_notification.id) in str(exc_info.value)
     assert messagebox_notification.status == NOTIFICATION_TECHNICAL_FAILURE
+    assert messagebox_notification.detailed_status_code == TECHNICAL_FAILURE_SEND_RETRIES_EXHAUSTED
+    mock_callback.assert_called_once_with(messagebox_notification)
+
+
+def test_messagebox_deliver_failure_queues_no_callback_for_an_already_settled_notification(
+    mocker, messagebox_notification
+):
+    # The notification moved on while the send was being attempted: it keeps its status and gets no second callback.
+    notifications_dao.update_notification_status_by_id(messagebox_notification.id, NOTIFICATION_CREATED)
+
+    def settle_then_reject(_notification_id):
+        messagebox_notification.status = NOTIFICATION_DELIVERED
+        raise MessageboxClientNonRetryableException("bad payload")
+
+    mocker.patch("app.celery.messagebox_tasks.ebms_adapter_client.send_messagebox", side_effect=settle_then_reject)
+    mock_callback = mocker.patch("app.celery.messagebox_tasks.check_and_queue_callback_task")
+
+    messagebox_deliver(messagebox_notification.id)
+
+    assert messagebox_notification.status == NOTIFICATION_DELIVERED
+    mock_callback.assert_not_called()
 
 
 def test_messagebox_deliver_skips_resend_when_not_created(mocker, messagebox_notification):
