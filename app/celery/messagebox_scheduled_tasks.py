@@ -148,10 +148,7 @@ def check_if_messagebox_still_pending(max_minutes_ago_to_check: int = 60, max_ho
     call and race the real result (ebms-core rejects the duplicate as
     BerichtBestaatAl), so a stuck one always needs human investigation into
     whether messagebox_process_unprocessed_messages has stopped draining the
-    unprocessed envelope queue.
-
-    Finally, alerts on the notifications that moved to technical-failure in the
-    previous hour (see _alert_on_messagebox_technical_failures)."""
+    unprocessed envelope queue."""
     cutoff_time = datetime.utcnow() - timedelta(minutes=max_minutes_ago_to_check)
     notifications = dao_messagebox_notifications_still_pending(cutoff_time)
 
@@ -231,46 +228,57 @@ def check_if_messagebox_still_pending(max_minutes_ago_to_check: int = 60, max_ho
                 extra={"number_of_notifications": len(stuck_sending), "notification_ids": notification_ids},
             )
 
-    _alert_on_messagebox_technical_failures()
+
+# A broken CPA or ebms-adapter fails every message, so the ticket and log line name a sample, not all of them.
+MESSAGEBOX_TECHNICAL_FAILURE_ALERT_MAX_IDS = 50
 
 
-def _alert_on_messagebox_technical_failures():
+def _sample_ids(ids):
+    sample = sorted(ids)[:MESSAGEBOX_TECHNICAL_FAILURE_ALERT_MAX_IDS]
+    if len(ids) > len(sample):
+        return f"{sample} (first {len(sample)} of {len(ids)})"
+    return f"{sample}"
+
+
+@notify_celery.task(name=TaskNamesNL.MESSAGEBOX_ALERT_TECHNICAL_FAILURES)
+def messagebox_alert_technical_failures():
     """One Zendesk ticket for the messagebox notifications that moved to
-    technical-failure in the previous whole hour. Those never reached Logius:
-    the service falls back to another channel (e.g. a letter), so the citizen
-    still gets the message, but the cause is on our side or in the delivery
-    chain (a bug, the CPA, the ebms-adapter) and needs looking into. One ticket
-    per hour rather than per notification, since a bug fails every message.
+    technical-failure in the previous whole hour. The service falls back to
+    another channel (e.g. a letter), so the citizen still gets the message, but
+    the cause is on our side or in the delivery chain (a bug, the CPA, the
+    ebms-adapter) and needs looking into. One ticket per hour rather than per
+    notification, since a bug fails every message.
 
-    The window ends at the start of the current hour, so with this check's
-    hourly schedule every failure falls in exactly one window."""
+    Runs on the hour (its own beat entry), and the window ends at the start of
+    the current hour, so every failure falls in exactly one window."""
     end = datetime.utcnow().replace(minute=0, second=0, microsecond=0)
     start = end - timedelta(hours=1)
     failed = dao_messagebox_notifications_technical_failure_between(start, end)
     if not failed:
         return
 
-    notification_ids = sorted(str(notification.id) for notification in failed)
+    notification_ids = [str(notification.id) for notification in failed]
     counts_by_code = Counter(notification.detailed_status_code or "unknown" for notification in failed)
 
     msg = (
         f"{len(failed)} messagebox notifications moved to technical-failure between {start:%Y-%m-%d %H:%M} and "
-        f"{end:%H:%M} UTC. Logius never got them; services with a delivery-status callback were told, so they can "
-        "fall back to another channel. This needs investigation: it points at a bug or a misconfiguration (CPA, "
-        "ebms-adapter).\n\n"
-        f"By cause: {dict(sorted(counts_by_code.items()))}\n\n"
-        f"Notifications: {notification_ids}"
+        f"{end:%H:%M} UTC. Services with a delivery-status callback were told, so they can fall back to another "
+        "channel. This needs investigation: it points at a bug or a misconfiguration (CPA, ebms-adapter).\n\n"
+        f"By cause: {dict(sorted(counts_by_code.items()))}\n"
+        "messagebox-send-* and ebms-* never reached Logius. 'unknown' means Logius answered with a status Notify "
+        "doesn't recognise.\n\n"
+        f"Notifications: {_sample_ids(notification_ids)}"
     )
     # Team-key notifications went to Logius pre-production (app/messagebox/contract_nl.py): no citizen is affected.
-    team_key_ids = sorted(str(notification.id) for notification in failed if notification.key_type == KEY_TYPE_TEAM)
+    team_key_ids = [str(notification.id) for notification in failed if notification.key_type == KEY_TYPE_TEAM]
     if team_key_ids:
-        msg += f"\n\nOf these, sent with a team key to Logius pre-production: {team_key_ids}"
+        msg += f"\n\nOf these, sent with a team key to Logius pre-production: {_sample_ids(team_key_ids)}"
 
     current_app.logger.error(
         "Messagebox notifications in technical-failure",
         extra={
             "number_of_notifications": len(failed),
-            "notification_ids": notification_ids,
+            "notification_ids": sorted(notification_ids)[:MESSAGEBOX_TECHNICAL_FAILURE_ALERT_MAX_IDS],
             "detailed_status_codes": dict(counts_by_code),
         },
     )

@@ -19,6 +19,7 @@ from app.celery.messagebox_scheduled_tasks import (
     MESSAGEBOX_STATUS_DELIVERED,
     MESSAGEBOX_STATUS_FAILED,
     check_if_messagebox_still_pending,
+    messagebox_alert_technical_failures,
     messagebox_check_sending_status,
     messagebox_process_unprocessed_messages,
 )
@@ -577,9 +578,7 @@ def _technical_failure(template, updated_at, *, detailed_status_code, key_type=K
 
 
 @freeze_time("2026-11-27 12:00:30")
-def test_check_if_messagebox_still_pending_alerts_once_on_last_hours_technical_failures(
-    mocker, messagebox_notification
-):
+def test_messagebox_alert_technical_failures_alerts_once_on_last_hours_failures(mocker, messagebox_notification):
     template = messagebox_notification.template
     rejected = _technical_failure(
         template, datetime(2026, 11, 27, 11, 30), detailed_status_code=TECHNICAL_FAILURE_SEND_REJECTED
@@ -604,7 +603,7 @@ def test_check_if_messagebox_still_pending_alerts_once_on_last_hours_technical_f
     messagebox_scheduled_tasks.current_app.config["SEND_ZENDESK_ALERTS_ENABLED"] = True
     mock_zendesk = mocker.patch("app.celery.messagebox_scheduled_tasks.zendesk_client.send_ticket_to_zendesk")
 
-    check_if_messagebox_still_pending()
+    messagebox_alert_technical_failures()
 
     mock_zendesk.assert_called_once()
     ticket = mock_zendesk.call_args[0][0]
@@ -613,14 +612,13 @@ def test_check_if_messagebox_still_pending_alerts_once_on_last_hours_technical_f
     assert f"By cause: {{'{TECHNICAL_FAILURE_EBMS_EXPIRED}': 1, '{TECHNICAL_FAILURE_SEND_REJECTED}': 2}}" in (
         ticket.message
     )
+    assert "'unknown' means Logius answered with a status Notify doesn't recognise" in ticket.message
     assert f"Notifications: {sorted(str(n.id) for n in (rejected, expired, team))}" in ticket.message
     assert f"sent with a team key to Logius pre-production: {[str(team.id)]}" in ticket.message
 
 
 @freeze_time("2026-11-27 12:00:30")
-def test_check_if_messagebox_still_pending_names_no_team_keys_among_technical_failures_when_there_are_none(
-    mocker, messagebox_notification
-):
+def test_messagebox_alert_technical_failures_names_no_team_keys_when_there_are_none(mocker, messagebox_notification):
     _technical_failure(
         messagebox_notification.template,
         datetime(2026, 11, 27, 11, 30),
@@ -629,15 +627,13 @@ def test_check_if_messagebox_still_pending_names_no_team_keys_among_technical_fa
     messagebox_scheduled_tasks.current_app.config["SEND_ZENDESK_ALERTS_ENABLED"] = True
     mock_zendesk = mocker.patch("app.celery.messagebox_scheduled_tasks.zendesk_client.send_ticket_to_zendesk")
 
-    check_if_messagebox_still_pending()
+    messagebox_alert_technical_failures()
 
     assert "team key" not in mock_zendesk.call_args[0][0].message
 
 
 @freeze_time("2026-11-27 12:00:30")
-def test_check_if_messagebox_still_pending_logs_technical_failures_without_zendesk(
-    mocker, messagebox_notification, caplog
-):
+def test_messagebox_alert_technical_failures_logs_without_zendesk(mocker, messagebox_notification, caplog):
     _technical_failure(
         messagebox_notification.template,
         datetime(2026, 11, 27, 11, 30),
@@ -647,16 +643,59 @@ def test_check_if_messagebox_still_pending_logs_technical_failures_without_zende
     mock_zendesk = mocker.patch("app.celery.messagebox_scheduled_tasks.zendesk_client.send_ticket_to_zendesk")
 
     with caplog.at_level("ERROR"):
-        check_if_messagebox_still_pending()
+        messagebox_alert_technical_failures()
 
     mock_zendesk.assert_not_called()
     assert [r for r in caplog.records if r.message == "Messagebox notifications in technical-failure"]
 
 
 @freeze_time("2026-11-27 12:00:30")
-def test_check_if_messagebox_still_pending_sends_no_technical_failure_alert_without_failures(
+def test_messagebox_alert_technical_failures_sends_nothing_without_failures(mocker, messagebox_notification):
+    messagebox_scheduled_tasks.current_app.config["SEND_ZENDESK_ALERTS_ENABLED"] = True
+    mock_zendesk = mocker.patch("app.celery.messagebox_scheduled_tasks.zendesk_client.send_ticket_to_zendesk")
+
+    messagebox_alert_technical_failures()
+
+    mock_zendesk.assert_not_called()
+
+
+@freeze_time("2026-11-27 12:00:30")
+def test_messagebox_alert_technical_failures_names_a_sample_of_many_failures(mocker, messagebox_notification, caplog):
+    mocker.patch.object(messagebox_scheduled_tasks, "MESSAGEBOX_TECHNICAL_FAILURE_ALERT_MAX_IDS", 2)
+    failed = [
+        _technical_failure(
+            messagebox_notification.template,
+            datetime(2026, 11, 27, 11, minute),
+            detailed_status_code=TECHNICAL_FAILURE_EBMS_DELIVERY_FAILED,
+            key_type=KEY_TYPE_TEAM,
+        )
+        for minute in (10, 20, 30)
+    ]
+    messagebox_scheduled_tasks.current_app.config["SEND_ZENDESK_ALERTS_ENABLED"] = True
+    mock_zendesk = mocker.patch("app.celery.messagebox_scheduled_tasks.zendesk_client.send_ticket_to_zendesk")
+
+    with caplog.at_level("ERROR"):
+        messagebox_alert_technical_failures()
+
+    sample = sorted(str(n.id) for n in failed)[:2]
+    message = mock_zendesk.call_args[0][0].message
+    assert message.startswith("3 messagebox notifications moved to technical-failure")
+    assert f"Notifications: {sample} (first 2 of 3)" in message
+    assert f"Logius pre-production: {sample} (first 2 of 3)" in message
+    (record,) = [r for r in caplog.records if r.message == "Messagebox notifications in technical-failure"]
+    assert record.number_of_notifications == 3
+    assert record.notification_ids == sample
+
+
+@freeze_time("2026-11-27 12:00:30")
+def test_check_if_messagebox_still_pending_leaves_technical_failures_to_their_own_alert(
     mocker, messagebox_notification
 ):
+    _technical_failure(
+        messagebox_notification.template,
+        datetime(2026, 11, 27, 11, 30),
+        detailed_status_code=TECHNICAL_FAILURE_SEND_REJECTED,
+    )
     messagebox_scheduled_tasks.current_app.config["SEND_ZENDESK_ALERTS_ENABLED"] = True
     mock_zendesk = mocker.patch("app.celery.messagebox_scheduled_tasks.zendesk_client.send_ticket_to_zendesk")
 

@@ -1522,10 +1522,12 @@ def dao_messagebox_notifications_sending_to_check(*, older_than, newer_than, lim
 
 
 def dao_messagebox_notifications_technical_failure_between(start, end):
-    """Messagebox notifications that moved to technical-failure in [start, end), going by `updated_at`, which the
-    status change sets. Non-overlapping windows from an hourly check report each failure once."""
+    """Id, detailed_status_code and key_type of the messagebox notifications that moved to technical-failure in
+    [start, end), going by `updated_at`, which the status change sets. Non-overlapping windows from an hourly check
+    report each failure once. Only those columns, since a broken delivery chain can fail thousands in an hour."""
     return (
-        Notification.query.filter(
+        db.session.query(Notification.id, Notification.detailed_status_code, Notification.key_type)
+        .filter(
             Notification.notification_type == MESSAGEBOX_TYPE,
             Notification.status == NOTIFICATION_TECHNICAL_FAILURE,
             Notification.updated_at >= start,

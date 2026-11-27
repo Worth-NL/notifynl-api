@@ -2,6 +2,7 @@ import importlib.util
 
 import bcrypt
 import pytest
+from celery.schedules import crontab
 
 import app.config
 from app.config import Config, build_letter_beat_schedule
@@ -132,9 +133,11 @@ def test_every_environment_polls_ebms_core_for_messagebox_delivery_status(config
         assert entry["options"] == {"queue": app.config.QueueNamesNL.PERIODIC}
         # same cadence as the unprocessed-envelope poll
         assert entry["schedule"] == schedule["messagebox-process-unprocessed"]["schedule"]
-        # the hourly check that also raises the technical-failure alert
-        still_pending = schedule["messagebox-check-still-pending"]
-        assert still_pending["task"] == app.config.TaskNamesNL.MESSAGEBOX_CHECK_STILL_PENDING
+        # the technical-failure alert reports the previous whole hour, so it must run exactly on the hour
+        alert = schedule["messagebox-alert-technical-failures"]
+        assert alert["task"] == app.config.TaskNamesNL.MESSAGEBOX_ALERT_TECHNICAL_FAILURES
+        assert alert["options"] == {"queue": app.config.QueueNamesNL.PERIODIC}
+        assert alert["schedule"] == crontab(minute=0)
 
 
 def test_deployed_environments_default_to_the_real_third_parties(config_without_stub_env):
