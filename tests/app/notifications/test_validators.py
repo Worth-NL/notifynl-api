@@ -17,7 +17,6 @@ from app.constants import (
     KEY_TYPE_NORMAL,
     KEY_TYPE_TEST,
     LETTER_TYPE,
-    MESSAGEBOX_TYPE,
     NOTIFICATION_TYPES,
     SMS_TO_UK_LANDLINES,
     SMS_TYPE,
@@ -221,27 +220,20 @@ def test_check_template_is_for_notification_type_pass(template_type, notificatio
 
 @pytest.mark.parametrize(
     "notification_type, expected_value",
-    [(SMS_TYPE, 200), (LETTER_TYPE, 300), (EMAIL_TYPE, 100), (INTERNATIONAL_SMS_TYPE, 400), (MESSAGEBOX_TYPE, 500)],
+    [(SMS_TYPE, 200), (LETTER_TYPE, 300), (EMAIL_TYPE, 100), (INTERNATIONAL_SMS_TYPE, 400)],
 )
 def test_get_daily_rate_limit_value_for_test_keys_for_live_services(sample_service, notification_type, expected_value):
     sample_service.email_message_limit = 100
     sample_service.sms_message_limit = 200
     sample_service.letter_message_limit = 300
     sample_service.international_sms_message_limit = 400
-    sample_service.messagebox_message_limit = 500
     result = get_daily_rate_limit_value(sample_service, "test", notification_type)
     assert result == expected_value
 
 
 @pytest.mark.parametrize(
     "notification_type, expected_value",
-    [
-        (SMS_TYPE, 250_000),
-        (LETTER_TYPE, 20_000),
-        (EMAIL_TYPE, 250_000),
-        (INTERNATIONAL_SMS_TYPE, 100),
-        (MESSAGEBOX_TYPE, 999_999_999),
-    ],
+    [(SMS_TYPE, 250_000), (LETTER_TYPE, 20_000), (EMAIL_TYPE, 250_000), (INTERNATIONAL_SMS_TYPE, 100)],
 )
 def test_get_daily_rate_limit_value_for_test_keys_for_trial_services(sample_service, notification_type, expected_value):
     # This test checks that the default live service limit rates are returned for a test API key for a service in
